@@ -44,6 +44,31 @@ services:
     networks:
       - cabal
 
+  limenal:
+    build:
+      context: ../limenal
+      dockerfile: Dockerfile
+      additional_contexts:
+        techne: ../techne
+    container_name: cabal-limenal
+    restart: unless-stopped
+    environment:
+      LIMENAL_CABAL_TOKEN: ${LIMENAL_CABAL_TOKEN:?LIMENAL_CABAL_TOKEN must be set — run `cbl token mint-service --scope secrets-fetch`}
+    command:
+      - limenal
+      - serve
+      - --host=0.0.0.0
+      - --port=9100
+      - --jwks-url=http://cabal-core:7400/.well-known/jwks.json
+      - --cabal-url=http://cabal-core:7400
+    ports:
+      - "127.0.0.1:9100:9100"
+    depends_on:
+      cabal-core:
+        condition: service_healthy
+    networks:
+      - cabal
+
   # LiteLLM proxy — routes Cabal's LLM calls to provider APIs.
   litellm:
     image: ghcr.io/berriai/litellm:main-stable

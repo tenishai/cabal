@@ -1,0 +1,19 @@
+# identity.dev.toml — minimal identity for the docker-compose.dev.yml stack.
+# Mounted read-only into the cabal container at /app/identity.toml.
+#
+# No LiteLLM URL — the dev stack has no proxy. Dispatch to persona LLM
+# endpoints won't work, but the MCP layer (limenal tools) works fine.
+
+[limenal]
+url = "http://limenal:9100"
+# limenal validates tokens against cabal's JWKS; cabal mints tokens for
+# persona dispatch. No extra config needed for the basic flow.
+
+[personas.demo]
+role   = "singleton"
+safety_tier = "moderate"
+
+[personas.demo.mcp]
+enabled          = true
+allowed_handlers = ["scratchpad", "notify", "web"]
+# Add more handlers as needed. Empty list would lock the persona out.
