@@ -31,6 +31,12 @@ from cabal.core.models import Agent, Conversation, Event
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+# Audience constants — must match what bootstrap / mint-service produce.
+# Operator tokens: aud="cabal-core" (minted in routes/auth.py bootstrap).
+# Limenal service tokens: aud="limenal" (minted by `cbl token mint-service`).
+_AUD_OPERATOR = "cabal-core"
+_AUD_LIMENAL = "limenal"
+
 
 def _extract_bearer(authorization: str | None) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -45,7 +51,7 @@ def _require_operator_claims(
         claims = verify(
             raw_token,
             key_set=request.app.state.jwks_provider(),
-            expected_audience=None,
+            expected_audience=_AUD_OPERATOR,
         )
     except JWTError as exc:
         raise HTTPException(401, detail=str(exc)) from exc
@@ -607,15 +613,26 @@ def _require_secrets_fetch(
     request: Request, raw_token: str
 ) -> dict[str, Any]:
     """Like _require_operator_claims, but also accepts tokens whose scope
-    contains 'secrets-fetch' (the dedicated limenal service scope)."""
+    contains 'secrets-fetch' (the dedicated limenal service scope).
+
+    Accepted audiences:
+      - "cabal-core" — operator token (full operator access)
+      - "limenal"    — limenal service token (secrets-fetch scope only)
+    A token minted for any other audience is rejected regardless of scope.
+    """
     try:
         claims = verify(
             raw_token,
             key_set=request.app.state.jwks_provider(),
-            expected_audience=None,
+            expected_audience=None,  # we check manually below (two valid audiences)
         )
     except JWTError as exc:
         raise HTTPException(401, detail=str(exc)) from exc
+
+    aud = claims.get("aud")
+    if aud not in {_AUD_OPERATOR, _AUD_LIMENAL}:
+        raise HTTPException(401, detail="invalid_audience")
+
     scope = claims.get("cabal_scope") or []
     if "operator" not in scope and "secrets-fetch" not in scope:
         raise HTTPException(

@@ -4,6 +4,9 @@
 # No LiteLLM URL — the dev stack has no proxy. Dispatch to persona LLM
 # endpoints won't work, but the MCP layer (limenal tools) works fine.
 
+[cabal]
+operator_id = "dev"
+
 [limenal]
 url = "http://limenal:9100"
 # limenal validates tokens against cabal's JWKS; cabal mints tokens for

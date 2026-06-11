@@ -22,6 +22,8 @@ def _isolate_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("CABAL_MASTER_KEY", Fernet.generate_key().decode())
     db_file = tmp_path / "data" / "cabal.db"
     monkeypatch.setenv("CABAL_DB_URL", f"sqlite:///{db_file}")
+    # Tests start without identity.toml; provide operator_id so bootstrap works.
+    monkeypatch.setenv("CABAL_OPERATOR_ID", "test-operator")
 
 
 @pytest_asyncio.fixture

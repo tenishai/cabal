@@ -112,7 +112,7 @@ async def test_rotate_requires_operator_scope(
     persona_token = mint(
         signing_key=stored,
         sub="persona:archivist",
-        aud="archivist",
+        aud="cabal-core",
         scope=["dispatch"],
     )
     r = await client.post(

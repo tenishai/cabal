@@ -11,6 +11,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+import os
+
 from cabal.core.auth.bootstrap_codes import BootstrapCodeError, consume
 from cabal.core.auth.jwt import mint
 from cabal.core.auth.keys import load_active_signing_key
@@ -50,7 +52,20 @@ async def bootstrap(req: BootstrapRequest, request: Request) -> BootstrapRespons
             )
 
     if persona_name is None:
-        sub = "operator:dimartin"
+        identity = getattr(request.app.state, "identity", None)
+        operator_id = (
+            (identity.cabal.operator_id if identity is not None else None)
+            or os.environ.get("CABAL_OPERATOR_ID")
+        )
+        if not operator_id:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "operator_id not configured; "
+                    "set cabal.operator_id in identity.toml or CABAL_OPERATOR_ID env var"
+                ),
+            )
+        sub = f"operator:{operator_id}"
         aud = "cabal-core"
         scope = ["operator"]
     else:

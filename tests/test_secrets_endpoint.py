@@ -144,7 +144,7 @@ async def test_secrets_requires_auth_scope(
     persona_token = mint(
         signing_key=stored,
         sub="persona:archivist",
-        aud="archivist",
+        aud="cabal-core",
         scope=["dispatch"],
     )
     r = await client.get(
@@ -174,7 +174,7 @@ async def test_secrets_accepts_secrets_fetch_scope(
     service_token = mint(
         signing_key=stored,
         sub="service:limenal",
-        aud="cabal-core",
+        aud="limenal",
         scope=["secrets-fetch"],
     )
     r = await client.get(
