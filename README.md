@@ -40,7 +40,25 @@ cbl daemon up
 # then dispatch a task to the built-in echo agent.
 cbl login --code <CODE>
 cbl dispatch echo "hello cabal"
+cbl status                       # see registered agents
 ```
+
+## Quickstart (docker compose)
+
+```bash
+cp .env.example .env             # fill in CABAL_MASTER_KEY, LITELLM_MASTER_KEY, ANTHROPIC_API_KEY
+cp identity.toml.example identity.toml
+docker compose build
+docker compose up
+docker compose logs cabal-core | grep bootstrap_code   # grab the code
+cbl login --code <CODE>          # from host (port 7400 published to 127.0.0.1)
+cbl dispatch archivist "what do you remember?"
+```
+
+The compose stack includes a LiteLLM proxy (model list in
+`compose/litellm-config.yaml`) and a Litestream sidecar (config in
+`compose/litestream.yml`) replicating the SQLite DB to a local volume by
+default.
 
 Run the test suite with `pytest -q`.
 

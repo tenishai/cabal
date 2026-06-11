@@ -1,0 +1,16 @@
+# Litestream replication config.
+#
+# Default replica: a local volume (litestream-replica) so the compose
+# stack works standalone. Production: swap the `file://` replica for
+# `s3://` / `gcs://` / `sftp://` etc. and add credentials via env.
+#
+# Snapshot interval: every hour; WAL checkpoints continuously.
+
+dbs:
+  - path: /data/cabal.db
+    replicas:
+      - type: file
+        path: /replica/cabal.db
+        snapshot-interval: 1h
+        retention: 168h
+        sync-interval: 1s

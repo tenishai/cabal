@@ -1,0 +1,76 @@
+# docker-compose.yml — Cabal Core stack
+#
+# Required env (in .env next to this file):
+#   CABAL_MASTER_KEY      — 32-byte url-safe base64; generate once with
+#                           `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+#   LITELLM_MASTER_KEY    — your LiteLLM proxy master key
+#   ANTHROPIC_API_KEY     — provider key the LiteLLM proxy uses to reach Anthropic
+#   LANGFUSE_PUBLIC_KEY   — optional, only if you uncomment the langfuse block
+#   LANGFUSE_SECRET_KEY   — optional
+#
+# Quickstart:
+#   docker compose build
+#   docker compose up
+#   docker compose logs cabal-core | grep bootstrap_code   # grab the code
+#   cbl login --code <CODE>                                # from host
+
+services:
+  cabal-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cabal-core
+    restart: unless-stopped
+    environment:
+      CABAL_MASTER_KEY: ${CABAL_MASTER_KEY:?CABAL_MASTER_KEY must be set in .env}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+    ports:
+      - "127.0.0.1:7400:7400"
+    volumes:
+      - cabal-data:/data
+      - ./identity.toml:/app/identity.toml:ro
+    depends_on:
+      - litellm
+    networks:
+      - cabal
+
+  # LiteLLM proxy — routes Cabal's LLM calls to provider APIs.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: cabal-litellm
+    restart: unless-stopped
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY must be set in .env}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    command: ["--config", "/etc/litellm/config.yaml", "--port", "4000"]
+    volumes:
+      - ./compose/litellm-config.yaml:/etc/litellm/config.yaml:ro
+    networks:
+      - cabal
+
+  # Litestream sidecar — replicates /data/cabal.db continuously.
+  # Edit compose/litestream.yml to point at S3 / GCS / Azure / SFTP.
+  litestream:
+    image: litestream/litestream:0.3.13
+    container_name: cabal-litestream
+    restart: unless-stopped
+    command: ["replicate", "-config", "/etc/litestream.yml"]
+    volumes:
+      - cabal-data:/data
+      - litestream-replica:/replica
+      - ./compose/litestream.yml:/etc/litestream.yml:ro
+    depends_on:
+      - cabal-core
+    networks:
+      - cabal
+
+volumes:
+  cabal-data:
+  litestream-replica:
+
+networks:
+  cabal:
+    driver: bridge

@@ -80,6 +80,45 @@ Linked feedback memory: `feedback-decision-authority`.
 - **Reasoning**: standard for the FastAPI ecosystem; matches techne's choice.
 - **Lands in**: `pyproject.toml [project.optional-dependencies] dev`.
 
+### D-012: techne deliberately omitted from container image (for now)
+
+- **Question**: techne 0.6.0 is needed by Cabal for persona session checkpointing,
+  but it's not on PyPI. Should the Dockerfile pin a local path, vendor source, or skip?
+- **Choice**: Skip — Dockerfile does not install techne.
+- **Reasoning**: A local path means a host-bound bind mount that breaks across
+  machines. Vendoring techne source into the image couples release cadences and
+  forces a Cabal rebuild on every techne change. The Cabal Core paths that need
+  techne (LLMPersona checkpoint/resume) aren't yet exercised by any built-in
+  persona — Archivist/Architect/Librarian are stateless this phase. We'll pin
+  `techne>=0.6.0` in pyproject AND uncomment from the Dockerfile the day techne
+  publishes to PyPI (or our private index).
+- **Lands in**: Dockerfile (no techne line), pyproject.toml (still no `techne`
+  entry — added back when published).
+
+### D-013: container CMD via cbl, not uvicorn directly
+
+- **Question**: Does the container CMD invoke `uvicorn cabal.core.app:create_app`
+  or `cbl daemon up`?
+- **Choice**: `cbl daemon up`
+- **Reasoning**: `cbl daemon up` already wraps uvicorn + the right defaults
+  (host 0.0.0.0, port from --port, --config). Going through it means the
+  container behaves identically to the local dev daemon — same logs, same
+  startup sequence, same `--agent` semantics for scale mode. If we ever
+  change daemon-bring-up behavior, the container picks it up for free.
+- **Lands in**: Dockerfile CMD.
+
+### D-014: trace export defaults to async, never blocks dispatch
+
+- **Question**: Should the TraceExporter handlers run sync (blocking the
+  request) or async (fire-and-forget)?
+- **Choice**: async by default; sync available for tests.
+- **Reasoning**: Observability is a "nice to have" relative to a working
+  dispatch. A failing Langfuse endpoint should not delay a Task. Async means
+  the handler runs in a fire-and-forget task whose exceptions are logged but
+  never propagate. Tests pass mode="sync" for deterministic assertion of
+  recorded events.
+- **Lands in**: `core/observability/trace_exporter.py::TraceExporter.mode`.
+
 ### D-009: events.id Integer (not BigInteger) for SQLite autoincrement
 
 - **Question**: SQLite only autoincrements `INTEGER PRIMARY KEY`, not
