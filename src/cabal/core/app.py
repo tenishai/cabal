@@ -239,6 +239,22 @@ def create_app(
                 budget=budget_guard,
             )
             _app.state.litellm_client = litellm_client
+
+            # If [limenal] is configured, build a shared httpx.AsyncClient
+            # for outbound MCP calls and pre-fetch the active signing key
+            # so persona_factory can mint per-persona JWTs.
+            mcp_http_client: httpx.AsyncClient | None = None
+            stored_signing_key = None
+            if identity.limenal.url:
+                mcp_http_client = httpx.AsyncClient(timeout=httpx.Timeout(60.0))
+                _app.state.mcp_http_client = mcp_http_client
+                async with open_session(sessionmaker) as session:
+                    stored_signing_key = await load_active_signing_key(
+                        session, master_key=master_key
+                    )
+                _app.state.mcp_signing_key = stored_signing_key
+                log.info("limenal.wired", url=identity.limenal.url)
+
             from cabal.core.persona_factory import register_personas_from_identity
 
             registered = register_personas_from_identity(
@@ -248,6 +264,8 @@ def create_app(
                 memory_store=memory_store,
                 session_tracker=session_tracker,
                 hook_registry=hook_registry,
+                mcp_http_client=mcp_http_client,
+                signing_key=stored_signing_key,
             )
             registered_persona_names.extend(registered)
 
@@ -275,6 +293,9 @@ def create_app(
         finally:
             await heartbeat.stop()
             await http_client.aclose()
+            mcp_client = getattr(_app.state, "mcp_http_client", None)
+            if mcp_client is not None:
+                await mcp_client.aclose()
             await engine.dispose()
             log.info("cabal.shutdown")
 

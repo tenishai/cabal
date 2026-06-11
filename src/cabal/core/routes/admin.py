@@ -374,7 +374,9 @@ async def reload_identity(
             "warning": "no litellm client; persona handlers were not rebuilt",
         }
 
-    # 3. Rebuild + re-register persona handlers.
+    # 3. Rebuild + re-register persona handlers. Re-use the existing MCP
+    # http client and signing key — reload should NOT toss the breaker
+    # the persona was talking through.
     state.identity = identity
     registered = register_personas_from_identity(
         dispatch_router=state.dispatch_router,
@@ -383,6 +385,8 @@ async def reload_identity(
         memory_store=getattr(state, "memory_store", None) or _make_default_memory_store(),
         session_tracker=getattr(state, "session_tracker", None) or _make_default_session_tracker(),
         hook_registry=state.hook_registry,
+        mcp_http_client=getattr(state, "mcp_http_client", None),
+        signing_key=getattr(state, "mcp_signing_key", None),
     )
     return {"reloaded": True, "registered": registered}
 

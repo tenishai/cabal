@@ -56,8 +56,9 @@ for the per-decision rationale log.
 | X (32) | persona overrides | +5 | `system_prompt_override`, `model_override`, `max_tokens_override`, `commit_to_memory` per persona in identity.toml — operator tunes behavior without editing Python |
 | Y (33) | identity hot reload | +5 | `POST /admin/reload/identity` + `cbl reload identity`; rebuilds persona handlers without restarting; LiteLLMClient (breaker + budget state) preserved |
 | Z (34) | limenal integration | +6 | `cabal.core.tools.MCPToolProxy` + persona tool-use loop; end-to-end Cabal persona → limenal MCP gateway → handler with real JWT auth |
+| AA (35) | identity-driven MCP | +4 | `[limenal]` block + per-persona `[personas.X.mcp].enabled` auto-wires tool_proxy at lifespan; hot-reload preserves shared httpx + signing key |
 
-**Total: 243 tests, 41 commits.**
+**Total: 247 tests, 42 commits.**
 
 ## What the morning operator can demo
 

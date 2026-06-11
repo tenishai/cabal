@@ -13,12 +13,14 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import structlog
 
 from cabal.agents.personas import PERSONA_REGISTRY
 from cabal.agents.personas.rook import RookPrimusPersona
 from cabal.agents.subordinate import Subordinate
 from cabal.config.identity import IdentityConfig
+from cabal.core.auth.keys import StoredKey
 from cabal.core.broker.router import DispatchRouter
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
@@ -36,6 +38,8 @@ def register_personas_from_identity(
     memory_store: MemoryStore,
     session_tracker: SessionTracker,
     hook_registry: HookRegistry,
+    mcp_http_client: httpx.AsyncClient | None = None,
+    signing_key: StoredKey | None = None,
 ) -> list[str]:
     """Build + register LocalHandlers for every persona in PERSONA_REGISTRY
     that's also declared in identity.toml. Returns the list of registered
@@ -101,6 +105,54 @@ def register_personas_from_identity(
             else persona_name
         )
         handler.name = agent_name
+
+        # MCP tool surface: wire iff [limenal].url is set AND this persona
+        # opted in via [personas.NAME.mcp].enabled. Without both, the
+        # handler keeps tool_proxy=None and the tool-use loop is skipped.
+        if (
+            identity.limenal.url
+            and persona_cfg.mcp.enabled
+            and signing_key is not None
+            and mcp_http_client is not None
+        ):
+            from cabal.core.auth.jwt import mint as _mint_jwt
+            from cabal.core.tools.mcp_proxy import build_proxy
+
+            _agent = agent_name  # capture for the closure
+            _persona = persona_name
+
+            def _token_provider(
+                _key=signing_key,
+                _ag=_agent,
+                _per=_persona,
+                _ttl=identity.limenal.token_ttl_seconds,
+                _aud=identity.limenal.jwt_aud,
+            ) -> str:
+                return _mint_jwt(
+                    signing_key=_key,
+                    sub=_ag,
+                    aud=_aud,
+                    persona=_per,
+                    scope=["dispatch"],
+                    ttl_seconds=_ttl,
+                )
+
+            proxy = build_proxy(
+                base_url=identity.limenal.url,
+                persona=persona_name,
+                agent_name=agent_name,
+                token_provider=_token_provider,
+                http_client=mcp_http_client,
+            )
+            handler.tool_proxy = proxy
+            if persona_cfg.mcp.max_steps is not None:
+                handler.tool_use_max_steps = persona_cfg.mcp.max_steps
+            log.info(
+                "personas.mcp_wired",
+                persona=persona_name,
+                limenal_url=identity.limenal.url,
+            )
+
         dispatch_router.register_local(handler)
         registered.append(agent_name)
         log.info(

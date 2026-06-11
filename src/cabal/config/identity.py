@@ -34,6 +34,7 @@ KNOWN_TOP_LEVEL = {
     "secrets",
     "langfuse",
     "techne",
+    "limenal",
 }
 
 
@@ -52,6 +53,19 @@ class SubordinateConfig(_Open):
     max_tokens: int = 8192
 
 
+class PersonaMCPConfig(_Open):
+    """Per-persona MCP tool surface settings.
+
+    Even if `[limenal]` is configured at the top level, a persona only
+    gets a tool_proxy when its `mcp.enabled = true`. This keeps
+    operators in control — Architect-the-thinker probably doesn't want
+    tools, Rook-the-engineer probably does.
+    """
+
+    enabled: bool = False
+    max_steps: int | None = None  # overrides LLMPersona.tool_use_max_steps
+
+
 class PersonaConfig(_Open):
     description: str | None = None
     role: str  # "primus" | "singleton"
@@ -62,6 +76,7 @@ class PersonaConfig(_Open):
     model_override: str | None = None
     max_tokens_override: int | None = None
     commit_to_memory: bool | None = None
+    mcp: PersonaMCPConfig = Field(default_factory=PersonaMCPConfig)
 
 
 class LiteLLMConfig(_Open):
@@ -80,12 +95,21 @@ class TechneConfig(_Open):
     use_vectors: bool = False
 
 
+class LimenalConfig(_Open):
+    """Cabal's connection settings for a limenal MCP gateway."""
+
+    url: str | None = None              # e.g. http://limenal:9100
+    token_ttl_seconds: int = 60 * 60    # JWT TTL for per-request mints
+    jwt_aud: str = "limenal"
+
+
 class IdentityConfig(_Open):
     cabal: CabalConfig = Field(default_factory=CabalConfig)
     personas: dict[str, PersonaConfig] = Field(default_factory=dict)
     litellm: LiteLLMConfig = Field(default_factory=LiteLLMConfig)
     langfuse: LangfuseConfig = Field(default_factory=LangfuseConfig)
     techne: TechneConfig = Field(default_factory=TechneConfig)
+    limenal: LimenalConfig = Field(default_factory=LimenalConfig)
     hooks: dict[str, Any] = Field(default_factory=dict)
 
 

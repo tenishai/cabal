@@ -34,6 +34,17 @@ host = "https://cloud.langfuse.com"
 public_key_env = "LANGFUSE_PUBLIC_KEY"
 secret_key_env = "LANGFUSE_SECRET_KEY"
 
+# ----- MCP gateway (limenal, optional) -----
+# When url is set AND a persona has [personas.NAME.mcp].enabled=true,
+# that persona's handler arrives with an MCPToolProxy wired to limenal.
+# Cabal mints a per-request JWT signed with its active signing key;
+# limenal verifies against /.well-known/jwks.json on cabal-core.
+
+[limenal]
+url = "http://limenal:9100"
+token_ttl_seconds = 3600
+jwt_aud = "limenal"
+
 # ----- Singletons (built-in personas) -----
 # Each persona declared here gets a bulletin-board row at daemon startup.
 # Personas named in PERSONA_REGISTRY (archivist, architect, librarian)
@@ -44,6 +55,15 @@ secret_key_env = "LANGFUSE_SECRET_KEY"
 description = "Memory and search"
 role = "singleton"
 safety_tier = "moderate"
+
+# Archivist opts into limenal's tool surface (memory lookups, web fetch,
+# files, etc. — whatever limenal's registry serves). With [limenal]
+# configured above AND this enabled flag, the archivist handler is wired
+# with a MCPToolProxy at startup; subsequent LLM calls get tools=... and
+# the persona can issue tool_calls that route through limenal.
+[personas.archivist.mcp]
+enabled = true
+# max_steps = 4  # uncomment to override LLMPersona's default tool-use cap
 
 [personas.architect]
 description = "Patterns and design"
