@@ -27,9 +27,22 @@ tests/            pytest suite (router tests run in both modes)
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-alembic upgrade head
+pip install -e ../infra-techne   # techne 0.6.0 (until on PyPI)
+cp identity.toml.example identity.toml
+
+# Generate a master key once
+export CABAL_MASTER_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+
+# Terminal 1: start the daemon
 cbl daemon up
+
+# Terminal 2: log in with the bootstrap code printed in the daemon log,
+# then dispatch a task to the built-in echo agent.
+cbl login --code <CODE>
+cbl dispatch echo "hello cabal"
 ```
+
+Run the test suite with `pytest -q`.
 
 ## Modes
 

@@ -1,0 +1,42 @@
+# identity.toml — Cabal Core configuration
+#
+# Copy to identity.toml and adjust. Loaded by `cbl daemon up`.
+
+[cabal]
+host = "127.0.0.1"
+port = 7400
+data_dir = "data"
+
+# ----- LiteLLM proxy (used by personas to reach LLM providers) -----
+# Phase 2 wiring; declared here so identity.toml parses today.
+
+[litellm]
+api_base = "http://litellm:4000"
+api_key_env = "LITELLM_MASTER_KEY"
+
+# ----- Personas -----
+# Phase 2 wires these into the bulletin board. Phase 1 only registers the
+# built-in `echo` agent, so anything here is informational until then.
+
+[personas.rook]
+description = "Engineering primus"
+role = "primus"
+safety_tier = "strict"
+
+[personas.rook.subordinates.implementer]
+model = "anthropic/claude-sonnet-4-6"
+max_tokens = 16384
+
+[personas.rook.subordinates.reviewer]
+model = "anthropic/claude-opus-4-7"
+max_tokens = 8192
+
+[personas.archivist]
+description = "Memory and search"
+role = "singleton"
+safety_tier = "moderate"
+
+[personas.librarian]
+description = "Documentation lookup"
+role = "singleton"
+safety_tier = "moderate"

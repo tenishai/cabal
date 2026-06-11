@@ -43,23 +43,8 @@ async def test_operator_can_dispatch_echo_task_end_to_end(
     token = resp.json()["access_token"]
     assert token
 
-    # Operator JWT has aud=cabal-core, but dispatching to a target uses the
-    # target's aud. For Phase 1 we mint a SECOND short-lived token aimed at
-    # echo; we'll wire the auth route to do this for the operator in Phase 2.
-    # For now: hit the dispatch with an operator-scoped token aimed at echo.
-    from cabal.core.auth.jwt import mint
-    from cabal.core.auth.keys import load_active_signing_key
-    from cabal.core.db import open_session
-
-    async with open_session(app.state.sessionmaker) as session:
-        stored = await load_active_signing_key(
-            session, master_key=app.state.master_key
-        )
-    assert stored is not None
-    op_dispatch_token = mint(
-        signing_key=stored, sub="operator:dimartin", aud="echo", scope=["operator"]
-    )
-
+    # Operator token (aud=cabal-core, scope=["operator"]) — the /a2a/tasks
+    # endpoint should transparently mint a per-target dispatch JWT.
     body = {
         "target": "echo",
         "task": {
@@ -76,7 +61,7 @@ async def test_operator_can_dispatch_echo_task_end_to_end(
     resp = await client.post(
         "/a2a/tasks",
         json=body,
-        headers={"Authorization": f"Bearer {op_dispatch_token}"},
+        headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -116,6 +101,45 @@ async def test_bootstrap_double_use_rejected(app: FastAPI, client: AsyncClient) 
 async def test_tasks_endpoint_requires_bearer(client: AsyncClient) -> None:
     resp = await client.post("/a2a/tasks", json={"target": "echo", "task": {}})
     assert resp.status_code in (401, 422)  # missing auth or missing fields
+
+
+@pytest.mark.asyncio
+async def test_non_operator_token_aimed_at_wrong_target_rejected(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """A dispatch-scoped token aimed at archivist can't dispatch to echo."""
+    from cabal.core.auth.jwt import mint
+    from cabal.core.auth.keys import load_active_signing_key
+    from cabal.core.db import open_session
+
+    async with open_session(app.state.sessionmaker) as session:
+        stored = await load_active_signing_key(
+            session, master_key=app.state.master_key
+        )
+    assert stored is not None
+    misaimed = mint(
+        signing_key=stored,
+        sub="persona:archivist",
+        aud="archivist",
+        scope=["dispatch"],
+    )
+    body = {
+        "target": "echo",
+        "task": {
+            "id": "t-bad",
+            "status": {
+                "state": "submitted",
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "x"}],
+                },
+            },
+        },
+    }
+    resp = await client.post(
+        "/a2a/tasks", json=body, headers={"Authorization": f"Bearer {misaimed}"}
+    )
+    assert resp.status_code == 403
 
 
 @pytest.mark.asyncio
