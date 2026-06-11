@@ -30,6 +30,8 @@ from sqlalchemy import select
 from cabal import __version__
 from cabal.agents.echo import EchoAgent
 from cabal.agents.personas import PERSONA_REGISTRY
+from cabal.agents.personas.rook import RookPrimusPersona
+from cabal.agents.subordinate import Subordinate
 from cabal.config.identity import IdentityConfig, load_identity
 from cabal.core.auth.bootstrap import ensure_signing_key
 from cabal.core.auth.bootstrap_codes import issue_operator_code
@@ -231,6 +233,27 @@ def create_app(
                 # later by accepting memory_store in their __init__.
                 if persona_name == "archivist":
                     handler = factory(litellm_client, memory_store=memory_store)
+                elif persona_name == "rook":
+                    # Build subordinates from identity.toml.subordinates
+                    sub_instances: dict[str, Subordinate] = {}
+                    for role, sub_cfg in persona_cfg.subordinates.items():
+                        sub_instances[role] = Subordinate(
+                            role=role,
+                            llm_client=litellm_client,
+                            model=sub_cfg.model,
+                            max_tokens=sub_cfg.max_tokens,
+                        )
+                    if "implementer" not in sub_instances:
+                        log.warning(
+                            "personas.rook_missing_implementer",
+                            msg="rook requires personas.rook.subordinates.implementer; skipping handler",
+                        )
+                        continue
+                    handler = RookPrimusPersona(
+                        litellm_client,
+                        subordinates=sub_instances,
+                        hook_registry=hook_registry,
+                    )
                 else:
                     handler = factory(litellm_client)
                 # Singletons keep their persona name; primus personas get

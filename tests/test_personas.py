@@ -34,8 +34,13 @@ def _stub_client(reply: str = "ok") -> LiteLLMClient:
     return LiteLLMClient(acompletion_fn=fn, hook_registry=HookRegistry())
 
 
-def test_registry_contains_three_singletons() -> None:
-    assert set(PERSONA_REGISTRY.keys()) == {"archivist", "architect", "librarian"}
+def test_registry_contains_all_known_personas() -> None:
+    assert set(PERSONA_REGISTRY.keys()) == {
+        "archivist",
+        "architect",
+        "librarian",
+        "rook",
+    }
 
 
 @pytest.mark.asyncio
