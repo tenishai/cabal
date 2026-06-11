@@ -314,7 +314,7 @@ async def _stream_task_events(
 
 
 def _sse_event(event_name: str, payload: dict[str, Any]) -> bytes:
-    return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n".encode("utf-8")
+    return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n".encode()
 
 
 async def _sse_error_only(code: int, message: str) -> AsyncIterator[bytes]:

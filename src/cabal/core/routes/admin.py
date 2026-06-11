@@ -10,21 +10,19 @@ the operator can spot stuck handlers.
 
 from __future__ import annotations
 
-from typing import Any
-
-from fastapi import APIRouter, Header, HTTPException, Request
-
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import desc, select
 
 from cabal.core.a2a.card import sign_card
-from cabal.core.a2a.types import AgentCard, AgentCapabilities, Skill
+from cabal.core.a2a.types import AgentCapabilities, AgentCard, Skill
 from cabal.core.auth.jwt import JWTError, verify
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.bulletin import store as bulletin_store
@@ -145,7 +143,7 @@ async def primus_rotate(
 
         # 3. Mark current draining + insert new active
         current.status = "draining"
-        current.drain_started_at = datetime.now(timezone.utc)
+        current.drain_started_at = datetime.now(UTC)
         await bulletin_store.register_agent(
             session,
             name=agent_name,
@@ -309,7 +307,7 @@ async def events_stream(
 
 
 def _sse(event_name: str, payload: dict[str, Any]) -> bytes:
-    return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n".encode("utf-8")
+    return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n".encode()
 
 
 # ---- identity hot reload (Phase Y) -----------------------------------
@@ -334,8 +332,8 @@ async def reload_identity(
     place.
     """
     from cabal.config.identity import load_identity
-    from cabal.core.identity_sync import sync_personas
     from cabal.core.auth.keys import load_active_signing_key
+    from cabal.core.identity_sync import sync_personas
     from cabal.core.persona_factory import register_personas_from_identity
 
     _require_operator_claims(request, _extract_bearer(authorization))
@@ -527,7 +525,7 @@ async def mint_service_token(
     revocation list. Operator restarts the daemon with a new signing key
     to invalidate everything signed under the old `kid`.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     _require_operator_claims(request, _extract_bearer(authorization))
 
@@ -557,7 +555,7 @@ async def mint_service_token(
         ttl_seconds=ttl,
     )
     expires_at = (
-        datetime.now(timezone.utc) + timedelta(seconds=ttl)
+        datetime.now(UTC) + timedelta(seconds=ttl)
     ).isoformat()
     return {
         "access_token": token,

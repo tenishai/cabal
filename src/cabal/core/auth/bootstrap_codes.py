@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import secrets
 import string
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,7 +26,7 @@ DEFAULT_TTL_MINUTES = 5
 
 
 def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _generate_code() -> str:
@@ -80,7 +80,7 @@ async def consume(session: AsyncSession, code: str) -> str | None:
         raise BootstrapCodeError("code already used")
     expires_at = row.expires_at
     if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
+        expires_at = expires_at.replace(tzinfo=UTC)
     if expires_at < _now_utc():
         raise BootstrapCodeError("code expired")
     await session.execute(

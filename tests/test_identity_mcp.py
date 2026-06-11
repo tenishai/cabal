@@ -16,12 +16,10 @@ from textwrap import dedent
 import httpx
 import pytest
 import pytest_asyncio
-from cryptography.hazmat.primitives import serialization
 from httpx import ASGITransport, AsyncClient
-from joserfc.jwk import KeySet, RSAKey
+from joserfc.jwk import KeySet
 
 from cabal.core.app import create_app
-from cabal.core.auth.keys import StoredKey, generate_rsa_keypair
 
 
 def _write_identity(tmp_path: Path, body: str) -> Path:
@@ -37,7 +35,8 @@ async def limenal_app():
     from limenal.handlers.scratchpad import ScratchpadHandler
     from limenal.registry import Registry
     from limenal.registry.discover import register_explicit
-    from limenal.server import StaticKeySetVerifier, create_app as create_limenal_app
+    from limenal.server import StaticKeySetVerifier
+    from limenal.server import create_app as create_limenal_app
 
     registry = Registry()
     register_explicit(registry, "scratchpad", ScratchpadHandler())

@@ -1,0 +1,68 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs when a new commit lands on the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.13']
+      fail-fast: false
+
+    steps:
+      - name: Checkout cabal
+        uses: actions/checkout@v4
+        with:
+          path: cabal
+
+      # techne is a sibling-checkout dep per D-008 — install editable so
+      # `import techne` works inside the cabal venv. Public-release plan:
+      # techne hits PyPI, then this whole sibling-clone block drops
+      # (STATUS.md "Pre-public-release checklist").
+      - name: Checkout techne
+        uses: actions/checkout@v4
+        with:
+          repository: dimartin/techne
+          token: ${{ secrets.GH_PAT_REPOS }}  # PAT with `repo` scope for private repos
+          path: techne
+
+      # limenal is also a sibling for the cabal↔limenal integration tests.
+      - name: Checkout limenal
+        uses: actions/checkout@v4
+        with:
+          repository: dimartin/limenal
+          token: ${{ secrets.GH_PAT_REPOS }}
+          path: limenal
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: cabal/pyproject.toml
+
+      - name: Install dependencies
+        working-directory: cabal
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "../techne"
+          pip install -e "../limenal"
+          pip install -e ".[dev]"
+
+      - name: Ruff lint
+        working-directory: cabal
+        run: ruff check src tests
+
+      - name: Pytest
+        working-directory: cabal
+        run: pytest -q

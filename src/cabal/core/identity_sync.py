@@ -17,7 +17,7 @@ import structlog
 
 from cabal.config.identity import IdentityConfig, PersonaConfig
 from cabal.core.a2a.card import sign_card
-from cabal.core.a2a.types import AgentCard, AgentCapabilities, Skill
+from cabal.core.a2a.types import AgentCapabilities, AgentCard, Skill
 from cabal.core.auth.keys import StoredKey
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session

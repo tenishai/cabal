@@ -66,7 +66,7 @@ class HeartbeatScheduler:
                     await asyncio.wait_for(
                         self._stop.wait(), timeout=self._interval
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     await self._ping_once()
         except Exception as exc:  # noqa: BLE001
             log.error("heartbeat.scheduler_crashed", error=str(exc))

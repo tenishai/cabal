@@ -21,7 +21,6 @@ from joserfc.jwk import KeySet, RSAKey
 from cabal.core.a2a.types import AgentCard
 from cabal.core.auth.keys import StoredKey
 
-
 CACHE_TTL_SECONDS = 5 * 60
 
 

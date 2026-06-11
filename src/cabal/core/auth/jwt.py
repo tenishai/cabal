@@ -26,7 +26,6 @@ from joserfc.jwk import KeySet, RSAKey
 
 from cabal.core.auth.keys import StoredKey
 
-
 DEFAULT_TTL_SECONDS = 5 * 60
 DEFAULT_ISS = "cabal-core"
 

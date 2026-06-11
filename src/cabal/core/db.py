@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-
 DEFAULT_DB_URL = "sqlite+aiosqlite:///data/cabal.db"
 
 

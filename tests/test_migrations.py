@@ -8,7 +8,6 @@ if you change a model without generating a new revision, this fails.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from alembic import command

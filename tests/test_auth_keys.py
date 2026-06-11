@@ -18,7 +18,6 @@ from cabal.core.auth.keys import (
 )
 from cabal.core.auth.master_key import (
     MasterKeyError,
-    get_fernet,
     resolve_master_key,
 )
 from cabal.core.db import make_engine, make_sessionmaker
