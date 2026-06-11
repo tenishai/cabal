@@ -28,9 +28,11 @@ from sqlalchemy import select
 
 from cabal import __version__
 from cabal.agents.echo import EchoAgent
+from cabal.config.identity import IdentityConfig, load_identity
 from cabal.core.auth.bootstrap import ensure_signing_key
 from cabal.core.auth.bootstrap_codes import issue_operator_code
 from cabal.core.auth.jwks_provider import RefreshingJWKSProvider
+from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.auth.master_key import resolve_master_key
 from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.broker.router import DispatchRouter
@@ -38,6 +40,7 @@ from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import make_engine, make_sessionmaker, open_session
 from cabal.core.db_pragmas import install_sqlite_pragmas
 from cabal.core.hooks.registry import HookRegistry
+from cabal.core.identity_sync import sync_personas
 from cabal.core.models import Persona
 from cabal.core.routes import auth, healthz, tasks, well_known
 
@@ -116,6 +119,22 @@ def create_app(
         _app.state.jwks_provider = jwks_provider
 
         await _ensure_echo_agent(sessionmaker, active_kid=kid)
+
+        # Sync personas declared in identity.toml (if the file exists).
+        identity: IdentityConfig | None = None
+        config_path_obj = Path(config_path)
+        if config_path_obj.exists():
+            identity = load_identity(config_path_obj)
+            async with open_session(sessionmaker) as session:
+                stored = await load_active_signing_key(
+                    session, master_key=master_key
+                )
+            if stored is not None:
+                await sync_personas(sessionmaker, identity, stored)
+            _app.state.identity = identity
+        else:
+            log.info("identity.absent", path=str(config_path_obj))
+            _app.state.identity = None
 
         hook_registry = HookRegistry()
         _app.state.hook_registry = hook_registry
