@@ -495,3 +495,75 @@ def _require_secrets_fetch(
             detail="requires operator OR secrets-fetch scope",
         )
     return claims
+
+
+# ---- service token mint (Phase II) ------------------------------------
+
+
+class MintServiceRequest(BaseModel):
+    sub: str
+    scope: list[str]
+    aud: str
+    ttl_days: int
+
+    def ttl_seconds(self) -> int:
+        # Cap at 365 days to avoid silly-long lifetimes.
+        return max(1, min(self.ttl_days, 365)) * 24 * 60 * 60
+
+
+@router.post("/token/mint-service")
+async def mint_service_token(
+    req: MintServiceRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Operator-only: mint a long-lived JWT for a peer service.
+
+    The canonical use case is `cbl token mint-service --scope secrets-fetch`
+    which the operator copies into limenal's `LIMENAL_CABAL_TOKEN` env so
+    limenal can fetch credentials from `GET /admin/secrets/{persona}/{handler}`.
+
+    Service tokens are operator-rotated; we don't track them in a DB or
+    revocation list. Operator restarts the daemon with a new signing key
+    to invalidate everything signed under the old `kid`.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    _require_operator_claims(request, _extract_bearer(authorization))
+
+    if not req.sub or not req.scope or not req.aud:
+        raise HTTPException(
+            400, detail="sub, scope, and aud must all be non-empty"
+        )
+
+    async with open_session(request.app.state.sessionmaker) as session:
+        from cabal.core.auth.keys import load_active_signing_key
+
+        stored = await load_active_signing_key(
+            session, master_key=request.app.state.master_key
+        )
+    if stored is None:
+        raise HTTPException(500, detail="no active signing key")
+
+    from cabal.core.auth.jwt import mint as _mint
+
+    ttl = req.ttl_seconds()
+    token = _mint(
+        signing_key=stored,
+        sub=req.sub,
+        aud=req.aud,
+        persona=None,
+        scope=req.scope,
+        ttl_seconds=ttl,
+    )
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=ttl)
+    ).isoformat()
+    return {
+        "access_token": token,
+        "sub": req.sub,
+        "scope": req.scope,
+        "aud": req.aud,
+        "expires_at": expires_at,
+        "kid": stored.kid,
+    }

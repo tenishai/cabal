@@ -144,6 +144,24 @@ def tail_events(*, token: str):
                     data_lines.append(line.split(":", 1)[1].lstrip())
 
 
+def mint_service_token(
+    *,
+    token: str,
+    sub: str,
+    scope: list[str],
+    aud: str,
+    ttl_days: int,
+) -> dict[str, Any]:
+    with make_client() as c:
+        resp = c.post(
+            "/admin/token/mint-service",
+            json={"sub": sub, "scope": scope, "aud": aud, "ttl_days": ttl_days},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def stream_dispatch(
     *,
     token: str,
