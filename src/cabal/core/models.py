@@ -12,7 +12,6 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
-    BigInteger,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -144,7 +143,7 @@ class Event(Base):
 
     __tablename__ = "events"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_id: Mapped[str | None] = mapped_column(String)
     event_type: Mapped[str] = mapped_column(String, nullable=False)
     payload_json: Mapped[dict | None] = mapped_column(JSON)

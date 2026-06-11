@@ -29,7 +29,7 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('code')
     )
     op.create_table('events',
-    sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('task_id', sa.String(), nullable=True),
     sa.Column('event_type', sa.String(), nullable=False),
     sa.Column('payload_json', sa.JSON(), nullable=True),
