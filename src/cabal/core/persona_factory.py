@@ -120,11 +120,17 @@ def register_personas_from_identity(
 
             _agent = agent_name  # capture for the closure
             _persona = persona_name
+            _tool_extras = (
+                dict(persona_cfg.mcp.tool_extras)
+                if persona_cfg.mcp.tool_extras
+                else None
+            )
 
             def _token_provider(
                 _key=signing_key,
                 _ag=_agent,
                 _per=_persona,
+                _extras=_tool_extras,
                 _ttl=identity.limenal.token_ttl_seconds,
                 _aud=identity.limenal.jwt_aud,
             ) -> str:
@@ -134,6 +140,7 @@ def register_personas_from_identity(
                     aud=_aud,
                     persona=_per,
                     scope=["dispatch"],
+                    tool_extras=_extras,
                     ttl_seconds=_ttl,
                 )
 
