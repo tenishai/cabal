@@ -59,6 +59,17 @@ def list_agents(*, token: str) -> dict[str, Any]:
     return resp.json()
 
 
+def primus_rotate(*, token: str, persona: str, hard: bool = False) -> dict[str, Any]:
+    with make_client() as c:
+        resp = c.post(
+            "/admin/primus/rotate",
+            json={"persona": persona, "hard": hard},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def dispatch(
     *, token: str, target: str, message_text: str, task_id: str | None = None
 ) -> dict[str, Any]:

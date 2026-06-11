@@ -162,6 +162,44 @@ def status() -> None:
         )
 
 
+primus_app = typer.Typer(help="Primus (persona) lifecycle.")
+app.add_typer(primus_app, name="primus")
+
+
+@primus_app.command("rotate")
+def primus_rotate(
+    persona: str = typer.Argument(
+        ..., help="Persona name (e.g. 'rook') or full agent name ('rook-primus')."
+    ),
+    hard: bool = typer.Option(
+        False, "--hard", help="Phase L v2: cancel in-flight Tasks. Currently a stub."
+    ),
+) -> None:
+    """Rotate a primus generation. Old goes draining, new active gen is born."""
+    token = api.TokenStore().load()
+    if token is None:
+        typer.echo("no token; run `cbl login` first.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        body = api.primus_rotate(token=token, persona=persona, hard=hard)
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get("detail", exc.response.text)
+        except Exception:  # noqa: BLE001
+            detail = exc.response.text
+        typer.echo(f"rotate failed: {detail}", err=True)
+        raise typer.Exit(code=1) from exc
+    except httpx.RequestError as exc:
+        typer.echo(f"could not reach daemon at {api.base_url()}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"rotated {body['agent']}: gen {body['previous_generation']} → "
+        f"{body['new_generation']}"
+    )
+    if body.get("note"):
+        typer.echo(f"  note: {body['note']}")
+
+
 token_app = typer.Typer(help="Session token management.")
 app.add_typer(token_app, name="token")
 
