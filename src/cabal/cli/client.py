@@ -59,6 +59,16 @@ def list_agents(*, token: str) -> dict[str, Any]:
     return resp.json()
 
 
+def reload_identity(*, token: str) -> dict[str, Any]:
+    with make_client() as c:
+        resp = c.post(
+            "/admin/reload/identity",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def primus_rotate(*, token: str, persona: str, hard: bool = False) -> dict[str, Any]:
     with make_client() as c:
         resp = c.post(

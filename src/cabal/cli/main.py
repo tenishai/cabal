@@ -453,6 +453,27 @@ app.add_typer(reload_app, name="reload")
 
 @reload_app.command("identity")
 def reload_identity() -> None:
-    """Re-read identity.toml without restarting. (Phase 2)"""
-    typer.echo("cbl reload identity: not yet implemented (Phase 2)", err=True)
-    raise typer.Exit(code=2)
+    """Re-read identity.toml and rebuild persona handlers in place."""
+    token = api.TokenStore().load()
+    if token is None:
+        typer.echo("no token; run `cbl login` first.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        body = api.reload_identity(token=token)
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get("detail", exc.response.text)
+        except Exception:  # noqa: BLE001
+            detail = exc.response.text
+        typer.echo(f"reload failed: {detail}", err=True)
+        raise typer.Exit(code=1) from exc
+    except httpx.RequestError as exc:
+        typer.echo(f"could not reach daemon at {api.base_url()}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    registered = body.get("registered", [])
+    if registered:
+        typer.echo(f"reloaded. registered: {', '.join(registered)}")
+    else:
+        typer.echo("reloaded. (no LLM-backed personas registered)")
+    if body.get("warning"):
+        typer.echo(f"  warning: {body['warning']}")

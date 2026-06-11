@@ -152,6 +152,7 @@ def create_app(
         # Sync personas declared in identity.toml (if the file exists).
         identity: IdentityConfig | None = None
         config_path_obj = Path(config_path)
+        _app.state.identity_path = config_path_obj
         if config_path_obj.exists():
             identity = load_identity(config_path_obj)
             async with open_session(sessionmaker) as session:
@@ -238,80 +239,17 @@ def create_app(
                 budget=budget_guard,
             )
             _app.state.litellm_client = litellm_client
-            for persona_name, persona_cfg in identity.personas.items():
-                factory = PERSONA_REGISTRY.get(persona_name)
-                if factory is None:
-                    log.info(
-                        "personas.no_handler_registered",
-                        persona=persona_name,
-                        msg="declared in identity.toml but not in PERSONA_REGISTRY",
-                    )
-                    continue
-                # Every persona gets the shared memory_store +
-                # session_tracker. Both default to no-op when [techne] isn't
-                # configured, so behavior is identical for non-techne deploys.
-                if persona_name == "rook":
-                    sub_instances: dict[str, Subordinate] = {}
-                    for role, sub_cfg in persona_cfg.subordinates.items():
-                        sub_instances[role] = Subordinate(
-                            role=role,
-                            llm_client=litellm_client,
-                            model=sub_cfg.model,
-                            max_tokens=sub_cfg.max_tokens,
-                            memory_store=memory_store,
-                            session_tracker=session_tracker,
-                        )
-                    if "implementer" not in sub_instances:
-                        log.warning(
-                            "personas.rook_missing_implementer",
-                            msg="rook requires personas.rook.subordinates.implementer; skipping handler",
-                        )
-                        continue
-                    handler = RookPrimusPersona(
-                        litellm_client,
-                        subordinates=sub_instances,
-                        hook_registry=hook_registry,
-                        model=persona_cfg.model_override,
-                        max_tokens=persona_cfg.max_tokens_override or 8192,
-                    )
-                    handler.memory_store = memory_store
-                    handler.session_tracker = session_tracker
-                else:
-                    handler = factory(
-                        litellm_client,
-                        memory_store=memory_store,
-                        session_tracker=session_tracker,
-                        model=persona_cfg.model_override,
-                        max_tokens=persona_cfg.max_tokens_override or 8192,
-                    )
+            from cabal.core.persona_factory import register_personas_from_identity
 
-                # Operator-tunable persona overrides — applied uniformly.
-                if persona_cfg.system_prompt_override:
-                    handler.system_prompt = persona_cfg.system_prompt_override
-                    log.info(
-                        "personas.system_prompt_overridden",
-                        persona=persona_name,
-                    )
-                if persona_cfg.commit_to_memory is not None:
-                    handler.commit_to_memory = persona_cfg.commit_to_memory
-                # Singletons keep their persona name; primus personas get
-                # the -primus suffix to match identity_sync's naming.
-                agent_name = (
-                    f"{persona_name}-primus"
-                    if persona_cfg.role == "primus"
-                    else persona_name
-                )
-                # The handler may have its own opinion of name; force it
-                # to match the agent name on the bulletin board.
-                handler.name = agent_name
-                dispatch_router.register_local(handler)
-                registered_persona_names.append(agent_name)
-                log.info(
-                    "personas.handler_registered",
-                    persona=persona_name,
-                    agent=agent_name,
-                    model=handler.model,
-                )
+            registered = register_personas_from_identity(
+                dispatch_router=dispatch_router,
+                identity=identity,
+                litellm_client=litellm_client,
+                memory_store=memory_store,
+                session_tracker=session_tracker,
+                hook_registry=hook_registry,
+            )
+            registered_persona_names.extend(registered)
 
         _app.state.dispatch_router = dispatch_router
         _app.state.http_client = http_client

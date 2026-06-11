@@ -310,3 +310,88 @@ async def events_stream(
 
 def _sse(event_name: str, payload: dict[str, Any]) -> bytes:
     return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n".encode("utf-8")
+
+
+# ---- identity hot reload (Phase Y) -----------------------------------
+
+
+@router.post("/reload/identity")
+async def reload_identity(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Re-read identity.toml and rebuild persona LocalHandlers in place.
+
+    In-flight Tasks finish on the OLD handler (we don't touch them).
+    Subsequent dispatches go to the freshly built handlers. Bulletin-board
+    rows for newly declared personas are inserted; rows for removed
+    personas stay (with their now-stale agent_card) — clean removal is a
+    separate operation since the rows are still queryable from
+    /admin/conversations etc.
+
+    LiteLLMClient stays the SAME instance (preserves breaker + budget
+    state). If [litellm] changed, the relevant fields are mutated in
+    place.
+    """
+    from cabal.config.identity import load_identity
+    from cabal.core.identity_sync import sync_personas
+    from cabal.core.auth.keys import load_active_signing_key
+    from cabal.core.persona_factory import register_personas_from_identity
+
+    _require_operator_claims(request, _extract_bearer(authorization))
+    state = request.app.state
+    identity_path = getattr(state, "identity_path", None)
+    if identity_path is None or not identity_path.exists():
+        raise HTTPException(404, detail=f"identity file not found: {identity_path}")
+
+    try:
+        identity = load_identity(identity_path)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, detail=f"identity parse failed: {exc}") from exc
+
+    # 1. Sync bulletin board for any newly-declared personas.
+    async with open_session(state.sessionmaker) as session:
+        stored = await load_active_signing_key(
+            session, master_key=state.master_key
+        )
+    if stored is None:
+        raise HTTPException(500, detail="no active signing key")
+    await sync_personas(state.sessionmaker, identity, stored)
+
+    # 2. If the LiteLLM endpoint or key env changed, update the client in
+    # place — don't toss the breaker/budget state.
+    litellm_client = getattr(state, "litellm_client", None)
+    if litellm_client is not None:
+        import os as _os
+        litellm_client.api_base = identity.litellm.api_base
+        if identity.litellm.api_key_env:
+            litellm_client.api_key = _os.environ.get(identity.litellm.api_key_env)
+
+    if litellm_client is None:
+        return {
+            "reloaded": True,
+            "registered": [],
+            "warning": "no litellm client; persona handlers were not rebuilt",
+        }
+
+    # 3. Rebuild + re-register persona handlers.
+    state.identity = identity
+    registered = register_personas_from_identity(
+        dispatch_router=state.dispatch_router,
+        identity=identity,
+        litellm_client=litellm_client,
+        memory_store=getattr(state, "memory_store", None) or _make_default_memory_store(),
+        session_tracker=getattr(state, "session_tracker", None) or _make_default_session_tracker(),
+        hook_registry=state.hook_registry,
+    )
+    return {"reloaded": True, "registered": registered}
+
+
+def _make_default_memory_store():
+    from cabal.core.memory.store import NoOpMemoryStore
+    return NoOpMemoryStore()
+
+
+def _make_default_session_tracker():
+    from cabal.core.memory.session_tracker import NoOpSessionTracker
+    return NoOpSessionTracker()
