@@ -53,8 +53,9 @@ for the per-decision rationale log.
 | U (29) | conversations + tail | +13 | EventBus pub/sub; `/admin/conversations`, `/admin/events/stream`; `cbl conversations`, `cbl tail` |
 | V (30) | K8s manifests | (yaml) | `k8s/` with namespace + secrets template + ConfigMaps + PVCs + LiteLLM/cabal-core Deployments + Litestream sidecar + Kustomize base |
 | W (31) | memory accumulation | +8 | LLMPersona opt-in `commit_to_memory`; Archivist defaults true; Q&A pairs flow into the techne knowledge corpus on every successful dispatch (sync + streaming) |
+| X (32) | persona overrides | +5 | `system_prompt_override`, `model_override`, `max_tokens_override`, `commit_to_memory` per persona in identity.toml — operator tunes behavior without editing Python |
 
-**Total: 227 tests, 38 commits.**
+**Total: 232 tests, 39 commits.**
 
 ## What the morning operator can demo
 

@@ -49,6 +49,12 @@ safety_tier = "moderate"
 description = "Patterns and design"
 role = "singleton"
 safety_tier = "moderate"
+# Operator overrides — flip any persona's prompt, model, max_tokens, or
+# memory-accumulation default without editing Python. Uncomment to use.
+# system_prompt_override = "You are my Architect. Recommend battle-tested patterns and call out the cost of every recommendation."
+# model_override = "anthropic/claude-opus-4-7"
+# max_tokens_override = 16384
+# commit_to_memory = true
 
 [personas.librarian]
 description = "External-documentation lookup"

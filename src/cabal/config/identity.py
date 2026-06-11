@@ -57,6 +57,11 @@ class PersonaConfig(_Open):
     role: str  # "primus" | "singleton"
     safety_tier: str = "strict"
     subordinates: dict[str, SubordinateConfig] = Field(default_factory=dict)
+    # Operator overrides — applied at handler-construction time.
+    system_prompt_override: str | None = None
+    model_override: str | None = None
+    max_tokens_override: int | None = None
+    commit_to_memory: bool | None = None
 
 
 class LiteLLMConfig(_Open):

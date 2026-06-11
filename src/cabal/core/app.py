@@ -251,9 +251,6 @@ def create_app(
                 # session_tracker. Both default to no-op when [techne] isn't
                 # configured, so behavior is identical for non-techne deploys.
                 if persona_name == "rook":
-                    # Build subordinates from identity.toml.subordinates.
-                    # Subordinates share the primus's memory + session tracker
-                    # so reviewer/implementer recall under the same DB.
                     sub_instances: dict[str, Subordinate] = {}
                     for role, sub_cfg in persona_cfg.subordinates.items():
                         sub_instances[role] = Subordinate(
@@ -274,8 +271,9 @@ def create_app(
                         litellm_client,
                         subordinates=sub_instances,
                         hook_registry=hook_registry,
+                        model=persona_cfg.model_override,
+                        max_tokens=persona_cfg.max_tokens_override or 8192,
                     )
-                    # Rook primus itself also gets memory + session
                     handler.memory_store = memory_store
                     handler.session_tracker = session_tracker
                 else:
@@ -283,7 +281,19 @@ def create_app(
                         litellm_client,
                         memory_store=memory_store,
                         session_tracker=session_tracker,
+                        model=persona_cfg.model_override,
+                        max_tokens=persona_cfg.max_tokens_override or 8192,
                     )
+
+                # Operator-tunable persona overrides — applied uniformly.
+                if persona_cfg.system_prompt_override:
+                    handler.system_prompt = persona_cfg.system_prompt_override
+                    log.info(
+                        "personas.system_prompt_overridden",
+                        persona=persona_name,
+                    )
+                if persona_cfg.commit_to_memory is not None:
+                    handler.commit_to_memory = persona_cfg.commit_to_memory
                 # Singletons keep their persona name; primus personas get
                 # the -primus suffix to match identity_sync's naming.
                 agent_name = (
