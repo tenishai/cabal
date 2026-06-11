@@ -71,23 +71,35 @@ def primus_rotate(*, token: str, persona: str, hard: bool = False) -> dict[str, 
 
 
 def dispatch(
-    *, token: str, target: str, message_text: str, task_id: str | None = None
+    *,
+    token: str,
+    target: str,
+    message_text: str,
+    task_id: str | None = None,
+    history: list[dict[str, Any]] | None = None,
+    context_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     import uuid
 
-    payload = {
-        "target": target,
-        "task": {
-            "id": task_id or f"t-{uuid.uuid4().hex[:12]}",
-            "status": {
-                "state": "submitted",
-                "message": {
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": message_text}],
-                },
+    task: dict[str, Any] = {
+        "id": task_id or f"t-{uuid.uuid4().hex[:12]}",
+        "status": {
+            "state": "submitted",
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": message_text}],
             },
         },
     }
+    if history:
+        task["history"] = history
+    if context_id:
+        task["contextId"] = context_id
+    if metadata:
+        task["metadata"] = metadata
+
+    payload = {"target": target, "task": task}
     with make_client() as c:
         resp = c.post(
             "/a2a/tasks",

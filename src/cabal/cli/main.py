@@ -127,6 +127,77 @@ def dispatch(
     typer.echo(f"[{state}] {' '.join(text_parts)}")
 
 
+@app.command("chat")
+def chat(
+    target: str = typer.Argument(..., help="Persona to chat with (e.g. 'archivist')."),
+) -> None:
+    """Multi-turn chat with a persona. Empty line or :exit to quit."""
+    import sys
+    import uuid
+
+    import click
+
+    token = api.TokenStore().load()
+    if token is None:
+        typer.echo("no token; run `cbl login` first.", err=True)
+        raise typer.Exit(code=1)
+
+    context_id = f"chat-{uuid.uuid4().hex[:12]}"
+    history: list[dict] = []
+    typer.echo(f"chat with {target} (context: {context_id}). type :exit to quit.")
+    typer.echo("─" * 60)
+
+    while True:
+        try:
+            user_text = typer.prompt(">", prompt_suffix=" ", show_default=False)
+        except (EOFError, click.exceptions.Abort):
+            typer.echo("\nbye.")
+            return
+        user_text = user_text.strip()
+        if not user_text or user_text in {":exit", ":quit", ":q"}:
+            typer.echo("bye.")
+            return
+
+        try:
+            response = api.dispatch(
+                token=token,
+                target=target,
+                message_text=user_text,
+                history=history,
+                context_id=context_id,
+            )
+        except httpx.HTTPStatusError as exc:
+            try:
+                detail = exc.response.json().get("detail", exc.response.text)
+            except Exception:  # noqa: BLE001
+                detail = exc.response.text
+            typer.echo(f"\nerror: {detail}", err=True)
+            continue
+        except httpx.RequestError as exc:
+            typer.echo(f"\ncould not reach daemon: {exc}", err=True)
+            return
+
+        history.append(
+            {"role": "user", "parts": [{"kind": "text", "text": user_text}]}
+        )
+        message = response.get("status", {}).get("message") or {}
+        agent_text = "".join(
+            part.get("text", "")
+            for part in message.get("parts", [])
+            if part.get("kind") == "text"
+        )
+        if message.get("parts"):
+            history.append(
+                {"role": message.get("role", "agent"), "parts": message["parts"]}
+            )
+
+        state = response.get("status", {}).get("state", "?")
+        prefix = target if state == "completed" else f"{target} [{state}]"
+        typer.echo(f"{prefix}: {agent_text}")
+        typer.echo("")
+        sys.stdout.flush()
+
+
 @app.command("status")
 def status() -> None:
     """List registered agents and their last heartbeats."""
