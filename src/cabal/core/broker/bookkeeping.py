@@ -18,6 +18,7 @@ from cabal.core.a2a.types import Task
 from cabal.core.bulletin.store import AgentRow
 from cabal.core.db import open_session
 from cabal.core.models import Conversation, Event
+from cabal.core.observability.event_bus import EventBus
 
 log = structlog.get_logger(__name__)
 
@@ -29,8 +30,24 @@ class Bookkeeper:
     and HTTP dispatch paths.
     """
 
-    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        sessionmaker: async_sessionmaker[AsyncSession],
+        event_bus: EventBus | None = None,
+    ) -> None:
         self._sessionmaker = sessionmaker
+        self._event_bus = event_bus
+
+    def _publish(self, event_type: str, task_id: str | None, payload: dict) -> None:
+        if self._event_bus is None:
+            return
+        self._event_bus.publish(
+            {
+                "event_type": event_type,
+                "task_id": task_id,
+                "payload": payload,
+            }
+        )
 
     async def on_dispatch_start(
         self,
@@ -68,6 +85,16 @@ class Bookkeeper:
             target=target.name,
             generation=target.generation,
         )
+        self._publish(
+            "dispatch_start",
+            task.id,
+            {
+                "target": target.name,
+                "generation": target.generation,
+                "caller": caller_agent,
+                "trace_id": task.metadata.get("cabal_trace_id"),
+            },
+        )
 
     async def on_dispatch_success(self, task: Task, response: Task) -> None:
         from sqlalchemy import update
@@ -90,6 +117,11 @@ class Bookkeeper:
                 )
             )
         log.info("dispatch.success", task_id=task.id, state=response.status.state)
+        self._publish(
+            "dispatch_success",
+            task.id,
+            {"state": response.status.state},
+        )
 
     async def on_dispatch_failure(self, task: Task, error: Exception) -> None:
         from sqlalchemy import update
@@ -109,4 +141,9 @@ class Bookkeeper:
             )
         log.warning(
             "dispatch.failure", task_id=task.id, error_type=type(error).__name__
+        )
+        self._publish(
+            "dispatch_failure",
+            task.id,
+            {"error_type": type(error).__name__, "error": str(error)},
         )

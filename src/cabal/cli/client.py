@@ -70,6 +70,70 @@ def primus_rotate(*, token: str, persona: str, hard: bool = False) -> dict[str, 
     return resp.json()
 
 
+def list_conversations(
+    *,
+    token: str,
+    limit: int = 50,
+    state: str | None = None,
+    target: str | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"limit": limit}
+    if state is not None:
+        params["state"] = state
+    if target is not None:
+        params["target"] = target
+    with make_client() as c:
+        resp = c.get(
+            "/admin/conversations",
+            params=params,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_conversation(*, token: str, task_id: str) -> dict[str, Any]:
+    with make_client() as c:
+        resp = c.get(
+            f"/admin/conversations/{task_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def tail_events(*, token: str):
+    """Generator yielding (event_name, payload_dict) tuples from
+    /admin/events/stream. Runs forever until the connection drops."""
+    import json
+
+    with make_client() as c:
+        with c.stream(
+            "GET",
+            "/admin/events/stream",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as resp:
+            resp.raise_for_status()
+            event_name: str | None = None
+            data_lines: list[str] = []
+            for raw in resp.iter_lines():
+                line = raw if isinstance(raw, str) else raw.decode("utf-8")
+                if line == "":
+                    if event_name is not None:
+                        try:
+                            payload = json.loads("\n".join(data_lines))
+                        except Exception:  # noqa: BLE001
+                            payload = {"raw": "\n".join(data_lines)}
+                        yield (event_name, payload)
+                    event_name = None
+                    data_lines = []
+                    continue
+                if line.startswith("event:"):
+                    event_name = line.split(":", 1)[1].strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line.split(":", 1)[1].lstrip())
+
+
 def stream_dispatch(
     *,
     token: str,

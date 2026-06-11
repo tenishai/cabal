@@ -50,8 +50,9 @@ for the per-decision rationale log.
 | R (26) | persona memory | +5 | Architect, Librarian, Rook + subordinates all opt into memory + session |
 | S (27) | streaming | +8 | `astream`, `astream_task`, `POST /agents/{name}/stream` SSE endpoint |
 | T (28) | streaming chat | +4 | `cbl chat` consumes SSE; prints deltas live; `--no-stream` fallback |
+| U (29) | conversations + tail | +13 | EventBus pub/sub; `/admin/conversations`, `/admin/events/stream`; `cbl conversations`, `cbl tail` |
 
-**Total: 206 tests, 35 commits.**
+**Total: 219 tests, 36 commits.**
 
 ## What the morning operator can demo
 

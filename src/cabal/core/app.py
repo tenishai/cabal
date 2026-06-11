@@ -55,6 +55,7 @@ from cabal.core.memory.session_tracker import (
 )
 from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 from cabal.core.memory.techne_store import TechneMemoryStore
+from cabal.core.observability.event_bus import EventBus
 from cabal.core.observability.langfuse_client import LangfuseTraceClient
 from cabal.core.observability.trace_exporter import TraceExporter
 from cabal.core.models import Persona
@@ -179,8 +180,11 @@ def create_app(
                 _app.state.trace_client = trace_client
                 log.info("trace.langfuse_enabled", host=identity.langfuse.host)
 
+        event_bus = EventBus()
+        _app.state.event_bus = event_bus
+
         http_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
-        bookkeeper = Bookkeeper(sessionmaker)
+        bookkeeper = Bookkeeper(sessionmaker, event_bus=event_bus)
         dispatch_router = DispatchRouter(
             sessionmaker=sessionmaker,
             bookkeeper=bookkeeper,

@@ -277,6 +277,127 @@ def status() -> None:
         )
 
 
+conv_app = typer.Typer(help="Browse past Task conversations.")
+app.add_typer(conv_app, name="conversations")
+
+
+@conv_app.command("list")
+def conversations_list(
+    limit: int = typer.Option(20, help="Max rows."),
+    state: str | None = typer.Option(None, help="Filter by state."),
+    target: str | None = typer.Option(None, help="Filter by target agent."),
+) -> None:
+    """Most recent conversations first, with a result snippet."""
+    token = api.TokenStore().load()
+    if token is None:
+        typer.echo("no token; run `cbl login` first.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        body = api.list_conversations(token=token, limit=limit, state=state, target=target)
+    except httpx.HTTPStatusError as exc:
+        typer.echo(f"failed: {exc.response.text}", err=True)
+        raise typer.Exit(code=1) from exc
+    except httpx.RequestError as exc:
+        typer.echo(f"could not reach daemon: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    rows = body.get("conversations", [])
+    if not rows:
+        typer.echo("(no conversations)")
+        return
+    header = f"{'TASK':<20} {'TARGET':<22} {'GEN':>4} {'STATE':<12} {'UPDATED':<20} SNIPPET"
+    typer.echo(header)
+    typer.echo("-" * 110)
+    for r in rows:
+        snippet = (r.get("result_snippet") or "").replace("\n", " ")[:40]
+        updated = (r.get("updated_at") or "")[:19]
+        typer.echo(
+            f"{r['task_id']:<20.20} {r['target_agent']:<22.22} "
+            f"{r['target_generation']:>4} {r['state']:<12.12} {updated:<20} {snippet}"
+        )
+
+
+@conv_app.command("show")
+def conversations_show(
+    task_id: str = typer.Argument(..., help="Task ID."),
+    raw: bool = typer.Option(False, "--raw", help="Print raw JSON."),
+) -> None:
+    """Single conversation detail including its event log."""
+    import json as _json
+
+    token = api.TokenStore().load()
+    if token is None:
+        typer.echo("no token; run `cbl login` first.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        body = api.get_conversation(token=token, task_id=task_id)
+    except httpx.HTTPStatusError as exc:
+        typer.echo(f"failed: {exc.response.text}", err=True)
+        raise typer.Exit(code=1) from exc
+    except httpx.RequestError as exc:
+        typer.echo(f"could not reach daemon: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if raw:
+        typer.echo(_json.dumps(body, indent=2))
+        return
+
+    conv = body["conversation"]
+    typer.echo(f"task:      {conv['task_id']}")
+    typer.echo(
+        f"target:    {conv['target_agent']} (gen {conv['target_generation']})"
+    )
+    typer.echo(f"caller:    {conv.get('caller_agent') or '—'}")
+    typer.echo(f"state:     {conv['state']}")
+    if conv.get("cabal_escalated_from"):
+        typer.echo(f"esc from:  {conv['cabal_escalated_from']}")
+    typer.echo(f"created:   {conv.get('created_at')}")
+    typer.echo(f"updated:   {conv.get('updated_at')}")
+    typer.echo("")
+    typer.echo("events:")
+    for e in body.get("events", []):
+        ts = (e.get("created_at") or "")[:19]
+        typer.echo(f"  {ts}  {e['event_type']}  {e.get('payload') or {}}")
+
+    result = conv.get("result")
+    if result:
+        msg = (result.get("status") or {}).get("message") or {}
+        parts = msg.get("parts") or []
+        text = "\n".join(p.get("text", "") for p in parts if p.get("kind") == "text")
+        if text:
+            typer.echo("")
+            typer.echo("reply:")
+            for line in text.splitlines():
+                typer.echo(f"  {line}")
+
+
+@app.command("tail")
+def tail() -> None:
+    """Live-tail the events stream until Ctrl-C."""
+    import json as _json
+
+    token = api.TokenStore().load()
+    if token is None:
+        typer.echo("no token; run `cbl login` first.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo("tailing events (Ctrl-C to stop)…")
+    try:
+        for event_name, payload in api.tail_events(token=token):
+            if event_name == "hello":
+                continue
+            task_id = payload.get("task_id") or "—"
+            inner = payload.get("payload") or {}
+            typer.echo(
+                f"{event_name:<24} task={task_id} {_json.dumps(inner)}"
+            )
+    except KeyboardInterrupt:
+        typer.echo("\nbye.")
+        return
+    except httpx.RequestError as exc:
+        typer.echo(f"could not reach daemon: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
 primus_app = typer.Typer(help="Primus (persona) lifecycle.")
 app.add_typer(primus_app, name="primus")
 
