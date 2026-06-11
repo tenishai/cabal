@@ -26,7 +26,7 @@ else:  # pragma: no cover - 3.12+ only per pyproject
 log = structlog.get_logger(__name__)
 
 
-KNOWN_TOP_LEVEL = {"cabal", "personas", "litellm", "hooks", "secrets"}
+KNOWN_TOP_LEVEL = {"cabal", "personas", "litellm", "hooks", "secrets", "langfuse"}
 
 
 class _Open(BaseModel):
@@ -56,10 +56,17 @@ class LiteLLMConfig(_Open):
     api_key_env: str | None = None
 
 
+class LangfuseConfig(_Open):
+    host: str | None = None
+    public_key_env: str | None = None
+    secret_key_env: str | None = None
+
+
 class IdentityConfig(_Open):
     cabal: CabalConfig = Field(default_factory=CabalConfig)
     personas: dict[str, PersonaConfig] = Field(default_factory=dict)
     litellm: LiteLLMConfig = Field(default_factory=LiteLLMConfig)
+    langfuse: LangfuseConfig = Field(default_factory=LangfuseConfig)
     hooks: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -45,6 +45,8 @@ from cabal.core.db_pragmas import install_sqlite_pragmas
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.identity_sync import sync_personas
 from cabal.core.llm.litellm_client import LiteLLMClient
+from cabal.core.observability.langfuse_client import LangfuseTraceClient
+from cabal.core.observability.trace_exporter import TraceExporter
 from cabal.core.models import Persona
 from cabal.core.routes import a2a_jsonrpc, admin, auth, healthz, tasks, well_known
 
@@ -154,6 +156,18 @@ def create_app(
 
         hook_registry = HookRegistry()
         _app.state.hook_registry = hook_registry
+
+        # Trace exporter (Langfuse if configured + env keys set).
+        if identity is not None and identity.langfuse.host:
+            trace_client = LangfuseTraceClient.from_env(
+                host=identity.langfuse.host,
+                public_key_env=identity.langfuse.public_key_env,
+                secret_key_env=identity.langfuse.secret_key_env,
+            )
+            if trace_client is not None:
+                TraceExporter(client=trace_client, mode="async").register(hook_registry)
+                _app.state.trace_client = trace_client
+                log.info("trace.langfuse_enabled", host=identity.langfuse.host)
 
         http_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
         bookkeeper = Bookkeeper(sessionmaker)
