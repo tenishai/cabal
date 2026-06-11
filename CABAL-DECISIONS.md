@@ -18,7 +18,7 @@ Linked feedback memory: `feedback-decision-authority`.
   - 3.12 — current stable, type-param syntax, improved error messages
   - 3.13 — latest, free-threading still experimental, some deps lag
 - **Choice**: 3.12
-- **Reasoning**: techne already targets 3.12 (matches `infra-techne/pyproject.toml`).
+- **Reasoning**: techne already targets 3.12 (matches `../techne/pyproject.toml`).
   3.13 free-threading isn't useful for us (we're I/O-bound) and some libraries
   (notably anything pinning a C-extension wheel) still lag. 3.11 forfeits the
   `type` statement and PEP 695 generics for no real gain.

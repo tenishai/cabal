@@ -101,7 +101,7 @@ cbl primus rotate rook                     # ratchet rook to generation 2
 ## Decisions made tonight (logged in CABAL-DECISIONS.md)
 
 - **D-001–D-007**: Python 3.12, FastAPI, SQLAlchemy 2.0 async, Typer CLI, Authlib (joserfc).
-- **D-008**: techne 0.6.0 installed via local-editable from `../infra-techne` until on PyPI.
+- **D-008**: techne 0.6.0 installed via local-editable from sibling `../techne` until on PyPI.
 - **D-009**: `events.id` Integer not BigInteger (SQLite autoincrement quirk).
 - **D-010**: Operator tokens transparently re-minted per-target in `/a2a/tasks`. Non-operator mismatched aud → 403.
 - **D-011**: Circuit breaker at the LiteLLM client wrapper, not the proxy. Single-probe HALF_OPEN.
