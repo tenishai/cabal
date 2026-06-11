@@ -197,7 +197,7 @@ async def test_set_requires_operator_scope(app: FastAPI, client: AsyncClient) ->
             session, master_key=app.state.master_key
         )
     persona_token = mint(
-        signing_key=stored, sub="x", aud="x", scope=["dispatch"]
+        signing_key=stored, sub="x", aud="cabal-core", scope=["dispatch"]
     )
     r = await client.post(
         "/admin/secrets/rook/slack",
@@ -218,7 +218,7 @@ async def test_list_requires_operator_scope(app: FastAPI, client: AsyncClient) -
             session, master_key=app.state.master_key
         )
     persona_token = mint(
-        signing_key=stored, sub="x", aud="x", scope=["dispatch"]
+        signing_key=stored, sub="x", aud="cabal-core", scope=["dispatch"]
     )
     r = await client.get(
         "/admin/secrets",

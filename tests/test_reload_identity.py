@@ -166,7 +166,7 @@ async def test_reload_requires_operator_scope(reload_app, reload_client) -> None
             session, master_key=reload_app.state.master_key
         )
     persona_token = mint(
-        signing_key=stored, sub="persona:x", aud="x", scope=["dispatch"]
+        signing_key=stored, sub="persona:x", aud="cabal-core", scope=["dispatch"]
     )
     r = await reload_client.post(
         "/admin/reload/identity",

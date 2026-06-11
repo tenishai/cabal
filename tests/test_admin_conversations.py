@@ -125,7 +125,7 @@ async def test_conversations_require_operator_scope(app, client) -> None:
             session, master_key=app.state.master_key
         )
     persona_token = mint(
-        signing_key=stored, sub="persona:archivist", aud="archivist", scope=["dispatch"]
+        signing_key=stored, sub="persona:archivist", aud="cabal-core", scope=["dispatch"]
     )
     r = await client.get(
         "/admin/conversations",
@@ -178,7 +178,7 @@ async def test_events_stream_requires_operator(app, client) -> None:
             session, master_key=app.state.master_key
         )
     persona_token = mint(
-        signing_key=stored, sub="persona:x", aud="x", scope=["dispatch"]
+        signing_key=stored, sub="persona:x", aud="cabal-core", scope=["dispatch"]
     )
     async with client.stream(
         "GET",

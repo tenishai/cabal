@@ -46,6 +46,9 @@ class CabalConfig(_Open):
     host: str = "127.0.0.1"
     port: int = 7400
     data_dir: str = "data"
+    # Identifies who holds the operator token — used as the `sub` claim in
+    # bootstrap JWTs. Required; fails closed at bootstrap if absent.
+    operator_id: str | None = None
 
 
 class SubordinateConfig(_Open):

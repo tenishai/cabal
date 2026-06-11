@@ -110,3 +110,34 @@ def test_signature_fail_on_wrong_keyset(stored_key) -> None:
     bad_set = KeySet.import_key_set({"keys": [other_jwk_dict]})
     with pytest.raises(JWTError):
         verify(token, key_set=bad_set, expected_audience="archivist")
+
+
+# ---- Phase 1 audience enforcement tests ------------------------------------
+
+
+def test_audience_enforced_on_operator_route(stored_key) -> None:
+    """A token minted for a different aud is rejected from operator routes."""
+    stored, key_set = stored_key
+    # Mint with aud="limenal" (a service token) then try to use as operator
+    token = mint(
+        signing_key=stored,
+        sub="service:limenal",
+        aud="limenal",
+        scope=["operator"],  # elevated scope but wrong audience
+    )
+    with pytest.raises(JWTError, match="audience mismatch"):
+        verify(token, key_set=key_set, expected_audience="cabal-core")
+
+
+def test_secrets_fetch_accepts_limenal_aud(stored_key) -> None:
+    """A limenal service token (aud=limenal) can reach the secrets endpoint."""
+    stored, key_set = stored_key
+    token = mint(
+        signing_key=stored,
+        sub="service:limenal",
+        aud="limenal",
+        scope=["secrets-fetch"],
+    )
+    payload = verify(token, key_set=key_set, expected_audience="limenal")
+    assert payload["sub"] == "service:limenal"
+    assert "secrets-fetch" in payload["cabal_scope"]
