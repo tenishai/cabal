@@ -24,6 +24,7 @@ from cabal.core.auth.keys import create_signing_key
 from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.broker.router import DispatchError, DispatchRouter
 from cabal.core.bulletin import store as bulletin_store
+from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.db import make_engine, make_sessionmaker
 from cabal.core.db_pragmas import install_sqlite_pragmas
 from cabal.core.models import Base, Conversation, Event, Persona
@@ -391,6 +392,106 @@ async def test_explicit_generation_routes_to_draining(
         caller_jwt=token,
     )
     assert handler.seen_generations == [1]
+
+
+# ---- session_start / session_end hooks --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_router_fires_session_start_and_end_on_root_dispatch(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    hooks = HookRegistry()
+    starts: list[dict] = []
+    ends: list[dict] = []
+    hooks.register(HookName.SESSION_START, lambda p: starts.append(p))
+    hooks.register(HookName.SESSION_END, lambda p: ends.append(p))
+
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        hook_registry=hooks,
+    )
+    router.register_local(FakeArchivist())
+
+    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+    await router.dispatch(
+        target_agent="archivist",
+        target_generation=None,
+        task=_sample_task(),
+        caller_jwt=token,
+    )
+    assert len(starts) == 1 and starts[0]["target"] == "archivist"
+    assert len(ends) == 1 and ends[0]["state"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_router_does_not_double_fire_for_subdispatch(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """A Task already marked cabal_session_started is treated as a sub-hop;
+    session_start/end NOT fired again."""
+    hooks = HookRegistry()
+    starts: list[dict] = []
+    ends: list[dict] = []
+    hooks.register(HookName.SESSION_START, lambda p: starts.append(p))
+    hooks.register(HookName.SESSION_END, lambda p: ends.append(p))
+
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        hook_registry=hooks,
+    )
+    router.register_local(FakeArchivist())
+
+    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+    task = _sample_task()
+    task.metadata["cabal_session_started"] = True
+    await router.dispatch(
+        target_agent="archivist",
+        target_generation=None,
+        task=task,
+        caller_jwt=token,
+    )
+    assert starts == [] and ends == []
+
+
+@pytest.mark.asyncio
+async def test_router_fires_session_end_on_failure(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    @dataclass(slots=True)
+    class Boom:
+        name: str = "archivist"
+
+        async def handle_task(self, task: Task) -> Task:
+            raise RuntimeError("kaboom")
+
+    hooks = HookRegistry()
+    ends: list[dict] = []
+    hooks.register(HookName.SESSION_END, lambda p: ends.append(p))
+
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        hook_registry=hooks,
+    )
+    router.register_local(Boom())
+
+    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+    with pytest.raises(RuntimeError):
+        await router.dispatch(
+            target_agent="archivist",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=token,
+        )
+    assert len(ends) == 1
+    assert ends[0]["state"] == "failed"
+    assert ends[0]["error_type"] == "RuntimeError"
 
 
 @pytest.mark.asyncio

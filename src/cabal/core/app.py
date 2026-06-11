@@ -37,6 +37,7 @@ from cabal.core.broker.router import DispatchRouter
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import make_engine, make_sessionmaker, open_session
 from cabal.core.db_pragmas import install_sqlite_pragmas
+from cabal.core.hooks.registry import HookRegistry
 from cabal.core.models import Persona
 from cabal.core.routes import auth, healthz, tasks, well_known
 
@@ -116,6 +117,9 @@ def create_app(
 
         await _ensure_echo_agent(sessionmaker, active_kid=kid)
 
+        hook_registry = HookRegistry()
+        _app.state.hook_registry = hook_registry
+
         http_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
         bookkeeper = Bookkeeper(sessionmaker)
         dispatch_router = DispatchRouter(
@@ -123,6 +127,7 @@ def create_app(
             bookkeeper=bookkeeper,
             jwks_provider=jwks_provider,
             http_client=http_client,
+            hook_registry=hook_registry,
         )
         dispatch_router.register_local(EchoAgent())
         _app.state.dispatch_router = dispatch_router

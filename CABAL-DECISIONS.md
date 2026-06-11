@@ -80,6 +80,54 @@ Linked feedback memory: `feedback-decision-authority`.
 - **Reasoning**: standard for the FastAPI ecosystem; matches techne's choice.
 - **Lands in**: `pyproject.toml [project.optional-dependencies] dev`.
 
+### D-009: events.id Integer (not BigInteger) for SQLite autoincrement
+
+- **Question**: SQLite only autoincrements `INTEGER PRIMARY KEY`, not
+  `BIGINT PRIMARY KEY`. The handoff doc schema specifies `BIGINT` for
+  `events.id`. Stick with BIGINT and hand-roll autoincrement, or downgrade?
+- **Choice**: Integer
+- **Reasoning**: SQLite's INTEGER is a 64-bit signed int internally —
+  same capacity as a "BIGINT" on any other DB. We pay zero cost. Switching
+  to BIGINT for PostgreSQL portability when we get there is a single-line
+  migration. The cost of NOT fixing it: autoincrement silently broken on
+  the very first event insert, which is what failed the broker tests.
+- **Lands in**: `models.Event.id`, migration 0001.
+
+### D-010: Operator tokens transparently re-minted per-target in /a2a/tasks
+
+- **Question**: When an operator hits POST /a2a/tasks with their
+  `aud=cabal-core, scope=["operator"]` token, should the endpoint reject
+  it (force the operator to pre-mint a per-target token via a separate
+  call), or re-mint internally?
+- **Options**:
+  - A. Reject; force the operator to call POST /auth/mint-dispatch first.
+  - B. Re-mint internally; operator's UX stays simple.
+- **Choice**: B
+- **Reasoning**: Pre-minting per-target tokens adds a round-trip on every
+  dispatch with no security benefit — Cabal Core would be the only entity
+  signing both tokens anyway. Re-mint internally keeps the wire-level
+  invariant (every dispatch carries a target-scoped JWT) without making
+  operators feel it. Non-operator tokens with mismatched aud still get a
+  hard 403 — only operators are special.
+- **Lands in**: `routes/tasks._resolve_dispatch_token`.
+
+### D-011: Circuit breaker placement (client wrapper, not LiteLLM proxy)
+
+- **Question**: Where do we host the LiteLLM circuit breaker?
+- **Options**:
+  - A. Inside LiteLLM proxy config — simpler, no client code.
+  - B. At Cabal's LiteLLM client wrapper — duplicates LiteLLM's own breaker
+    if any, but gives us per-call observability via hooks.
+- **Choice**: B
+- **Reasoning**: Per §6.11 of the handoff doc: when the proxy errors
+  cluster, we want every persona to back off TOGETHER. A breaker at the
+  proxy only tells the proxy itself; a breaker at our client lets us emit
+  the `circuit_open` event into our own audit log + hook system, which
+  the agents can use to gracefully 704 instead of spinning. Also: the
+  HALF_OPEN single-probe semantics §6.11 specifies are easy to write at
+  our layer, fiddly to extract from LiteLLM internals.
+- **Lands in**: `core/llm/circuit_breaker.py`, `core/llm/litellm_client.py`.
+
 ### D-008: techne dependency strategy (0.6.0 not yet on PyPI)
 
 - **Question**: techne 0.6.0 isn't published to PyPI. How should cabal depend on it?

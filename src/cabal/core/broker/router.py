@@ -30,6 +30,7 @@ from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.bulletin.store import AgentRow
 from cabal.core.db import open_session
+from cabal.core.hooks.registry import HookName, HookRegistry
 
 log = structlog.get_logger(__name__)
 
@@ -84,6 +85,7 @@ class DispatchRouter:
         jwks_provider: JWKSProvider,
         http_client: httpx.AsyncClient | None = None,
         a2a_path: str = "/a2a/tasks",
+        hook_registry: HookRegistry | None = None,
     ) -> None:
         self._sessionmaker = sessionmaker
         self._bookkeeper = bookkeeper
@@ -91,6 +93,7 @@ class DispatchRouter:
         self._http_client = http_client
         self._local: dict[str, LocalHandler] = {}
         self._a2a_path = a2a_path
+        self._hooks = hook_registry or HookRegistry()
 
     # --- registration -----------------------------------------------------
 
@@ -126,6 +129,19 @@ class DispatchRouter:
             task, ctx.target, ctx.caller_agent
         )
 
+        is_session_root = "cabal_session_started" not in task.metadata
+        if is_session_root:
+            task.metadata["cabal_session_started"] = True
+            await self._hooks.fire(
+                HookName.SESSION_START,
+                {
+                    "task_id": task.id,
+                    "target": ctx.target.name,
+                    "caller": ctx.caller_agent,
+                    "trace_id": task.metadata.get("cabal_trace_id"),
+                },
+            )
+
         try:
             if ctx.target.name in self._local:
                 response = await self._dispatch_local(self._local[ctx.target.name], task)
@@ -133,9 +149,32 @@ class DispatchRouter:
                 response = await self._dispatch_remote(ctx.target, task, caller_jwt)
         except Exception as exc:
             await self._bookkeeper.on_dispatch_failure(task, exc)
+            if is_session_root:
+                await self._hooks.fire(
+                    HookName.SESSION_END,
+                    {
+                        "task_id": task.id,
+                        "state": "failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
             raise
 
         await self._bookkeeper.on_dispatch_success(task, response)
+        if is_session_root and response.status.state in {
+            "completed",
+            "failed",
+            "canceled",
+            "rejected",
+        }:
+            await self._hooks.fire(
+                HookName.SESSION_END,
+                {
+                    "task_id": task.id,
+                    "state": response.status.state,
+                    "reason_code": response.metadata.get("cabal_reason_code"),
+                },
+            )
         return response
 
     # --- internal pieces --------------------------------------------------
