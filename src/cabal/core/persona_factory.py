@@ -120,11 +120,21 @@ def register_personas_from_identity(
 
             _agent = agent_name  # capture for the closure
             _persona = persona_name
-            _tool_extras = (
+            _tool_extras_dict = (
                 dict(persona_cfg.mcp.tool_extras)
                 if persona_cfg.mcp.tool_extras
-                else None
+                else {}
             )
+            # First-class persona_cfg.mcp.allowed_handlers folds into the
+            # tool_extras dict here. Explicit None means "unrestricted"
+            # and is omitted; an explicit list (including the empty list)
+            # is forwarded so limenal can refuse everything if the
+            # operator wants that.
+            if persona_cfg.mcp.allowed_handlers is not None:
+                _tool_extras_dict["limenal.allowed_handlers"] = list(
+                    persona_cfg.mcp.allowed_handlers
+                )
+            _tool_extras = _tool_extras_dict if _tool_extras_dict else None
 
             def _token_provider(
                 _key=signing_key,

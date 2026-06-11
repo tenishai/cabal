@@ -70,6 +70,13 @@ class PersonaMCPConfig(_Open):
     enabled: bool = False
     max_steps: int | None = None  # overrides LLMPersona.tool_use_max_steps
     tool_extras: dict[str, Any] = Field(default_factory=dict)
+    # First-class shortcut for the most common scoping choice — which
+    # handlers this persona can see + call. Folded into tool_extras as
+    # `limenal.allowed_handlers` at JWT-mint time. Operators who'd
+    # rather put it directly in tool_extras can; both paths land in the
+    # same claim. None means "unrestricted" (every handler limenal
+    # serves is reachable).
+    allowed_handlers: list[str] | None = None
 
 
 class PersonaConfig(_Open):
