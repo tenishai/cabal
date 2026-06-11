@@ -127,6 +127,41 @@ def dispatch(
     typer.echo(f"[{state}] {' '.join(text_parts)}")
 
 
+@app.command("status")
+def status() -> None:
+    """List registered agents and their last heartbeats."""
+    token = api.TokenStore().load()
+    if token is None:
+        typer.echo("no token; run `cbl login` first.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        body = api.list_agents(token=token)
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get("detail", exc.response.text)
+        except Exception:  # noqa: BLE001
+            detail = exc.response.text
+        typer.echo(f"status failed: {detail}", err=True)
+        raise typer.Exit(code=1) from exc
+    except httpx.RequestError as exc:
+        typer.echo(f"could not reach daemon at {api.base_url()}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    agents = body.get("agents", [])
+    if not agents:
+        typer.echo("(no agents registered)")
+        return
+    header = f"{'NAME':<22} {'GEN':>4} {'ROLE':<10} {'STATUS':<10} {'TIER':<8} HEARTBEAT"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for a in agents:
+        hb = a.get("last_heartbeat") or "—"
+        typer.echo(
+            f"{a['name']:<22} {a['generation']:>4} {a['role']:<10} "
+            f"{a['status']:<10} {a['safety_tier']:<8} {hb}"
+        )
+
+
 token_app = typer.Typer(help="Session token management.")
 app.add_typer(token_app, name="token")
 

@@ -35,6 +35,7 @@ from cabal.core.auth.jwks_provider import RefreshingJWKSProvider
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.auth.master_key import resolve_master_key
 from cabal.core.broker.bookkeeping import Bookkeeper
+from cabal.core.broker.heartbeat import HeartbeatScheduler
 from cabal.core.broker.router import DispatchRouter
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import make_engine, make_sessionmaker, open_session
@@ -42,7 +43,7 @@ from cabal.core.db_pragmas import install_sqlite_pragmas
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.identity_sync import sync_personas
 from cabal.core.models import Persona
-from cabal.core.routes import auth, healthz, tasks, well_known
+from cabal.core.routes import admin, auth, healthz, tasks, well_known
 
 log = structlog.get_logger(__name__)
 
@@ -152,6 +153,11 @@ def create_app(
         _app.state.dispatch_router = dispatch_router
         _app.state.http_client = http_client
 
+        heartbeat = HeartbeatScheduler(sessionmaker)
+        heartbeat.watch(["echo"])
+        await heartbeat.start()
+        _app.state.heartbeat = heartbeat
+
         if print_bootstrap_code:
             async with open_session(sessionmaker) as session:
                 code = await issue_operator_code(session)
@@ -166,6 +172,7 @@ def create_app(
         try:
             yield
         finally:
+            await heartbeat.stop()
             await http_client.aclose()
             await engine.dispose()
             log.info("cabal.shutdown")
@@ -185,5 +192,6 @@ def create_app(
     app.include_router(well_known.router)
     app.include_router(auth.router)
     app.include_router(tasks.router)
+    app.include_router(admin.router)
 
     return app

@@ -52,6 +52,13 @@ def bootstrap(code: str) -> dict[str, Any]:
     return resp.json()
 
 
+def list_agents(*, token: str) -> dict[str, Any]:
+    with make_client() as c:
+        resp = c.get("/admin/agents", headers={"Authorization": f"Bearer {token}"})
+    resp.raise_for_status()
+    return resp.json()
+
+
 def dispatch(
     *, token: str, target: str, message_text: str, task_id: str | None = None
 ) -> dict[str, Any]:
