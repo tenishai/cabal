@@ -10,7 +10,6 @@ from typing import Any
 
 import httpx
 
-
 DEFAULT_BASE_URL = "http://127.0.0.1:7400"
 DEFAULT_TOKEN_PATH = Path.home() / ".cabal" / "token"
 

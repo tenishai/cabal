@@ -17,7 +17,6 @@ from cabal.core.llm.litellm_client import LiteLLMClient
 from cabal.core.memory.session_tracker import NoOpSessionTracker, SessionTracker
 from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 
-
 SUBORDINATE_PROMPTS = {
     "implementer": (
         "You are Rook's implementer subordinate. The primus has handed you "

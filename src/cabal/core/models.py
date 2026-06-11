@@ -48,7 +48,7 @@ class Persona(Base):
         DateTime, nullable=False, server_default=_utcnow_default()
     )
 
-    agents: Mapped[list["Agent"]] = relationship(
+    agents: Mapped[list[Agent]] = relationship(
         back_populates="persona", cascade="all"
     )
 

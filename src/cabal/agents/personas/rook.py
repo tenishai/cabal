@@ -29,7 +29,6 @@ from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
-
 DEFAULT_MODEL = "anthropic/claude-opus-4-7"
 
 ROOK_SYSTEM_PROMPT = """\

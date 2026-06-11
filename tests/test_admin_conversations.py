@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 from fastapi import FastAPI
@@ -160,7 +159,7 @@ async def test_events_stream_publishes_dispatches(app, client) -> None:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=0.5)
                 seen_types.append(event["event_type"])
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 break
         assert "dispatch_start" in seen_types
         assert "dispatch_success" in seen_types

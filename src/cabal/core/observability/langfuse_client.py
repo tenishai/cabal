@@ -35,7 +35,7 @@ class LangfuseTraceClient:
     @classmethod
     def from_env(
         cls, *, host: str | None, public_key_env: str | None, secret_key_env: str | None
-    ) -> "LangfuseTraceClient | None":
+    ) -> LangfuseTraceClient | None:
         public_key = os.environ.get(public_key_env) if public_key_env else None
         secret_key = os.environ.get(secret_key_env) if secret_key_env else None
         if not (public_key and secret_key and host):

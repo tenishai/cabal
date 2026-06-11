@@ -9,7 +9,7 @@ path skips is the network layer.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -105,7 +105,7 @@ class Bookkeeper:
                 .where(Conversation.task_id == task.id)
                 .values(
                     state=response.status.state,
-                    updated_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(UTC),
                     result_json=response.model_dump(by_alias=True, exclude_none=True),
                 )
             )
@@ -130,7 +130,7 @@ class Bookkeeper:
             await session.execute(
                 update(Conversation)
                 .where(Conversation.task_id == task.id)
-                .values(state="failed", updated_at=datetime.now(timezone.utc))
+                .values(state="failed", updated_at=datetime.now(UTC))
             )
             session.add(
                 Event(

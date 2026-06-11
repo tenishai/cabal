@@ -64,7 +64,18 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "B", "UP", "ASYNC"]
-ignore = ["E501"]  # line-length handled by formatter
+ignore = [
+    "E501",     # line-length handled by formatter
+    "B008",     # typer.Option/Argument in defaults is the standard pattern
+    "ASYNC240", # pathlib in async — cost is sub-ms; switching to anyio.path here is churn
+    "UP036",    # sys.version_info guard kept for tomli fallback documentation
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "B017",  # pytest.raises(Exception) is sometimes correct in tests
+    "E702",  # multi-statement-per-line is fine in compact test setup
+]
 
 [tool.mypy]
 python_version = "3.12"

@@ -11,11 +11,10 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from cabal.agents.llm_persona import LLMPersona
-from cabal.agents.personas.archivist import ArchivistPersona
 from cabal.agents.personas.architect import ArchitectPersona
+from cabal.agents.personas.archivist import ArchivistPersona
 from cabal.agents.personas.librarian import LibrarianPersona
 from cabal.agents.personas.rook import RookPrimusPersona
-
 
 # name → factory that takes (llm_client, ...) and returns an LLMPersona
 PERSONA_REGISTRY: dict[str, Callable[..., LLMPersona]] = {

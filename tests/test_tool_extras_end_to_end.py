@@ -14,7 +14,6 @@ import json
 import os
 from pathlib import Path
 from textwrap import dedent
-from typing import Any
 
 import httpx
 import pytest
@@ -235,14 +234,13 @@ async def test_per_persona_allowlist_via_identity_toml_blocks_other_hosts(
 async def test_tool_extras_claim_present_in_minted_jwt() -> None:
     """Unit: mint a JWT with tool_extras, decode it, confirm the claim
     is present."""
-    import time
 
+    from cryptography.hazmat.primitives import serialization
     from joserfc import jwt as jwt_lib
+    from joserfc.jwk import KeySet, RSAKey
 
     from cabal.core.auth.jwt import mint
     from cabal.core.auth.keys import generate_rsa_keypair
-    from cryptography.hazmat.primitives import serialization
-    from joserfc.jwk import KeySet, RSAKey
 
     priv, _pub = generate_rsa_keypair()
     pem = priv.private_bytes(
@@ -285,12 +283,12 @@ async def test_tool_extras_claim_present_in_minted_jwt() -> None:
 @pytest.mark.asyncio
 async def test_mint_without_tool_extras_omits_claim() -> None:
     """Mint with tool_extras=None should NOT include the claim in the payload."""
+    from cryptography.hazmat.primitives import serialization
     from joserfc import jwt as jwt_lib
+    from joserfc.jwk import KeySet, RSAKey
 
     from cabal.core.auth.jwt import mint
     from cabal.core.auth.keys import generate_rsa_keypair
-    from cryptography.hazmat.primitives import serialization
-    from joserfc.jwk import KeySet, RSAKey
 
     priv, _pub = generate_rsa_keypair()
     pem = priv.private_bytes(

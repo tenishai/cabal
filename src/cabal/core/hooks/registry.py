@@ -110,7 +110,7 @@ class HookRegistry:
             result = reg.fn(payload)
             if asyncio.iscoroutine(result):
                 await asyncio.wait_for(result, timeout=reg.config.timeout_seconds)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             self._handle_failure(name, reg, exc, kind="timeout")
         except Exception as exc:  # noqa: BLE001
             self._handle_failure(name, reg, exc, kind="exception")

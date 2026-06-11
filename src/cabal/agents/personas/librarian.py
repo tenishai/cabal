@@ -12,7 +12,6 @@ from cabal.core.llm.litellm_client import LiteLLMClient
 from cabal.core.memory.session_tracker import NoOpSessionTracker, SessionTracker
 from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 
-
 LIBRARIAN_PROMPT = """\
 You are Cabal's Librarian: external-documentation lookup singleton.
 

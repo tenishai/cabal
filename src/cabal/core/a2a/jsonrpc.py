@@ -18,7 +18,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from cabal.core.a2a.types import Message, Task
 
-
 # Standard JSON-RPC 2.0 error codes
 ERROR_PARSE = -32700
 ERROR_INVALID_REQUEST = -32600

@@ -15,7 +15,6 @@ conversation.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -279,11 +278,6 @@ async def test_tool_use_max_steps_caps_the_loop(tool_proxy) -> None:
 async def test_tool_error_surfaces_in_loop(tool_proxy) -> None:
     """A tool that doesn't exist should produce an error block the LLM
     can read; the loop continues with the error in context."""
-
-    fn = _llm_emits_tool_call_then_final(
-        set_args={"key": "x", "value": "y"},
-        final_text="(saw tool error)",
-    )
 
     # Replace the tool call with one that doesn't exist
     async def fn_with_bad_tool(model: str, messages: list, **kwargs):

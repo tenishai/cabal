@@ -15,10 +15,10 @@ Startup sequence (in `lifespan`):
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 import httpx
 import structlog
@@ -29,9 +29,6 @@ from sqlalchemy import select
 
 from cabal import __version__
 from cabal.agents.echo import EchoAgent
-from cabal.agents.personas import PERSONA_REGISTRY
-from cabal.agents.personas.rook import RookPrimusPersona
-from cabal.agents.subordinate import Subordinate
 from cabal.config.identity import IdentityConfig, load_identity
 from cabal.core.auth.bootstrap import ensure_signing_key
 from cabal.core.auth.bootstrap_codes import issue_operator_code
@@ -55,10 +52,10 @@ from cabal.core.memory.session_tracker import (
 )
 from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 from cabal.core.memory.techne_store import TechneMemoryStore
+from cabal.core.models import Persona
 from cabal.core.observability.event_bus import EventBus
 from cabal.core.observability.langfuse_client import LangfuseTraceClient
 from cabal.core.observability.trace_exporter import TraceExporter
-from cabal.core.models import Persona
 from cabal.core.routes import a2a_jsonrpc, admin, auth, healthz, tasks, well_known
 
 log = structlog.get_logger(__name__)

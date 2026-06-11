@@ -24,11 +24,10 @@ from cabal.core.auth.keys import create_signing_key
 from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.broker.router import DispatchError, DispatchRouter
 from cabal.core.bulletin import store as bulletin_store
-from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.db import make_engine, make_sessionmaker
 from cabal.core.db_pragmas import install_sqlite_pragmas
+from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.models import Base, Conversation, Event, Persona
-
 
 # ---- fixtures -----------------------------------------------------------
 

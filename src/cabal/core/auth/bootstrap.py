@@ -8,10 +8,10 @@ are no-ops (an active key is already in the DB).
 from __future__ import annotations
 
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from cabal.core.auth.keys import create_signing_key, load_active_signing_key
 from cabal.core.db import open_session
-from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 log = structlog.get_logger(__name__)
 

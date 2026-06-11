@@ -25,7 +25,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cabal.core.auth.master_key import get_fernet
 from cabal.core.models import SigningKey
 
-
 KID_PREFIX = "cabal-"
 
 

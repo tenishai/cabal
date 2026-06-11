@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, timedelta
 
 import pytest
 import pytest_asyncio
@@ -77,10 +77,10 @@ async def test_double_consume_rejected(sessionmaker) -> None:
 
 @pytest.mark.asyncio
 async def test_expired_code_rejected(sessionmaker) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     async with sessionmaker() as s:
-        past = datetime.now(timezone.utc) - timedelta(minutes=10)
+        past = datetime.now(UTC) - timedelta(minutes=10)
         s.add(BootstrapCode(code="PASTCD", persona_name=None, expires_at=past))
         await s.commit()
 
