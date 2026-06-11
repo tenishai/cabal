@@ -65,7 +65,7 @@ RESULT=$(curl -sf -X POST "$LIMENAL_URL/mcp" \
     -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"scratchpad.get","arguments":{"key":"hello"}}}')
 echo "$RESULT" | python3 -m json.tool
 
-# Verify the value came back
+# Verify the value came back — content may be text or json type
 VALUE=$(echo "$RESULT" | python3 -c "
 import sys, json
 body = json.load(sys.stdin)
@@ -73,6 +73,10 @@ content = body.get('result', {}).get('content', [])
 for item in content:
     if item.get('type') == 'text':
         print(item['text'])
+        break
+    if item.get('type') == 'json':
+        data = item.get('data', {})
+        print(data.get('value', json.dumps(data)))
         break
 " 2>/dev/null || true)
 

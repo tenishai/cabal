@@ -29,8 +29,9 @@ COPY alembic.ini ./
 # pin to pyproject.toml's dependencies — then `pip install .` brings it in for free.
 COPY --from=techne / /build/techne
 
-RUN pip install --prefix=/install /build/techne \
- && pip install --prefix=/install .
+RUN python3 -m venv /venv \
+ && /venv/bin/pip install --no-cache-dir /build/techne \
+ && /venv/bin/pip install --no-cache-dir .
 
 # ----- Runtime stage --------------------------------------------------------
 FROM python:3.12-slim AS runtime
@@ -38,7 +39,10 @@ FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     CABAL_DB_URL="sqlite+aiosqlite:////data/cabal.db" \
-    PATH="/install/bin:$PATH"
+    PATH="/venv/bin:$PATH" \
+    VIRTUAL_ENV="/venv" \
+    CABAL_ALEMBIC_INI="/app/alembic.ini" \
+    CABAL_ALEMBIC_MIGRATIONS="/app/migrations"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
@@ -49,7 +53,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd --gid 10001 cabal && \
     useradd --uid 10001 --gid cabal --home-dir /home/cabal --create-home cabal
 
-COPY --from=build /install /install
+COPY --from=build /venv /venv
 COPY --from=build /build/migrations /app/migrations
 COPY --from=build /build/alembic.ini /app/alembic.ini
 
