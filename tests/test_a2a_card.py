@@ -1,0 +1,160 @@
+"""AgentCard sign + verify + cache tests."""
+
+from __future__ import annotations
+
+import pytest
+import pytest_asyncio
+from cryptography.fernet import Fernet
+from joserfc.errors import BadSignatureError
+from joserfc.jwk import KeySet, RSAKey
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from cabal.core.a2a.card import (
+    AgentCardVerifier,
+    VerifiedCard,
+    jcs_canonicalize,
+    sign_card,
+)
+from cabal.core.a2a.types import AgentCard, Skill
+from cabal.core.auth.keys import create_signing_key
+from cabal.core.db import make_engine, make_sessionmaker
+from cabal.core.db_pragmas import install_sqlite_pragmas
+from cabal.core.models import Base
+
+
+@pytest_asyncio.fixture
+async def sessionmaker() -> async_sessionmaker[AsyncSession]:
+    engine = make_engine("sqlite+aiosqlite:///:memory:")
+    install_sqlite_pragmas(engine)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    return make_sessionmaker(engine)
+
+
+@pytest.fixture
+def master_key() -> bytes:
+    return Fernet.generate_key()
+
+
+@pytest.fixture
+def sample_card() -> AgentCard:
+    return AgentCard(
+        name="rook-primus",
+        url="http://rook-primus:7400",
+        version="0.1.0",
+        skills=[Skill(id="review", name="Code Review")],
+        metadata={"cabal_generation": 1, "cabal_safety_tier": "strict"},
+    )
+
+
+def test_jcs_canonicalize_is_stable() -> None:
+    a = {"b": 1, "a": 2, "c": {"y": 1, "x": 2}}
+    b = {"c": {"x": 2, "y": 1}, "a": 2, "b": 1}
+    assert jcs_canonicalize(a) == jcs_canonicalize(b)
+
+
+def test_jcs_canonicalize_compact_separators() -> None:
+    assert jcs_canonicalize({"a": 1, "b": 2}) == b'{"a":1,"b":2}'
+
+
+@pytest.mark.asyncio
+async def test_sign_and_verify_card(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    master_key: bytes,
+    sample_card: AgentCard,
+) -> None:
+    async with sessionmaker() as session:
+        stored = await create_signing_key(session, master_key=master_key)
+        await session.commit()
+
+    token = sign_card(sample_card, stored)
+    assert token.count(".") == 2  # JWS compact = header.payload.signature
+
+    public_jwk = RSAKey.import_key(stored.private_key.public_key())
+    public_jwk.ensure_kid()
+    # Force kid to match what's in the header
+    public_jwk_dict = dict(public_jwk.as_dict(private=False))
+    public_jwk_dict["kid"] = stored.kid
+    key_set = KeySet.import_key_set({"keys": [public_jwk_dict]})
+
+    verifier = AgentCardVerifier()
+    verified: VerifiedCard = verifier.verify(token, key_set)
+    assert verified.card.name == "rook-primus"
+    assert verified.kid == stored.kid
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_tampered_payload(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    master_key: bytes,
+    sample_card: AgentCard,
+) -> None:
+    async with sessionmaker() as session:
+        stored = await create_signing_key(session, master_key=master_key)
+        await session.commit()
+
+    token = sign_card(sample_card, stored)
+    header, payload, sig = token.split(".")
+    # Flip a byte in the payload by replacing it with a different valid b64 segment
+    import base64
+    import json
+
+    decoded = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    decoded["name"] = "evil-impersonator"
+    tampered_payload = (
+        base64.urlsafe_b64encode(jcs_canonicalize(decoded)).rstrip(b"=").decode("ascii")
+    )
+    tampered = f"{header}.{tampered_payload}.{sig}"
+
+    public_jwk_dict = dict(RSAKey.import_key(stored.private_key.public_key()).as_dict(private=False))
+    public_jwk_dict["kid"] = stored.kid
+    key_set = KeySet.import_key_set({"keys": [public_jwk_dict]})
+
+    verifier = AgentCardVerifier()
+    with pytest.raises(BadSignatureError):
+        verifier.verify(tampered, key_set)
+
+
+@pytest.mark.asyncio
+async def test_verify_cache_hits_on_repeat(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    master_key: bytes,
+    sample_card: AgentCard,
+) -> None:
+    async with sessionmaker() as session:
+        stored = await create_signing_key(session, master_key=master_key)
+        await session.commit()
+
+    token = sign_card(sample_card, stored)
+    public_jwk_dict = dict(RSAKey.import_key(stored.private_key.public_key()).as_dict(private=False))
+    public_jwk_dict["kid"] = stored.kid
+    key_set = KeySet.import_key_set({"keys": [public_jwk_dict]})
+
+    verifier = AgentCardVerifier()
+    assert verifier.cache_size() == 0
+    verifier.verify(token, key_set)
+    assert verifier.cache_size() == 1
+    verifier.verify(token, key_set)
+    assert verifier.cache_size() == 1  # still 1, hit the cache
+
+
+@pytest.mark.asyncio
+async def test_invalidate_kid_busts_cache(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    master_key: bytes,
+    sample_card: AgentCard,
+) -> None:
+    async with sessionmaker() as session:
+        stored = await create_signing_key(session, master_key=master_key)
+        await session.commit()
+
+    token = sign_card(sample_card, stored)
+    public_jwk_dict = dict(RSAKey.import_key(stored.private_key.public_key()).as_dict(private=False))
+    public_jwk_dict["kid"] = stored.kid
+    key_set = KeySet.import_key_set({"keys": [public_jwk_dict]})
+
+    verifier = AgentCardVerifier()
+    verifier.verify(token, key_set)
+    assert verifier.cache_size() == 1
+    verifier.invalidate_kid(stored.kid)
+    assert verifier.cache_size() == 0
