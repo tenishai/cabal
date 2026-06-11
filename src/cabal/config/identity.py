@@ -26,7 +26,15 @@ else:  # pragma: no cover - 3.12+ only per pyproject
 log = structlog.get_logger(__name__)
 
 
-KNOWN_TOP_LEVEL = {"cabal", "personas", "litellm", "hooks", "secrets", "langfuse"}
+KNOWN_TOP_LEVEL = {
+    "cabal",
+    "personas",
+    "litellm",
+    "hooks",
+    "secrets",
+    "langfuse",
+    "techne",
+}
 
 
 class _Open(BaseModel):
@@ -62,11 +70,17 @@ class LangfuseConfig(_Open):
     secret_key_env: str | None = None
 
 
+class TechneConfig(_Open):
+    db_path: str | None = None  # path to techne sqlite DB
+    use_vectors: bool = False
+
+
 class IdentityConfig(_Open):
     cabal: CabalConfig = Field(default_factory=CabalConfig)
     personas: dict[str, PersonaConfig] = Field(default_factory=dict)
     litellm: LiteLLMConfig = Field(default_factory=LiteLLMConfig)
     langfuse: LangfuseConfig = Field(default_factory=LangfuseConfig)
+    techne: TechneConfig = Field(default_factory=TechneConfig)
     hooks: dict[str, Any] = Field(default_factory=dict)
 
 

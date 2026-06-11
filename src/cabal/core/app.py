@@ -45,6 +45,8 @@ from cabal.core.db_pragmas import install_sqlite_pragmas
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.identity_sync import sync_personas
 from cabal.core.llm.litellm_client import LiteLLMClient
+from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
+from cabal.core.memory.techne_store import TechneMemoryStore
 from cabal.core.observability.langfuse_client import LangfuseTraceClient
 from cabal.core.observability.trace_exporter import TraceExporter
 from cabal.core.models import Persona
@@ -180,6 +182,25 @@ def create_app(
         )
         dispatch_router.register_local(EchoAgent())
 
+        # Memory store (techne if configured, otherwise no-op).
+        memory_store: MemoryStore = NoOpMemoryStore()
+        if identity is not None and identity.techne.db_path:
+            techne_db = Path(identity.techne.db_path)
+            techne_db.parent.mkdir(parents=True, exist_ok=True)
+            if not techne_db.exists():
+                try:
+                    import techne  # lazy import
+
+                    techne.init_db(techne_db)
+                    log.info("techne.db_initialized", path=str(techne_db))
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("techne.init_failed", error=str(exc))
+            memory_store = TechneMemoryStore(
+                db_path=techne_db, use_vectors=identity.techne.use_vectors
+            )
+            _app.state.memory_store = memory_store
+            log.info("memory.techne_enabled", db_path=str(techne_db))
+
         # LLM-backed persona handlers: only personas declared in
         # identity.toml AND known to PERSONA_REGISTRY get a LocalHandler.
         # Bulletin rows for unknown personas exist (from identity_sync)
@@ -206,7 +227,12 @@ def create_app(
                         msg="declared in identity.toml but not in PERSONA_REGISTRY",
                     )
                     continue
-                handler = factory(litellm_client)
+                # Archivist gets the memory store; other personas can opt in
+                # later by accepting memory_store in their __init__.
+                if persona_name == "archivist":
+                    handler = factory(litellm_client, memory_store=memory_store)
+                else:
+                    handler = factory(litellm_client)
                 # Singletons keep their persona name; primus personas get
                 # the -primus suffix to match identity_sync's naming.
                 agent_name = (

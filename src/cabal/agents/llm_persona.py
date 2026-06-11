@@ -29,6 +29,7 @@ from cabal.core.llm.litellm_client import (
     LLMRateLimitedError,
     LLMUnavailableError,
 )
+from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 
 
 @dataclass
@@ -38,6 +39,10 @@ class LLMPersona:
     Subclass + set `name`, `model`, `system_prompt`. Override
     `build_messages` if you need to inject persona-specific context (memory
     lookups, tool descriptions, etc.).
+
+    `memory_store` is optional; when set, `build_messages` adds a
+    "Relevant memories" block to the system prompt with up to
+    `memory_recall_limit` hits from the store. Defaults to a no-op store.
     """
 
     name: str
@@ -46,14 +51,35 @@ class LLMPersona:
     system_prompt: str = "You are a helpful agent."
     max_tokens: int = 8192
     extra_kwargs: dict[str, Any] = field(default_factory=dict)
+    memory_store: MemoryStore = field(default_factory=NoOpMemoryStore)
+    memory_recall_limit: int = 5
+
+    def _recall_for_task(self, task: Task) -> str:
+        """Return a formatted memory-hits block, or empty string."""
+        if task.status.message is None:
+            return ""
+        query_text = " ".join(
+            p.text for p in task.status.message.parts if isinstance(p, TextPart)
+        ).strip()
+        if not query_text:
+            return ""
+        hits = self.memory_store.recall(query_text, limit=self.memory_recall_limit)
+        if not hits:
+            return ""
+        lines = ["", "Relevant memories (older first):"]
+        for h in hits:
+            tag_note = f" [tags: {h.tags}]" if h.tags else ""
+            lines.append(f"- ({h.type}, {h.confidence}) {h.content}{tag_note}")
+        return "\n".join(lines)
 
     def build_messages(self, task: Task) -> list[dict[str, Any]]:
         """Translate Task history + current message into chat messages.
 
-        Default: [system, ...history (user/agent alternating), current].
+        Default: [system+memories, ...history (user/agent alternating), current].
         """
+        system_content = self.system_prompt + self._recall_for_task(task)
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": self.system_prompt}
+            {"role": "system", "content": system_content}
         ]
         for hist in task.history:
             messages.append(_message_to_chat(hist))

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from cabal.agents.llm_persona import LLMPersona
 from cabal.core.llm.litellm_client import LiteLLMClient
+from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 
 ARCHIVIST_PROMPT = """\
 You are Cabal's Archivist: the memory and search singleton.
@@ -38,6 +39,7 @@ class ArchivistPersona(LLMPersona):
         llm_client: LiteLLMClient,
         model: str | None = None,
         max_tokens: int = 8192,
+        memory_store: MemoryStore | None = None,
     ) -> None:
         super().__init__(
             name="archivist",
@@ -45,4 +47,5 @@ class ArchivistPersona(LLMPersona):
             llm_client=llm_client,
             system_prompt=ARCHIVIST_PROMPT,
             max_tokens=max_tokens,
+            memory_store=memory_store or NoOpMemoryStore(),
         )
