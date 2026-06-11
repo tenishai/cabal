@@ -48,6 +48,11 @@ from cabal.core.hooks.registry import HookRegistry
 from cabal.core.identity_sync import sync_personas
 from cabal.core.llm.budget import BudgetGuard
 from cabal.core.llm.litellm_client import LiteLLMClient
+from cabal.core.memory.session_tracker import (
+    NoOpSessionTracker,
+    SessionTracker,
+    TechneSessionTracker,
+)
 from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 from cabal.core.memory.techne_store import TechneMemoryStore
 from cabal.core.observability.langfuse_client import LangfuseTraceClient
@@ -185,8 +190,9 @@ def create_app(
         )
         dispatch_router.register_local(EchoAgent())
 
-        # Memory store (techne if configured, otherwise no-op).
+        # Memory store + session tracker (techne if configured, otherwise no-op).
         memory_store: MemoryStore = NoOpMemoryStore()
+        session_tracker: SessionTracker = NoOpSessionTracker()
         if identity is not None and identity.techne.db_path:
             techne_db = Path(identity.techne.db_path)
             techne_db.parent.mkdir(parents=True, exist_ok=True)
@@ -201,7 +207,11 @@ def create_app(
             memory_store = TechneMemoryStore(
                 db_path=techne_db, use_vectors=identity.techne.use_vectors
             )
+            session_tracker = TechneSessionTracker(
+                db_path=techne_db, data_dir=techne_db.parent
+            )
             _app.state.memory_store = memory_store
+            _app.state.session_tracker = session_tracker
             log.info("memory.techne_enabled", db_path=str(techne_db))
 
         # LLM-backed persona handlers: only personas declared in
@@ -233,10 +243,14 @@ def create_app(
                         msg="declared in identity.toml but not in PERSONA_REGISTRY",
                     )
                     continue
-                # Archivist gets the memory store; other personas can opt in
-                # later by accepting memory_store in their __init__.
+                # Archivist gets the memory store + session tracker; other
+                # personas can opt in later by accepting them in their __init__.
                 if persona_name == "archivist":
-                    handler = factory(litellm_client, memory_store=memory_store)
+                    handler = factory(
+                        litellm_client,
+                        memory_store=memory_store,
+                        session_tracker=session_tracker,
+                    )
                 elif persona_name == "rook":
                     # Build subordinates from identity.toml.subordinates
                     sub_instances: dict[str, Subordinate] = {}

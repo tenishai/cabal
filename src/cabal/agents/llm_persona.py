@@ -29,6 +29,7 @@ from cabal.core.llm.litellm_client import (
     LLMRateLimitedError,
     LLMUnavailableError,
 )
+from cabal.core.memory.session_tracker import NoOpSessionTracker, SessionTracker
 from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 
 
@@ -53,6 +54,7 @@ class LLMPersona:
     extra_kwargs: dict[str, Any] = field(default_factory=dict)
     memory_store: MemoryStore = field(default_factory=NoOpMemoryStore)
     memory_recall_limit: int = 5
+    session_tracker: SessionTracker = field(default_factory=NoOpSessionTracker)
 
     def _recall_for_task(self, task: Task) -> str:
         """Return a formatted memory-hits block, or empty string."""
@@ -102,6 +104,10 @@ class LLMPersona:
         ):
             self.llm_client.budget.set_budget(task.id, int(budget_override))
 
+        session_id = self.session_tracker.start(
+            external_id=task.id, agent_identity=self.name
+        )
+
         messages = self.build_messages(task)
         try:
             response = await self.llm_client.acompletion(
@@ -115,6 +121,9 @@ class LLMPersona:
                 **self.extra_kwargs,
             )
         except LLMUnavailableError as exc:
+            self.session_tracker.end(
+                session_id=session_id, summary=f"[failed] LLM unavailable: {exc}"
+            )
             return annotate(
                 task,
                 CabalReason(
@@ -123,6 +132,9 @@ class LLMPersona:
                 ),
             )
         except LLMRateLimitedError as exc:
+            self.session_tracker.end(
+                session_id=session_id, summary=f"[failed] LLM rate-limited: {exc}"
+            )
             return annotate(
                 task,
                 CabalReason(
@@ -131,6 +143,9 @@ class LLMPersona:
                 ),
             )
         except LLMInvalidRequestError as exc:
+            self.session_tracker.end(
+                session_id=session_id, summary=f"[failed] LLM rejected: {exc}"
+            )
             return annotate(
                 task,
                 CabalReason(
@@ -140,6 +155,7 @@ class LLMPersona:
             )
 
         text = self.parse_response(response)
+        self.session_tracker.end(session_id=session_id, summary=text)
         agent_msg = Message(role="agent", parts=[TextPart(text=text)])
         history = list(task.history)
         if task.status.message is not None:
