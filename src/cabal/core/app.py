@@ -46,6 +46,7 @@ from cabal.core.db import make_engine, make_sessionmaker, open_session
 from cabal.core.db_pragmas import install_sqlite_pragmas
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.identity_sync import sync_personas
+from cabal.core.llm.budget import BudgetGuard
 from cabal.core.llm.litellm_client import LiteLLMClient
 from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 from cabal.core.memory.techne_store import TechneMemoryStore
@@ -213,11 +214,14 @@ def create_app(
             resolved_acompletion = acompletion_fn or _default_acompletion()
             api_key_env = identity.litellm.api_key_env
             api_key = os.environ.get(api_key_env) if api_key_env else None
+            budget_guard = BudgetGuard()
+            _app.state.budget_guard = budget_guard
             litellm_client = LiteLLMClient(
                 acompletion_fn=resolved_acompletion,
                 hook_registry=hook_registry,
                 api_base=identity.litellm.api_base,
                 api_key=api_key,
+                budget=budget_guard,
             )
             _app.state.litellm_client = litellm_client
             for persona_name, persona_cfg in identity.personas.items():

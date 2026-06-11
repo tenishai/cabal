@@ -17,6 +17,7 @@ from typing import Any, Callable
 import structlog
 
 from cabal.core.hooks.registry import HookName, HookRegistry
+from cabal.core.llm.budget import BudgetExhaustedError, BudgetGuard
 from cabal.core.llm.circuit_breaker import CircuitBreaker, CircuitOpenError
 
 log = structlog.get_logger(__name__)
@@ -82,6 +83,7 @@ class LiteLLMClient:
     api_base: str | None = None
     api_key: str | None = None
     breaker: CircuitBreaker = field(default_factory=CircuitBreaker)
+    budget: BudgetGuard | None = None
 
     async def acompletion(
         self,
@@ -91,22 +93,44 @@ class LiteLLMClient:
         agent: str | None = None,
         trace_id: str | None = None,
         span_id: str | None = None,
+        task_id: str | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Call litellm.acompletion under the breaker, firing pre/post hooks."""
+        """Call litellm.acompletion under the breaker, firing pre/post hooks.
+
+        If `budget` is wired and `task_id` is provided, reserves a budget
+        chunk before the call and refunds the unused portion after.
+        BudgetExhaustedError is translated to LLMUnavailableError so
+        callers don't have to special-case it.
+        """
         pre_payload = {
             "agent": agent,
             "model": model,
             "messages": messages,
             "trace_id": trace_id,
             "span_id": span_id,
+            "task_id": task_id,
             "kwargs": kwargs,
         }
         await self.hook_registry.fire(HookName.LITELLM_PRE, pre_payload)
 
+        reserved_amount: int | None = None
+        if self.budget is not None and task_id is not None:
+            try:
+                reserved_amount = self.budget.reserve(task_id)
+            except BudgetExhaustedError as exc:
+                log.warning("litellm.budget_exhausted", task_id=task_id, agent=agent)
+                await self.hook_registry.fire(
+                    HookName.LITELLM_POST,
+                    {**pre_payload, "outcome": "budget_exhausted", "error": str(exc)},
+                )
+                raise LLMUnavailableError(str(exc)) from exc
+
         try:
             self.breaker.before_call()
         except CircuitOpenError as exc:
+            if reserved_amount is not None and task_id is not None:
+                self.budget.refund(task_id, used=0, reserved=reserved_amount)
             log.warning("litellm.circuit_open", agent=agent, model=model)
             await self.hook_registry.fire(
                 HookName.LITELLM_POST,
@@ -126,6 +150,9 @@ class LiteLLMClient:
             )
         except Exception as exc:  # noqa: BLE001
             self.breaker.on_failure()
+            if reserved_amount is not None and task_id is not None:
+                # Failed call counts as zero used — refund the reservation.
+                self.budget.refund(task_id, used=0, reserved=reserved_amount)
             cabal_class = _classify(exc)
             log.warning(
                 "litellm.call_failed",
@@ -141,8 +168,27 @@ class LiteLLMClient:
             raise cabal_class(str(exc)) from exc
 
         self.breaker.on_success()
+        used = _tokens_used(response)
+        if reserved_amount is not None and task_id is not None:
+            self.budget.refund(task_id, used=used, reserved=reserved_amount)
         await self.hook_registry.fire(
             HookName.LITELLM_POST,
-            {**pre_payload, "outcome": "success", "response": response},
+            {**pre_payload, "outcome": "success", "response": response, "tokens_used": used},
         )
         return response
+
+
+def _tokens_used(response: Any) -> int:
+    """Best-effort total-token extraction from a LiteLLM/OpenAI response."""
+    try:
+        usage = response.get("usage") if isinstance(response, dict) else None
+        if usage is None:
+            return 0
+        total = usage.get("total_tokens")
+        if total is not None:
+            return int(total)
+        prompt = int(usage.get("prompt_tokens", 0))
+        completion = int(usage.get("completion_tokens", 0))
+        return prompt + completion
+    except Exception:  # noqa: BLE001
+        return 0

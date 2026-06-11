@@ -95,12 +95,20 @@ class LLMPersona:
             raise CabalLLMError(f"unexpected response shape: {exc}") from exc
 
     async def handle_task(self, task: Task) -> Task:
+        budget_override = task.metadata.get("cabal_token_budget")
+        if (
+            budget_override is not None
+            and getattr(self.llm_client, "budget", None) is not None
+        ):
+            self.llm_client.budget.set_budget(task.id, int(budget_override))
+
         messages = self.build_messages(task)
         try:
             response = await self.llm_client.acompletion(
                 model=self.model,
                 messages=messages,
                 agent=self.name,
+                task_id=task.id,
                 trace_id=task.metadata.get("cabal_trace_id"),
                 span_id=task.metadata.get("cabal_span_id"),
                 max_tokens=self.max_tokens,
