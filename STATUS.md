@@ -52,8 +52,9 @@ for the per-decision rationale log.
 | T (28) | streaming chat | +4 | `cbl chat` consumes SSE; prints deltas live; `--no-stream` fallback |
 | U (29) | conversations + tail | +13 | EventBus pub/sub; `/admin/conversations`, `/admin/events/stream`; `cbl conversations`, `cbl tail` |
 | V (30) | K8s manifests | (yaml) | `k8s/` with namespace + secrets template + ConfigMaps + PVCs + LiteLLM/cabal-core Deployments + Litestream sidecar + Kustomize base |
+| W (31) | memory accumulation | +8 | LLMPersona opt-in `commit_to_memory`; Archivist defaults true; Q&A pairs flow into the techne knowledge corpus on every successful dispatch (sync + streaming) |
 
-**Total: 219 tests, 37 commits.**
+**Total: 227 tests, 38 commits.**
 
 ## What the morning operator can demo
 

@@ -42,6 +42,7 @@ class ArchivistPersona(LLMPersona):
         max_tokens: int = 8192,
         memory_store: MemoryStore | None = None,
         session_tracker: SessionTracker | None = None,
+        commit_to_memory: bool = True,
     ) -> None:
         super().__init__(
             name="archivist",
@@ -51,4 +52,8 @@ class ArchivistPersona(LLMPersona):
             max_tokens=max_tokens,
             memory_store=memory_store or NoOpMemoryStore(),
             session_tracker=session_tracker or NoOpSessionTracker(),
+            # Archivist is THE memory persona — accumulate by default.
+            commit_to_memory=commit_to_memory,
+            memory_commit_type="fact",
+            memory_commit_confidence="medium",
         )

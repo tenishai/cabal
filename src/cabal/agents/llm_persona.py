@@ -56,6 +56,10 @@ class LLMPersona:
     memory_store: MemoryStore = field(default_factory=NoOpMemoryStore)
     memory_recall_limit: int = 5
     session_tracker: SessionTracker = field(default_factory=NoOpSessionTracker)
+    commit_to_memory: bool = False
+    memory_commit_type: str = "fact"
+    memory_commit_confidence: str = "medium"
+    memory_commit_max_chars: int = 2000
 
     def _recall_for_task(self, task: Task) -> str:
         """Return a formatted memory-hits block, or empty string."""
@@ -157,6 +161,7 @@ class LLMPersona:
 
         text = self.parse_response(response)
         self.session_tracker.end(session_id=session_id, summary=text)
+        self._commit_qa_to_memory(task, text)
         agent_msg = Message(role="agent", parts=[TextPart(text=text)])
         history = list(task.history)
         if task.status.message is not None:
@@ -168,6 +173,37 @@ class LLMPersona:
             history=history,
             metadata=task.metadata,
         )
+
+    def _commit_qa_to_memory(self, task: Task, agent_text: str) -> None:
+        """Write the Q&A pair to the memory store as a captured exchange.
+
+        Opt-in via `commit_to_memory`. The committed content is
+        '[persona] Q: <user>\\nA: <agent>' so search results stay
+        attributable. Truncates to `memory_commit_max_chars` to keep the
+        DB tidy.
+        """
+        if not self.commit_to_memory:
+            return
+        user_text = ""
+        if task.status.message is not None:
+            user_text = " ".join(
+                p.text for p in task.status.message.parts if isinstance(p, TextPart)
+            ).strip()
+        if not user_text or not agent_text.strip():
+            return
+        content = f"[{self.name}] Q: {user_text}\nA: {agent_text.strip()}"
+        if len(content) > self.memory_commit_max_chars:
+            content = content[: self.memory_commit_max_chars - 1] + "…"
+        try:
+            self.memory_store.commit(
+                content,
+                type=self.memory_commit_type,
+                tags=self.name,
+                confidence=self.memory_commit_confidence,
+            )
+        except Exception:  # noqa: BLE001
+            # Memory writes must not block dispatch.
+            pass
 
     async def astream_task(self, task: Task) -> AsyncIterator[str]:
         """Yield text deltas as the LLM produces them.
@@ -204,6 +240,7 @@ class LLMPersona:
             )
             raise
         self.session_tracker.end(session_id=session_id, summary=full_text)
+        self._commit_qa_to_memory(task, full_text)
 
 
 def _message_to_chat(message: Message) -> dict[str, Any]:
