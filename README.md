@@ -23,11 +23,19 @@ tests/            pytest suite (router tests run in both modes)
 
 ## Quickstart (development)
 
+**Prerequisite**: clone `dimartin/techne` as a sibling directory of `cabal`:
+
+```
+parent/
+├── cabal/        # this repo
+└── techne/       # github.com/dimartin/techne
+```
+
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-pip install -e ../infra-techne   # techne 0.6.0 (until on PyPI)
+pip install -e ../techne                 # sibling checkout
 cp identity.toml.example identity.toml
 
 # Generate a master key once

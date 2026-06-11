@@ -105,6 +105,26 @@ cbl primus rotate rook                     # ratchet rook to generation 2
 - **GraphQL / Slack adapter**: still A2A-only on the wire.
 - **Rook with reviewer subordinate**: identity.toml declares it, the persona currently only uses `implementer`.
 
+## Pre-public-release checklist (must clear before this repo goes public)
+
+The current build assumes a sibling `../techne` checkout. That is fine for solo
+local + LAN deployment but is a blocker for going public. Before flipping the
+repo public:
+
+- [ ] **Publish techne to PyPI** (or any pip-installable index). Will need a
+      PyPI account, project-name reservation, a CI publish workflow
+      (`twine upload` from a trusted runner), and a first stable release tag.
+- [ ] In `cabal/pyproject.toml`, add `techne>=0.6.0` to `dependencies`.
+- [ ] In `cabal/Dockerfile`, drop the `COPY --from=techne` + `pip install /build/techne`
+      lines (`pip install .` then pulls techne from PyPI on its own).
+- [ ] In `cabal/docker-compose.yml`, remove the `additional_contexts.techne` block.
+- [ ] In `cabal/README.md`, drop the "clone techne as a sibling" prerequisite
+      and the `pip install -e ../techne` step.
+- [ ] In `cabal/CABAL-DECISIONS.md`, mark D-008 and D-012 SUPERSEDED with a
+      pointer to a new decision entry recording the PyPI flip.
+- [ ] Decide whether Cabal itself should be on PyPI by then so
+      `pip install cabal` works for adopters.
+
 ## Suggested next session focus
 
 1. **Make Rook use reviewer**: tweak Rook's pipeline to do implementer → reviewer → aggregate, and ship a one-line identity.toml change to demonstrate.

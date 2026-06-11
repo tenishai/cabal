@@ -23,7 +23,14 @@ COPY src ./src
 COPY migrations ./migrations
 COPY alembic.ini ./
 
-RUN pip install --prefix=/install .
+# techne is brought in via BuildKit `--build-context techne=../techne`
+# (set by docker-compose.yml's additional_contexts). See CABAL-DECISIONS D-008/D-012.
+# When techne lands on PyPI, drop both COPY+install lines and add a `techne>=0.6.0`
+# pin to pyproject.toml's dependencies — then `pip install .` brings it in for free.
+COPY --from=techne / /build/techne
+
+RUN pip install --prefix=/install /build/techne \
+ && pip install --prefix=/install .
 
 # ----- Runtime stage --------------------------------------------------------
 FROM python:3.12-slim AS runtime

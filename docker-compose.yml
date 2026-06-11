@@ -19,6 +19,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Sibling-checkout techne is pulled into the build via BuildKit's
+      # named contexts (Compose v2.16+ / Docker 23+). The path is resolved
+      # from this compose file's directory, so `../techne` works as long as
+      # the operator cloned cabal + techne as siblings.
+      # See CABAL-DECISIONS.md D-008 / D-012. Drop additional_contexts when
+      # techne is published to PyPI (then pyproject.toml owns the dep).
+      additional_contexts:
+        techne: ../techne
     container_name: cabal-core
     restart: unless-stopped
     environment:

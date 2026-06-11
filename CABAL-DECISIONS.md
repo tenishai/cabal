@@ -80,20 +80,24 @@ Linked feedback memory: `feedback-decision-authority`.
 - **Reasoning**: standard for the FastAPI ecosystem; matches techne's choice.
 - **Lands in**: `pyproject.toml [project.optional-dependencies] dev`.
 
-### D-012: techne deliberately omitted from container image (for now)
+### D-012: container builds use BuildKit `additional_contexts` for techne
 
-- **Question**: techne 0.6.0 is needed by Cabal for persona session checkpointing,
-  but it's not on PyPI. Should the Dockerfile pin a local path, vendor source, or skip?
-- **Choice**: Skip — Dockerfile does not install techne.
-- **Reasoning**: A local path means a host-bound bind mount that breaks across
-  machines. Vendoring techne source into the image couples release cadences and
-  forces a Cabal rebuild on every techne change. The Cabal Core paths that need
-  techne (LLMPersona checkpoint/resume) aren't yet exercised by any built-in
-  persona — Archivist/Architect/Librarian are stateless this phase. We'll pin
-  `techne>=0.6.0` in pyproject AND uncomment from the Dockerfile the day techne
-  publishes to PyPI (or our private index).
-- **Lands in**: Dockerfile (no techne line), pyproject.toml (still no `techne`
-  entry — added back when published).
+- **Question**: How does the Dockerfile get techne in without a PyPI publish?
+- **Choice**: Use Compose v2's `additional_contexts` to expose `../techne` as a
+  named build context (`techne`); the Dockerfile's build stage `COPY --from=techne`
+  pulls in the source and `pip install`s it into the runtime virtualenv.
+- **Reasoning**: Mirrors D-008 (sibling-directory convention). Requires the
+  operator who runs `docker compose build` to have `../techne` checked out, which
+  is the same assumption local dev already makes. Zero new infrastructure.
+  Discarded alternatives: bind-mounting techne as a runtime volume (breaks the
+  "image is self-contained" invariant), vendoring into the cabal repo (release
+  cadences couple).
+- **Public-repo prerequisite**: SAME as D-008. When techne hits PyPI:
+    - `pyproject.toml` adds `techne>=0.6.0` to `dependencies`,
+    - Dockerfile drops the `COPY --from=techne` step (pip handles it via PyPI),
+    - `docker-compose.yml` drops `additional_contexts.techne`,
+    - This decision marked SUPERSEDED.
+- **Lands in**: `Dockerfile` (COPY + pip install), `docker-compose.yml` build block.
 
 ### D-013: container CMD via cbl, not uvicorn directly
 
@@ -167,24 +171,33 @@ Linked feedback memory: `feedback-decision-authority`.
   our layer, fiddly to extract from LiteLLM internals.
 - **Lands in**: `core/llm/circuit_breaker.py`, `core/llm/litellm_client.py`.
 
-### D-008: techne dependency strategy (0.6.0 not yet on PyPI)
+### D-008: techne installed from `../techne` sibling checkout (durable)
 
-- **Question**: techne 0.6.0 isn't published to PyPI. How should cabal depend on it?
-- **Options**:
-  - A. `techne @ file:///Users/dimartin/working/claude/infra-techne` in pyproject —
-    pins a path that won't work on other machines.
-  - B. Drop techne from `dependencies`, install it separately from the local checkout
-    during dev. Add an import-time guard in any module that needs techne.
-  - C. Publish techne 0.6.0 to PyPI tonight.
-- **Choice**: B
-- **Reasoning**: A is brittle (path-dependent, breaks CI later). C is a real action
-  but requires PyPI account setup, README polish for first public release, and a
-  decision about whether to make techne public — none of which are right calls to
-  bake into tonight's autonomous run. B is the minimal step that lets us proceed:
-  pyproject documents the soft dependency in a comment; the cabal venv has a
-  local-editable techne install; the day we publish techne we add the pin back.
-- **Lands in**: `pyproject.toml` comment block, dev-setup section of README,
-  manual `pip install -e ../infra-techne` step in venv bootstrap.
+- **Question**: techne is not on PyPI. How should cabal depend on it?
+- **Choice**: Sibling-directory convention. Anyone running cabal locally is expected
+  to have `dimartin/techne` cloned as a sibling of `cabal` (`../techne`). Cabal's
+  `pyproject.toml` does not list techne; the README's dev quickstart adds
+  `pip install -e ../techne` as a separate step. The Dockerfile uses BuildKit
+  additional contexts to install techne the same way during image builds.
+- **Reasoning**: Sibling layout is the simplest durable answer — works for local
+  dev, docker compose builds, and anyone cloning fresh. Avoids hand-rolling a
+  private package server (Gitea PyPI was considered and rejected in 2026-06-11
+  conversation: extra moving piece for solo use). Pin via versioned dep is
+  unnecessary while both repos share a single operator.
+- **PUBLIC-REPO PREREQUISITE**: Before the first public Cabal release, this
+  decision flips. Public release requires:
+    - techne published to PyPI (or any pip-installable index) under
+      `techne>=0.6.0`,
+    - Cabal `pyproject.toml` adds `techne>=0.6.0` to `dependencies`,
+    - Cabal `Dockerfile` reverts to a plain `pip install` step (drop the
+      additional-context BuildKit dance),
+    - README quickstart drops the sibling-clone instruction,
+    - This decision marked SUPERSEDED with a pointer to the new PyPI-anchored
+      decision and the day it landed.
+  See `STATUS.md` § "Pre-public-release checklist" — that's the running
+  reminder.
+- **Lands in**: `README.md` quickstart, `Dockerfile` build stage, `docker-compose.yml`
+  `additional_contexts`, this log.
 
 ### D-007: Cryptography library for AgentCard signing
 
