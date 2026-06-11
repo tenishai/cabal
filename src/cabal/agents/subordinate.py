@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from cabal.agents.llm_persona import LLMPersona
 from cabal.core.llm.litellm_client import LiteLLMClient
+from cabal.core.memory.session_tracker import NoOpSessionTracker, SessionTracker
+from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 
 
 SUBORDINATE_PROMPTS = {
@@ -42,6 +44,8 @@ class Subordinate(LLMPersona):
         model: str,
         max_tokens: int = 8192,
         system_prompt: str | None = None,
+        memory_store: MemoryStore | None = None,
+        session_tracker: SessionTracker | None = None,
     ) -> None:
         super().__init__(
             name=f"rook-{role}",
@@ -51,4 +55,6 @@ class Subordinate(LLMPersona):
                 role, f"You are Rook's {role} subordinate."
             ),
             max_tokens=max_tokens,
+            memory_store=memory_store or NoOpMemoryStore(),
+            session_tracker=session_tracker or NoOpSessionTracker(),
         )

@@ -243,16 +243,13 @@ def create_app(
                         msg="declared in identity.toml but not in PERSONA_REGISTRY",
                     )
                     continue
-                # Archivist gets the memory store + session tracker; other
-                # personas can opt in later by accepting them in their __init__.
-                if persona_name == "archivist":
-                    handler = factory(
-                        litellm_client,
-                        memory_store=memory_store,
-                        session_tracker=session_tracker,
-                    )
-                elif persona_name == "rook":
-                    # Build subordinates from identity.toml.subordinates
+                # Every persona gets the shared memory_store +
+                # session_tracker. Both default to no-op when [techne] isn't
+                # configured, so behavior is identical for non-techne deploys.
+                if persona_name == "rook":
+                    # Build subordinates from identity.toml.subordinates.
+                    # Subordinates share the primus's memory + session tracker
+                    # so reviewer/implementer recall under the same DB.
                     sub_instances: dict[str, Subordinate] = {}
                     for role, sub_cfg in persona_cfg.subordinates.items():
                         sub_instances[role] = Subordinate(
@@ -260,6 +257,8 @@ def create_app(
                             llm_client=litellm_client,
                             model=sub_cfg.model,
                             max_tokens=sub_cfg.max_tokens,
+                            memory_store=memory_store,
+                            session_tracker=session_tracker,
                         )
                     if "implementer" not in sub_instances:
                         log.warning(
@@ -272,8 +271,15 @@ def create_app(
                         subordinates=sub_instances,
                         hook_registry=hook_registry,
                     )
+                    # Rook primus itself also gets memory + session
+                    handler.memory_store = memory_store
+                    handler.session_tracker = session_tracker
                 else:
-                    handler = factory(litellm_client)
+                    handler = factory(
+                        litellm_client,
+                        memory_store=memory_store,
+                        session_tracker=session_tracker,
+                    )
                 # Singletons keep their persona name; primus personas get
                 # the -primus suffix to match identity_sync's naming.
                 agent_name = (
