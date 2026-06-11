@@ -11,10 +11,13 @@ Methods:
 
 from __future__ import annotations
 
+import json
 import uuid
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, Header, Path, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
 from cabal.core.a2a.jsonrpc import (
@@ -143,10 +146,181 @@ async def per_agent_jsonrpc(
         return await _message_send(request, agent_name, raw_token, rpc_req)
     if rpc_req.method == "tasks/get":
         return await _tasks_get(request, raw_token, rpc_req)
+    if rpc_req.method == "message/stream":
+        # SSE streaming response — handled by a separate endpoint that
+        # returns text/event-stream rather than JSON.
+        return make_error_response(
+            id=rpc_req.id,
+            code=ERROR_INVALID_REQUEST,
+            message=(
+                "message/stream must be sent to "
+                f"/agents/{agent_name}/stream with the same params; "
+                "the JSON-RPC POST endpoint returns single responses only"
+            ),
+        )
     return make_error_response(
         id=rpc_req.id,
         code=ERROR_METHOD_NOT_FOUND,
         message=f"unknown method: {rpc_req.method!r}",
+    )
+
+
+@router.post("/{agent_name}/stream")
+async def per_agent_stream(
+    request: Request,
+    agent_name: str = Path(..., min_length=1, max_length=64),
+    authorization: str | None = Header(default=None),
+) -> StreamingResponse:
+    """A2A v1.0 message/stream endpoint.
+
+    Body is the same JSON-RPC envelope used by /agents/{name}, but the
+    response is an SSE stream: each text delta from the LLM becomes an
+    `event: chunk` frame; a final `event: status-update` frame carries
+    the completed Task.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+
+    try:
+        rpc_req = JSONRPCRequest.model_validate(body)
+    except Exception as exc:  # noqa: BLE001
+        return StreamingResponse(
+            _sse_error_only(
+                ERROR_INVALID_REQUEST, f"invalid JSON-RPC envelope: {exc}"
+            ),
+            media_type="text/event-stream",
+        )
+
+    raw_token = _bearer(authorization)
+    if raw_token is None:
+        return StreamingResponse(
+            _sse_error_only(ERROR_UNAUTHORIZED, "missing Authorization header"),
+            media_type="text/event-stream",
+        )
+
+    if rpc_req.method != "message/stream":
+        return StreamingResponse(
+            _sse_error_only(
+                ERROR_METHOD_NOT_FOUND,
+                f"this endpoint only handles message/stream, not {rpc_req.method!r}",
+            ),
+            media_type="text/event-stream",
+        )
+
+    if rpc_req.params is None:
+        return StreamingResponse(
+            _sse_error_only(ERROR_INVALID_PARAMS, "params required"),
+            media_type="text/event-stream",
+        )
+    try:
+        params = MessageSendParams.model_validate(rpc_req.params)
+    except Exception as exc:  # noqa: BLE001
+        return StreamingResponse(
+            _sse_error_only(ERROR_INVALID_PARAMS, f"invalid params: {exc}"),
+            media_type="text/event-stream",
+        )
+
+    dispatch_token, err = await _resolve_dispatch_token(request, raw_token, agent_name)
+    if err is not None:
+        return StreamingResponse(
+            _sse_error_only(err.error.code, err.error.message),
+            media_type="text/event-stream",
+        )
+
+    router_ = request.app.state.dispatch_router
+    if not router_.has_local(agent_name):
+        return StreamingResponse(
+            _sse_error_only(
+                ERROR_AGENT_NOT_FOUND,
+                f"agent {agent_name!r} has no in-process handler "
+                "(streaming requires a local persona)",
+            ),
+            media_type="text/event-stream",
+        )
+
+    handler = router_._local[agent_name]  # type: ignore[attr-defined]
+    if not hasattr(handler, "astream_task"):
+        return StreamingResponse(
+            _sse_error_only(
+                ERROR_METHOD_NOT_FOUND,
+                f"agent {agent_name!r}'s handler does not implement astream_task",
+            ),
+            media_type="text/event-stream",
+        )
+
+    task_id = str(uuid.uuid4())
+
+    return StreamingResponse(
+        _stream_task_events(handler, task_id, agent_name, params, rpc_req.id),
+        media_type="text/event-stream",
+    )
+
+
+async def _stream_task_events(
+    handler: Any,
+    task_id: str,
+    agent_name: str,
+    params: MessageSendParams,
+    request_id: Any,
+) -> AsyncIterator[bytes]:
+    from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
+
+    task = Task(
+        id=task_id,
+        status=TaskStatus(state="submitted", message=params.message),
+        metadata=params.metadata or {},
+    )
+    full_text = ""
+    try:
+        async for delta in handler.astream_task(task):
+            full_text += delta
+            yield _sse_event(
+                "chunk", {"jsonrpc": "2.0", "id": request_id, "delta": delta}
+            )
+    except Exception as exc:  # noqa: BLE001
+        yield _sse_event(
+            "error",
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": ERROR_INTERNAL,
+                    "message": f"stream failed: {exc}",
+                    "partial_text": full_text,
+                },
+            },
+        )
+        return
+
+    final_task = Task(
+        id=task_id,
+        status=TaskStatus(
+            state="completed",
+            message=Message(role="agent", parts=[TextPart(text=full_text)]),
+        ),
+        metadata=task.metadata,
+    )
+    yield _sse_event(
+        "status-update",
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": final_task.model_dump(by_alias=True, exclude_none=True),
+            "final": True,
+        },
+    )
+
+
+def _sse_event(event_name: str, payload: dict[str, Any]) -> bytes:
+    return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n".encode("utf-8")
+
+
+async def _sse_error_only(code: int, message: str) -> AsyncIterator[bytes]:
+    yield _sse_event(
+        "error",
+        {"jsonrpc": "2.0", "error": {"code": code, "message": message}},
     )
 
 

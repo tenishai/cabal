@@ -12,6 +12,7 @@ each persona its own model from identity.toml.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -167,6 +168,42 @@ class LLMPersona:
             history=history,
             metadata=task.metadata,
         )
+
+    async def astream_task(self, task: Task) -> AsyncIterator[str]:
+        """Yield text deltas as the LLM produces them.
+
+        Wraps LiteLLMClient.astream + session lifecycle. Memory recall +
+        history replay reuse `build_messages`, so streaming sees the same
+        system prompt and history a non-streaming dispatch would.
+
+        Errors mid-stream propagate via the underlying LiteLLMClient — the
+        caller (typically the SSE route) decides what status-update event
+        to emit.
+        """
+        session_id = self.session_tracker.start(
+            external_id=task.id, agent_identity=self.name
+        )
+        messages = self.build_messages(task)
+        full_text = ""
+        try:
+            async for delta in self.llm_client.astream(
+                model=self.model,
+                messages=messages,
+                agent=self.name,
+                task_id=task.id,
+                trace_id=task.metadata.get("cabal_trace_id"),
+                span_id=task.metadata.get("cabal_span_id"),
+                max_tokens=self.max_tokens,
+                **self.extra_kwargs,
+            ):
+                full_text += delta
+                yield delta
+        except Exception as exc:
+            self.session_tracker.end(
+                session_id=session_id, summary=f"[stream-failed] {exc}"
+            )
+            raise
+        self.session_tracker.end(session_id=session_id, summary=full_text)
 
 
 def _message_to_chat(message: Message) -> dict[str, Any]:

@@ -11,6 +11,7 @@ personas dispatch through it via `LiteLLMClient`.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -176,6 +177,146 @@ class LiteLLMClient:
             {**pre_payload, "outcome": "success", "response": response, "tokens_used": used},
         )
         return response
+
+    async def astream(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        agent: str | None = None,
+        trace_id: str | None = None,
+        span_id: str | None = None,
+        task_id: str | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        """Stream a completion as text deltas. Yields each non-empty chunk.
+
+        Same pre/post hooks + breaker + budget machinery as acompletion(),
+        but the call is made with `stream=True` and the underlying response
+        is iterated. Errors are classified identically. Token usage isn't
+        always available mid-stream — refund uses an approximate count
+        derived from total text length when usage metadata is absent.
+        """
+        pre_payload = {
+            "agent": agent,
+            "model": model,
+            "messages": messages,
+            "trace_id": trace_id,
+            "span_id": span_id,
+            "task_id": task_id,
+            "kwargs": kwargs,
+            "stream": True,
+        }
+        await self.hook_registry.fire(HookName.LITELLM_PRE, pre_payload)
+
+        reserved_amount: int | None = None
+        if self.budget is not None and task_id is not None:
+            try:
+                reserved_amount = self.budget.reserve(task_id)
+            except BudgetExhaustedError as exc:
+                await self.hook_registry.fire(
+                    HookName.LITELLM_POST,
+                    {**pre_payload, "outcome": "budget_exhausted", "error": str(exc)},
+                )
+                raise LLMUnavailableError(str(exc)) from exc
+
+        try:
+            self.breaker.before_call()
+        except CircuitOpenError as exc:
+            if reserved_amount is not None and task_id is not None:
+                self.budget.refund(task_id, used=0, reserved=reserved_amount)
+            await self.hook_registry.fire(
+                HookName.LITELLM_POST,
+                {**pre_payload, "outcome": "circuit_open", "error": str(exc)},
+            )
+            raise LLMUnavailableError(str(exc)) from exc
+
+        merged_kwargs = dict(kwargs)
+        merged_kwargs["stream"] = True
+        if self.api_base is not None:
+            merged_kwargs.setdefault("api_base", self.api_base)
+        if self.api_key is not None:
+            merged_kwargs.setdefault("api_key", self.api_key)
+
+        try:
+            stream = await self.acompletion_fn(
+                model=model, messages=messages, **merged_kwargs
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.breaker.on_failure()
+            if reserved_amount is not None and task_id is not None:
+                self.budget.refund(task_id, used=0, reserved=reserved_amount)
+            cabal_class = _classify(exc)
+            await self.hook_registry.fire(
+                HookName.LITELLM_POST,
+                {**pre_payload, "outcome": "error", "error_type": type(exc).__name__},
+            )
+            raise cabal_class(str(exc)) from exc
+
+        full_text = ""
+        try:
+            async for chunk in stream:
+                delta_text = _extract_delta(chunk)
+                if delta_text:
+                    full_text += delta_text
+                    yield delta_text
+        except Exception as exc:  # noqa: BLE001
+            self.breaker.on_failure()
+            if reserved_amount is not None and task_id is not None:
+                self.budget.refund(task_id, used=0, reserved=reserved_amount)
+            cabal_class = _classify(exc)
+            await self.hook_registry.fire(
+                HookName.LITELLM_POST,
+                {
+                    **pre_payload,
+                    "outcome": "stream_error",
+                    "error_type": type(exc).__name__,
+                    "partial_text": full_text,
+                },
+            )
+            raise cabal_class(str(exc)) from exc
+
+        self.breaker.on_success()
+        # No usage object on most stream APIs — estimate by character count.
+        # ~4 chars per token is a reasonable approximation.
+        approx_used = len(full_text) // 4
+        if reserved_amount is not None and task_id is not None:
+            self.budget.refund(task_id, used=approx_used, reserved=reserved_amount)
+        await self.hook_registry.fire(
+            HookName.LITELLM_POST,
+            {
+                **pre_payload,
+                "outcome": "success",
+                "full_text": full_text,
+                "tokens_used_approx": approx_used,
+            },
+        )
+
+
+def _extract_delta(chunk: Any) -> str:
+    """Pull the delta text out of a streaming chunk.
+
+    Handles dict-shaped chunks (`{"choices":[{"delta":{"content":"..."}}]}`)
+    and object-shaped chunks (LiteLLM ModelResponse). Empty / non-content
+    chunks return ''.
+    """
+    try:
+        if isinstance(chunk, dict):
+            choices = chunk.get("choices") or []
+            if not choices:
+                return ""
+            delta = choices[0].get("delta") or {}
+            return delta.get("content") or ""
+        # Attribute-style access for litellm ModelResponse-like objects
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            return ""
+        delta = getattr(choices[0], "delta", None)
+        if delta is None:
+            return ""
+        return getattr(delta, "content", None) or ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _tokens_used(response: Any) -> int:
