@@ -1,0 +1,30 @@
+# Generic nginx-ingress example. Adjust for your ingress controller +
+# TLS provider. Copy to ingress.yaml and apply when ready.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cabal-core
+  namespace: cabal
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"          # SSE
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"       # long streams
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # cert-manager.io/cluster-issuer: letsencrypt-prod          # uncomment if you use cert-manager
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: cabal.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cabal-core
+                port:
+                  number: 7400
+  tls:
+    - hosts:
+        - cabal.example.com
+      secretName: cabal-tls

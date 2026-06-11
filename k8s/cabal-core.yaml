@@ -1,0 +1,148 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cabal-core
+  namespace: cabal
+  labels:
+    app.kubernetes.io/name: cabal
+    app.kubernetes.io/component: core
+spec:
+  # SQLite + Litestream = single writer. Hard-pin to 1 replica until we
+  # move to Postgres or a multi-writer SQLite topology.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cabal
+      app.kubernetes.io/component: core
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cabal
+        app.kubernetes.io/component: core
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        # ---- Cabal Core daemon ----
+        - name: cabal-core
+          image: ghcr.io/dimartin/cabal:latest   # built from this repo's Dockerfile
+          imagePullPolicy: IfNotPresent
+          args:
+            - "cbl"
+            - "daemon"
+            - "up"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "7400"
+            - "--config"
+            - "/app/identity.toml"
+          ports:
+            - containerPort: 7400
+              name: http
+          env:
+            - name: CABAL_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cabal-secrets
+                  key: CABAL_MASTER_KEY
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cabal-secrets
+                  key: LITELLM_MASTER_KEY
+            # Uncomment when [langfuse] is enabled in identity.toml.
+            # - name: LANGFUSE_PUBLIC_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: cabal-secrets
+            #       key: LANGFUSE_PUBLIC_KEY
+            # - name: LANGFUSE_SECRET_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: cabal-secrets
+            #       key: LANGFUSE_SECRET_KEY
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /app/identity.toml
+              subPath: identity.toml
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 7400
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 7400
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 2
+              memory: 2Gi
+        # ---- Litestream sidecar ----
+        - name: litestream
+          image: litestream/litestream:0.3.13
+          imagePullPolicy: IfNotPresent
+          args:
+            - "replicate"
+            - "-config"
+            - "/etc/litestream.yml"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: replica
+              mountPath: /replica
+            - name: litestream-config
+              mountPath: /etc/litestream.yml
+              subPath: litestream.yml
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: cabal-data
+        - name: replica
+          persistentVolumeClaim:
+            claimName: cabal-litestream-replica
+        - name: config
+          configMap:
+            name: cabal-config
+        - name: litestream-config
+          configMap:
+            name: cabal-litestream-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cabal-core
+  namespace: cabal
+spec:
+  selector:
+    app.kubernetes.io/name: cabal
+    app.kubernetes.io/component: core
+  ports:
+    - port: 7400
+      targetPort: 7400
+      protocol: TCP
+      name: http

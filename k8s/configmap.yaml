@@ -1,0 +1,94 @@
+# identity.toml + LiteLLM proxy config.
+# In production: switch identity.toml to a ConfigMap volume per-cluster
+# (so different envs can override) or generate from Helm values.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cabal-config
+  namespace: cabal
+data:
+  identity.toml: |
+    [cabal]
+    host = "0.0.0.0"
+    port = 7400
+    data_dir = "/data"
+
+    [litellm]
+    api_base = "http://cabal-litellm.cabal.svc.cluster.local:4000"
+    api_key_env = "LITELLM_MASTER_KEY"
+
+    [techne]
+    db_path = "/data/techne.db"
+    use_vectors = false
+
+    [personas.archivist]
+    description = "Memory and search"
+    role = "singleton"
+    safety_tier = "moderate"
+
+    [personas.architect]
+    description = "Patterns and design"
+    role = "singleton"
+    safety_tier = "moderate"
+
+    [personas.librarian]
+    description = "External-documentation lookup"
+    role = "singleton"
+    safety_tier = "moderate"
+
+    [personas.rook]
+    description = "Engineering primus"
+    role = "primus"
+    safety_tier = "strict"
+
+    [personas.rook.subordinates.implementer]
+    model = "anthropic/claude-sonnet-4-6"
+    max_tokens = 16384
+
+    [personas.rook.subordinates.reviewer]
+    model = "anthropic/claude-opus-4-7"
+    max_tokens = 8192
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cabal-litellm-config
+  namespace: cabal
+data:
+  config.yaml: |
+    model_list:
+      - model_name: anthropic/claude-sonnet-4-6
+        litellm_params:
+          model: anthropic/claude-sonnet-4-6
+          api_key: os.environ/ANTHROPIC_API_KEY
+      - model_name: anthropic/claude-opus-4-7
+        litellm_params:
+          model: anthropic/claude-opus-4-7
+          api_key: os.environ/ANTHROPIC_API_KEY
+      - model_name: anthropic/claude-haiku-4-5
+        litellm_params:
+          model: anthropic/claude-haiku-4-5
+          api_key: os.environ/ANTHROPIC_API_KEY
+    general_settings:
+      master_key: os.environ/LITELLM_MASTER_KEY
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cabal-litestream-config
+  namespace: cabal
+data:
+  litestream.yml: |
+    # Default replica: a sibling PV. For production, change to s3:// /
+    # gcs:// / azure:// with credentials wired in.
+    dbs:
+      - path: /data/cabal.db
+        replicas:
+          - type: file
+            path: /replica/cabal.db
+            snapshot-interval: 1h
+            retention: 168h
+            sync-interval: 1s

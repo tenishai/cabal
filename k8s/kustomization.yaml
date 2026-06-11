@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Apply this directory directly with `kubectl apply -k k8s/` once you have
+# a populated secret.yaml in this folder. Or layer on top with your own
+# Kustomize overlay.
+
+resources:
+  - namespace.yaml
+  - secret.yaml          # NOT secret.example.yaml — make a real one first
+  - configmap.yaml
+  - pvc.yaml
+  - litellm.yaml
+  - cabal-core.yaml
+  # - ingress.yaml       # uncomment when you've written one from the example
+
+commonLabels:
+  app.kubernetes.io/name: cabal
+  app.kubernetes.io/managed-by: kustomize

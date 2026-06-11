@@ -51,8 +51,9 @@ for the per-decision rationale log.
 | S (27) | streaming | +8 | `astream`, `astream_task`, `POST /agents/{name}/stream` SSE endpoint |
 | T (28) | streaming chat | +4 | `cbl chat` consumes SSE; prints deltas live; `--no-stream` fallback |
 | U (29) | conversations + tail | +13 | EventBus pub/sub; `/admin/conversations`, `/admin/events/stream`; `cbl conversations`, `cbl tail` |
+| V (30) | K8s manifests | (yaml) | `k8s/` with namespace + secrets template + ConfigMaps + PVCs + LiteLLM/cabal-core Deployments + Litestream sidecar + Kustomize base |
 
-**Total: 219 tests, 36 commits.**
+**Total: 219 tests, 37 commits.**
 
 ## What the morning operator can demo
 

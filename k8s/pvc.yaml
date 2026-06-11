@@ -1,0 +1,31 @@
+# Two PVCs:
+#   cabal-data:           SQLite DB, dev keys, techne DB.
+#   cabal-litestream-replica: where the Litestream sidecar streams to.
+# Adjust storageClassName + size per cluster.
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cabal-data
+  namespace: cabal
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # storageClassName: standard   # set per cluster
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cabal-litestream-replica
+  namespace: cabal
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName: standard
