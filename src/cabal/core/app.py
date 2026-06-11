@@ -46,7 +46,7 @@ from cabal.core.hooks.registry import HookRegistry
 from cabal.core.identity_sync import sync_personas
 from cabal.core.llm.litellm_client import LiteLLMClient
 from cabal.core.models import Persona
-from cabal.core.routes import admin, auth, healthz, tasks, well_known
+from cabal.core.routes import a2a_jsonrpc, admin, auth, healthz, tasks, well_known
 
 log = structlog.get_logger(__name__)
 
@@ -255,5 +255,6 @@ def create_app(
     app.include_router(auth.router)
     app.include_router(tasks.router)
     app.include_router(admin.router)
+    app.include_router(a2a_jsonrpc.router)
 
     return app

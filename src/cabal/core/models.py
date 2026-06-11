@@ -114,6 +114,9 @@ class Conversation(Base):
     cabal_escalated_from: Mapped[str | None] = mapped_column(
         String, ForeignKey("conversations.task_id")
     )
+    # Full Task body persisted on dispatch success — enables tasks/get and
+    # tasks/resubscribe (A2A v1.0) without replaying the event log.
+    result_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=_utcnow_default()
     )

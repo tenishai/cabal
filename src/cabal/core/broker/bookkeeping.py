@@ -76,7 +76,11 @@ class Bookkeeper:
             await session.execute(
                 update(Conversation)
                 .where(Conversation.task_id == task.id)
-                .values(state=response.status.state, updated_at=datetime.now(timezone.utc))
+                .values(
+                    state=response.status.state,
+                    updated_at=datetime.now(timezone.utc),
+                    result_json=response.model_dump(by_alias=True, exclude_none=True),
+                )
             )
             session.add(
                 Event(
