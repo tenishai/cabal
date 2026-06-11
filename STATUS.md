@@ -58,8 +58,9 @@ for the per-decision rationale log.
 | Z (34) | limenal integration | +6 | `cabal.core.tools.MCPToolProxy` + persona tool-use loop; end-to-end Cabal persona → limenal MCP gateway → handler with real JWT auth |
 | AA (35) | identity-driven MCP | +4 | `[limenal]` block + per-persona `[personas.X.mcp].enabled` auto-wires tool_proxy at lifespan; hot-reload preserves shared httpx + signing key |
 | BB (36) | tool_extras forwarding | +3 | `[personas.X.mcp.tool_extras]` → JWT `cabal_tool_extras` claim → limenal `Context.extra` → handler reads per-persona allowlist. End-to-end: archivist's web allowlist tightened to one host |
+| CC (37) | secrets endpoint | +8 | `GET /admin/secrets/{persona}/{handler}` returns credentials from `CABAL_SECRET_<persona>_<handler>_*` env vars. Operator OR `secrets-fetch` scope; per-persona/per-handler isolation enforced |
 
-**Total: 250 tests, 43 commits.**
+**Total: 258 tests, 44 commits.**
 
 ## What the morning operator can demo
 

@@ -399,3 +399,99 @@ def _make_default_memory_store():
 def _make_default_session_tracker():
     from cabal.core.memory.session_tracker import NoOpSessionTracker
     return NoOpSessionTracker()
+
+
+# ---- secrets endpoint for limenal (Phase GG) ------------------------
+
+
+@router.get("/secrets/{persona}/{handler_name}")
+async def get_secrets(
+    persona: str,
+    handler_name: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Return the credential set for `(persona, handler_name)`.
+
+    Credential source: environment variables of the form
+    `CABAL_SECRET_<persona>_<handler>_<KEY>`. The KEY is preserved
+    verbatim in the response dict so handler authors can document the
+    keys they read (SLACK_BOT_TOKEN, GITHUB_TOKEN, ...) and operators
+    can populate them by setting the corresponding env vars at daemon
+    start.
+
+    Auth: operator-scope OR a token scoped specifically for
+    `secrets-fetch`. The operator gate is fine for solo; team-scale
+    deployments will mint a dedicated limenal-service token with
+    `secrets-fetch` scope so the operator isn't typing operator JWTs
+    on every limenal restart.
+    """
+    import os as _os
+    import re
+
+    claims = _require_secrets_fetch(
+        request, _extract_bearer(authorization)
+    )
+    # Tolerate operator-style names: persona == "rook", handler == "slack"
+    persona_norm = _normalize(persona)
+    handler_norm = _normalize(handler_name)
+    if not persona_norm or not handler_norm:
+        raise HTTPException(400, detail="persona and handler must be non-empty")
+
+    prefix = f"CABAL_SECRET_{persona_norm}_{handler_norm}_"
+    # Allow case-insensitive prefix match; preserve the KEY suffix in
+    # the response as-is.
+    pat = re.compile(f"^{re.escape(prefix)}", re.IGNORECASE)
+    creds: dict[str, str] = {}
+    for env_key, value in _os.environ.items():
+        m = pat.match(env_key)
+        if m is None:
+            continue
+        local_key = env_key[m.end():]
+        if local_key:
+            creds[local_key] = value
+
+    return {
+        "persona": persona_norm,
+        "handler": handler_norm,
+        "credentials": creds,
+        "caller": claims.get("sub"),
+    }
+
+
+def _normalize(s: str) -> str:
+    """Strip and reject obvious injection (only word chars + hyphens)."""
+    import re
+
+    s = s.strip()
+    if not re.match(r"^[A-Za-z0-9_-]+$", s):
+        raise HTTPException(
+            400,
+            detail=(
+                f"name {s!r} contains characters not in [A-Za-z0-9_-]; "
+                "refuse to translate to env-var prefix"
+            ),
+        )
+    return s
+
+
+def _require_secrets_fetch(
+    request: Request, raw_token: str
+) -> dict[str, Any]:
+    """Like _require_operator_claims, but also accepts tokens whose scope
+    contains 'secrets-fetch' (the dedicated limenal service scope)."""
+    try:
+        claims = verify(
+            raw_token,
+            key_set=request.app.state.jwks_provider(),
+            expected_audience=None,
+        )
+    except JWTError as exc:
+        raise HTTPException(401, detail=str(exc)) from exc
+    scope = claims.get("cabal_scope") or []
+    if "operator" not in scope and "secrets-fetch" not in scope:
+        raise HTTPException(
+            403,
+            detail="requires operator OR secrets-fetch scope",
+        )
+    return claims
