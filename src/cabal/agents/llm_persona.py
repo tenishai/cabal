@@ -60,6 +60,13 @@ class LLMPersona:
     memory_commit_type: str = "fact"
     memory_commit_confidence: str = "medium"
     memory_commit_max_chars: int = 2000
+    # Optional MCP tool surface (cabal.core.tools.mcp_proxy.MCPToolProxy).
+    # When set, build_messages still emits the same system+history, but
+    # acompletion is called with `tools=...`. tool_calls in the response
+    # trigger a recursive loop capped at `tool_use_max_steps` total LLM
+    # calls per dispatch.
+    tool_proxy: Any | None = None
+    tool_use_max_steps: int = 4
 
     def _recall_for_task(self, task: Task) -> str:
         """Return a formatted memory-hits block, or empty string."""
@@ -95,11 +102,19 @@ class LLMPersona:
         return messages
 
     def parse_response(self, response: Any) -> str:
-        """Extract assistant text from the LiteLLM response."""
+        """Extract assistant text from the LiteLLM response.
+
+        When the response is a tool_calls-only message (no text content),
+        return the empty string rather than raising — the caller has
+        already decided this is the final response, and tools/no-text is
+        a legitimate (if unusual) final state."""
         try:
-            return response["choices"][0]["message"]["content"]
+            content = response["choices"][0]["message"].get("content")
         except (KeyError, IndexError, TypeError) as exc:
             raise CabalLLMError(f"unexpected response shape: {exc}") from exc
+        if content is None:
+            return ""
+        return content
 
     async def handle_task(self, task: Task) -> Task:
         budget_override = task.metadata.get("cabal_token_budget")
@@ -114,6 +129,19 @@ class LLMPersona:
         )
 
         messages = self.build_messages(task)
+        # If a tool proxy is wired, fetch the tool surface and pass it to
+        # the LLM. Returned tool_calls drive a recursive call loop capped
+        # at tool_use_max_steps total LLM invocations per dispatch.
+        extra_acompletion_kwargs = dict(self.extra_kwargs)
+        if self.tool_proxy is not None:
+            try:
+                tools_for_llm = await self.tool_proxy.list_tools_for_llm()
+                if tools_for_llm:
+                    extra_acompletion_kwargs["tools"] = tools_for_llm
+            except Exception:  # noqa: BLE001
+                # Tool surface lookup must not block dispatch
+                pass
+
         try:
             response = await self.llm_client.acompletion(
                 model=self.model,
@@ -123,7 +151,7 @@ class LLMPersona:
                 trace_id=task.metadata.get("cabal_trace_id"),
                 span_id=task.metadata.get("cabal_span_id"),
                 max_tokens=self.max_tokens,
-                **self.extra_kwargs,
+                **extra_acompletion_kwargs,
             )
         except LLMUnavailableError as exc:
             self.session_tracker.end(
@@ -158,6 +186,62 @@ class LLMPersona:
                     message=f"LLM rejected request: {exc}",
                 ),
             )
+
+        # Tool-use loop. Each iteration:
+        #   1. Inspect response for tool_calls; if none, exit with text.
+        #   2. For each tool_call, dispatch via mcp_proxy, append the
+        #      assistant message (with tool_calls) + each tool result, then
+        #      call acompletion again with the extended history.
+        #   3. Cap at tool_use_max_steps total LLM calls (initial + tool
+        #      iterations) so a stuck model can't infinite-loop.
+        if self.tool_proxy is not None:
+            steps_remaining = max(0, self.tool_use_max_steps - 1)
+            while steps_remaining > 0:
+                tool_calls = _extract_tool_calls(response)
+                if not tool_calls:
+                    break
+                messages = _extend_with_tool_calls(messages, response, tool_calls)
+                for call in tool_calls:
+                    outcome = await self.tool_proxy.call_tool(
+                        call["name"], call["arguments"]
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "content": _outcome_to_chat_content(outcome),
+                        }
+                    )
+                steps_remaining -= 1
+                try:
+                    response = await self.llm_client.acompletion(
+                        model=self.model,
+                        messages=messages,
+                        agent=self.name,
+                        task_id=task.id,
+                        trace_id=task.metadata.get("cabal_trace_id"),
+                        span_id=task.metadata.get("cabal_span_id"),
+                        max_tokens=self.max_tokens,
+                        **extra_acompletion_kwargs,
+                    )
+                except (
+                    LLMUnavailableError,
+                    LLMRateLimitedError,
+                    LLMInvalidRequestError,
+                ) as exc:
+                    self.session_tracker.end(
+                        session_id=session_id,
+                        summary=f"[failed mid-tool-loop] {exc}",
+                    )
+                    return annotate(
+                        task,
+                        CabalReason(
+                            code=CODE_BUDGET_EXHAUSTED
+                            if not isinstance(exc, LLMInvalidRequestError)
+                            else CODE_POLICY_VIOLATION,
+                            message=f"LLM error mid-tool-loop: {exc}",
+                        ),
+                    )
 
         text = self.parse_response(response)
         self.session_tracker.end(session_id=session_id, summary=text)
@@ -251,3 +335,88 @@ def _message_to_chat(message: Message) -> dict[str, Any]:
         if isinstance(part, TextPart):
             text_parts.append(part.text)
     return {"role": role, "content": "\n".join(text_parts)}
+
+
+# ---- Tool-use helpers -----------------------------------------------------
+
+
+def _extract_tool_calls(response: Any) -> list[dict[str, Any]]:
+    """Pull tool_calls out of a LiteLLM response into a uniform shape.
+
+    LiteLLM normalizes Anthropic and OpenAI responses into the OpenAI
+    `tool_calls` array shape: `[{id, function: {name, arguments}}]`.
+    `arguments` is a JSON string per OpenAI; we parse it.
+    """
+    import json as _json
+
+    try:
+        message = response["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return []
+    raw_calls = message.get("tool_calls") or []
+    out: list[dict[str, Any]] = []
+    for raw in raw_calls:
+        if not raw.get("function"):
+            continue
+        try:
+            args_raw = raw["function"].get("arguments") or "{}"
+            args = _json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+        except _json.JSONDecodeError:
+            args = {}
+        out.append(
+            {
+                "id": raw.get("id", ""),
+                "name": raw["function"]["name"],
+                "arguments": args,
+            }
+        )
+    return out
+
+
+def _extend_with_tool_calls(
+    messages: list[dict[str, Any]],
+    response: Any,
+    tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Append the assistant message that triggered tool_use to the
+    conversation, with the tool_calls intact so the next LLM hop sees
+    the same thread of intent."""
+    try:
+        assistant_msg = response["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return list(messages)
+    forwarded = {
+        "role": "assistant",
+        "content": assistant_msg.get("content") or "",
+        "tool_calls": [
+            {
+                "id": call["id"],
+                "type": "function",
+                "function": {
+                    "name": call["name"],
+                    "arguments": __import__("json").dumps(call["arguments"]),
+                },
+            }
+            for call in tool_calls
+        ],
+    }
+    return list(messages) + [forwarded]
+
+
+def _outcome_to_chat_content(outcome: Any) -> str:
+    """Turn a limenal ToolCallOutcome into a single string the model
+    can read in the tool-result message slot."""
+    import json as _json
+
+    blocks = getattr(outcome, "content", []) or []
+    chunks: list[str] = []
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") == "text" and "text" in b:
+            chunks.append(b["text"])
+        elif b.get("type") == "json" and "data" in b:
+            chunks.append(_json.dumps(b["data"]))
+    if not chunks and getattr(outcome, "is_error", False):
+        return "tool error"
+    return "\n".join(chunks) or "(no content)"

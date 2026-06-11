@@ -55,8 +55,9 @@ for the per-decision rationale log.
 | W (31) | memory accumulation | +8 | LLMPersona opt-in `commit_to_memory`; Archivist defaults true; Q&A pairs flow into the techne knowledge corpus on every successful dispatch (sync + streaming) |
 | X (32) | persona overrides | +5 | `system_prompt_override`, `model_override`, `max_tokens_override`, `commit_to_memory` per persona in identity.toml — operator tunes behavior without editing Python |
 | Y (33) | identity hot reload | +5 | `POST /admin/reload/identity` + `cbl reload identity`; rebuilds persona handlers without restarting; LiteLLMClient (breaker + budget state) preserved |
+| Z (34) | limenal integration | +6 | `cabal.core.tools.MCPToolProxy` + persona tool-use loop; end-to-end Cabal persona → limenal MCP gateway → handler with real JWT auth |
 
-**Total: 237 tests, 40 commits.**
+**Total: 243 tests, 41 commits.**
 
 ## What the morning operator can demo
 
