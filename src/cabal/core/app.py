@@ -66,8 +66,14 @@ ALEMBIC_INI = REPO_ROOT / "alembic.ini"
 
 
 def _run_migrations(db_url: str) -> None:
-    cfg = AlembicConfig(str(ALEMBIC_INI))
-    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    # In Docker / installed packages, REPO_ROOT points inside site-packages
+    # which doesn't have alembic.ini or migrations/. Env vars override.
+    ini = Path(os.environ.get("CABAL_ALEMBIC_INI", str(ALEMBIC_INI)))
+    migrations = os.environ.get(
+        "CABAL_ALEMBIC_MIGRATIONS", str(REPO_ROOT / "migrations")
+    )
+    cfg = AlembicConfig(str(ini))
+    cfg.set_main_option("script_location", migrations)
     os.environ["CABAL_DB_URL"] = db_url
     command.upgrade(cfg, "head")
 

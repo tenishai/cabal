@@ -5,8 +5,8 @@ COMPOSE := docker compose -f docker-compose.dev.yml
 # Generate .env with a fresh master key on first run; skip if it exists.
 .env:
 	@python3 -c \
-	  "from cryptography.fernet import Fernet; \
-	   print('CABAL_MASTER_KEY=' + Fernet.generate_key().decode())" > .env
+	  "import base64, os; \
+	   print('CABAL_MASTER_KEY=' + base64.urlsafe_b64encode(os.urandom(32)).decode())" > .env
 	@echo "LIMENAL_CABAL_TOKEN=" >> .env
 	@echo "Created .env — CABAL_MASTER_KEY auto-generated."
 
@@ -22,11 +22,11 @@ down:
 	$(COMPOSE) down
 
 ## build: (re)build images without starting.
-build:
+build: .env
 	$(COMPOSE) build
 
 ## rebuild: force a clean rebuild ignoring the layer cache.
-rebuild:
+rebuild: .env
 	$(COMPOSE) build --no-cache
 
 ## logs: tail logs from all services.
