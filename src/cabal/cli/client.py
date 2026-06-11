@@ -150,11 +150,15 @@ def mint_service_token(
     scope: list[str],
     aud: str,
     ttl_days: int,
+    persona: str | None = None,
 ) -> dict[str, Any]:
+    body: dict[str, Any] = {"sub": sub, "scope": scope, "aud": aud, "ttl_days": ttl_days}
+    if persona is not None:
+        body["persona"] = persona
     with make_client() as c:
         resp = c.post(
             "/admin/token/mint-service",
-            json={"sub": sub, "scope": scope, "aud": aud, "ttl_days": ttl_days},
+            json=body,
             headers={"Authorization": f"Bearer {token}"},
         )
     resp.raise_for_status()

@@ -633,6 +633,7 @@ class MintServiceRequest(BaseModel):
     scope: list[str]
     aud: str
     ttl_days: int
+    persona: str | None = None
 
     def ttl_seconds(self) -> int:
         # Cap at 365 days to avoid silly-long lifetimes.
@@ -680,7 +681,7 @@ async def mint_service_token(
         signing_key=stored,
         sub=req.sub,
         aud=req.aud,
-        persona=None,
+        persona=req.persona,
         scope=req.scope,
         ttl_seconds=ttl,
     )

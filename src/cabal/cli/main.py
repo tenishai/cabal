@@ -575,12 +575,24 @@ def token_mint_service(
         "--ttl-days",
         help="Token lifetime in days. Service tokens are long-lived (operator-rotated).",
     ),
+    persona: str | None = typer.Option(
+        None,
+        "--persona",
+        help=(
+            "Optional `cabal_persona` claim. Set to a persona name when minting "
+            "a dispatch token for limenal (e.g. `--persona demo --scope dispatch "
+            "--aud limenal`). Omit for secrets-fetch service tokens."
+        ),
+    ),
 ) -> None:
     """Mint a long-lived service JWT for limenal (or any peer service).
 
     Prints the JWT to stdout. The operator copies it into the peer's
     env (limenal expects `LIMENAL_CABAL_TOKEN` by default; configurable
     via `limenal serve --cabal-token-env <NAME>`).
+
+    To mint a persona dispatch token for the demo:
+        cbl token mint-service --persona demo --scope dispatch --aud limenal --ttl-days 1
 
     Requires an active daemon — this command hits an admin endpoint
     that signs with the daemon's active signing key.
@@ -591,7 +603,8 @@ def token_mint_service(
         raise typer.Exit(code=1)
     try:
         body = api.mint_service_token(
-            token=token, sub=sub, scope=list(scope), aud=aud, ttl_days=ttl_days
+            token=token, sub=sub, scope=list(scope), aud=aud, ttl_days=ttl_days,
+            persona=persona,
         )
     except httpx.HTTPStatusError as exc:
         try:
