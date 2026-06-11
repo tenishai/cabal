@@ -47,9 +47,12 @@ specific about acceptance criteria.
 ROOK_AGGREGATE_PROMPT = """\
 You are Cabal's Rook: engineering primus.
 
-The implementer has returned its output. Summarize the result for the
-operator in 2-4 sentences. Quote the implementer's specific code/steps
-when useful; flag anything the implementer skipped or got wrong.
+The implementer has returned output and (if a reviewer ran) you have
+the reviewer's critique. Summarize the result for the operator in
+2-4 sentences. Quote the implementer's specific code/steps when useful.
+If the reviewer raised concrete issues, flag them; if they're nitpicks,
+ignore them. If the reviewer found nothing serious, say so plainly —
+don't manufacture problems.
 """
 
 
@@ -90,7 +93,22 @@ class RookPrimusPersona(LLMPersona):
         implementer_output = await self._dispatch_subordinate(
             task, role="implementer", instruction=plan_text
         )
-        final_text = await self._aggregate(task, plan_text, implementer_output)
+        reviewer_critique: str | None = None
+        if "reviewer" in self.subordinates:
+            reviewer_instruction = (
+                f"PLAN given to implementer:\n{plan_text}\n\n"
+                f"IMPLEMENTER OUTPUT:\n{implementer_output}\n\n"
+                "Critique. Focus on real problems — correctness, security, "
+                "edge cases the implementer missed, broken invariants. "
+                "If you find nothing serious, say 'no significant issues'."
+            )
+            reviewer_critique = await self._dispatch_subordinate(
+                task, role="reviewer", instruction=reviewer_instruction
+            )
+
+        final_text = await self._aggregate(
+            task, plan_text, implementer_output, reviewer_critique
+        )
 
         agent_msg = Message(role="agent", parts=[TextPart(text=final_text)])
         history = list(task.history)
@@ -154,26 +172,28 @@ class RookPrimusPersona(LLMPersona):
         )
 
     async def _aggregate(
-        self, task: Task, plan_text: str, implementer_output: str
+        self,
+        task: Task,
+        plan_text: str,
+        implementer_output: str,
+        reviewer_critique: str | None = None,
     ) -> str:
         # Strip noisy LLM artifacts the implementer might emit (numbered
         # bullets, code-fences) before quoting in the aggregation prompt.
-        condensed = re.sub(r"\n{3,}", "\n\n", implementer_output)
+        condensed_impl = re.sub(r"\n{3,}", "\n\n", implementer_output)
         messages = [
             {"role": "system", "content": ROOK_AGGREGATE_PROMPT},
             *(_message_to_chat(m) for m in task.history),
         ]
         if task.status.message is not None:
             messages.append(_message_to_chat(task.status.message))
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    f"PLAN: {plan_text}\n\nIMPLEMENTER OUTPUT:\n{condensed}\n\n"
-                    "Summarize the result for the operator."
-                ),
-            }
-        )
+
+        user_blocks = [f"PLAN: {plan_text}", f"IMPLEMENTER OUTPUT:\n{condensed_impl}"]
+        if reviewer_critique is not None:
+            condensed_review = re.sub(r"\n{3,}", "\n\n", reviewer_critique)
+            user_blocks.append(f"REVIEWER CRITIQUE:\n{condensed_review}")
+        user_blocks.append("Summarize the result for the operator.")
+        messages.append({"role": "user", "content": "\n\n".join(user_blocks)})
         response = await self.llm_client.acompletion(
             model=self.model,
             messages=messages,

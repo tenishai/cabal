@@ -42,8 +42,8 @@ def _task(text: str = "implement json parsing") -> Task:
     )
 
 
-def _subordinate(client: LiteLLMClient) -> Subordinate:
-    return Subordinate(role="implementer", llm_client=client, model="anthropic/claude-sonnet-4-6")
+def _subordinate(client: LiteLLMClient, role: str = "implementer") -> Subordinate:
+    return Subordinate(role=role, llm_client=client, model="anthropic/claude-sonnet-4-6")
 
 
 @pytest.mark.asyncio
@@ -140,6 +140,112 @@ async def test_rook_requires_implementer() -> None:
     primus_client, _ = _client([])
     with pytest.raises(ValueError, match="implementer"):
         RookPrimusPersona(primus_client, subordinates={})
+
+
+# ---- reviewer subordinate (Phase P) ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rook_runs_reviewer_when_declared() -> None:
+    """When both implementer + reviewer are present, the reviewer runs and
+    its critique reaches the aggregator."""
+    primus_client, primus_calls = _client(["the plan", "final summary"])
+    impl_client, impl_calls = _client(["wrote a JSON parser"])
+    review_client, review_calls = _client(
+        ["the parser doesn't handle unicode escapes"]
+    )
+    subordinates = {
+        "implementer": _subordinate(impl_client, role="implementer"),
+        "reviewer": _subordinate(review_client, role="reviewer"),
+    }
+    rook = RookPrimusPersona(primus_client, subordinates=subordinates)
+
+    response = await rook.handle_task(_task())
+    assert response.status.state == "completed"
+    # Both subordinates ran exactly once
+    assert len(impl_calls) == 1
+    assert len(review_calls) == 1
+    # The reviewer's input message includes the implementer output
+    reviewer_input = review_calls[0]["messages"][-1]["content"]
+    assert "wrote a JSON parser" in reviewer_input
+    assert "PLAN given to implementer" in reviewer_input
+    # The aggregator sees the reviewer's critique
+    agg_user = primus_calls[1]["messages"][-1]["content"]
+    assert "REVIEWER CRITIQUE" in agg_user
+    assert "unicode escapes" in agg_user
+
+
+@pytest.mark.asyncio
+async def test_rook_skips_reviewer_block_when_not_declared() -> None:
+    """No reviewer in subordinates → aggregate prompt has no REVIEWER block,
+    so existing (Phase K) operators don't see prompt drift."""
+    primus_client, primus_calls = _client(["plan", "summary"])
+    impl_client, _ = _client(["impl output"])
+    subordinates = {"implementer": _subordinate(impl_client)}
+    rook = RookPrimusPersona(primus_client, subordinates=subordinates)
+    await rook.handle_task(_task())
+    agg_user = primus_calls[1]["messages"][-1]["content"]
+    assert "REVIEWER" not in agg_user
+    assert "IMPLEMENTER OUTPUT" in agg_user
+
+
+@pytest.mark.asyncio
+async def test_reviewer_dispatch_fires_subordinate_hooks() -> None:
+    hook_registry = HookRegistry()
+    dispatched: list[dict[str, Any]] = []
+    returned: list[dict[str, Any]] = []
+    hook_registry.register(
+        HookName.SUBORDINATE_DISPATCHED, lambda p: dispatched.append(p)
+    )
+    hook_registry.register(
+        HookName.SUBORDINATE_RETURNED, lambda p: returned.append(p)
+    )
+
+    primus_client, _ = _client(["plan", "summary"])
+    impl_client, _ = _client(["impl"])
+    review_client, _ = _client(["no significant issues"])
+    subordinates = {
+        "implementer": _subordinate(impl_client, role="implementer"),
+        "reviewer": _subordinate(review_client, role="reviewer"),
+    }
+    rook = RookPrimusPersona(
+        primus_client, subordinates=subordinates, hook_registry=hook_registry
+    )
+    await rook.handle_task(_task())
+
+    # Expect TWO of each — once for implementer, once for reviewer
+    assert [d["role"] for d in dispatched] == ["implementer", "reviewer"]
+    assert [r["role"] for r in returned] == ["implementer", "reviewer"]
+
+
+@pytest.mark.asyncio
+async def test_reviewer_runs_after_implementer_strictly() -> None:
+    """The reviewer prompt must contain the implementer's output, which
+    means dispatch order is implementer → reviewer, not parallel."""
+    primus_client, _ = _client(["plan", "summary"])
+    impl_calls: list[str] = []
+    review_calls: list[str] = []
+
+    async def impl_fn(model: str, messages: list, **kwargs):
+        impl_calls.append("impl")
+        return {"choices": [{"message": {"content": "specific impl output"}}]}
+
+    async def review_fn(model: str, messages: list, **kwargs):
+        # When this runs, impl_calls must already have an entry
+        review_calls.append(("review", len(impl_calls)))
+        return {"choices": [{"message": {"content": "review verdict"}}]}
+
+    impl_client = LiteLLMClient(acompletion_fn=impl_fn, hook_registry=HookRegistry())
+    review_client = LiteLLMClient(acompletion_fn=review_fn, hook_registry=HookRegistry())
+    subordinates = {
+        "implementer": _subordinate(impl_client, role="implementer"),
+        "reviewer": _subordinate(review_client, role="reviewer"),
+    }
+    rook = RookPrimusPersona(primus_client, subordinates=subordinates)
+    await rook.handle_task(_task())
+
+    # The reviewer ran AFTER the implementer completed
+    assert review_calls == [("review", 1)]
 
 
 @pytest.mark.asyncio

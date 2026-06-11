@@ -55,10 +55,12 @@ description = "External-documentation lookup"
 role = "singleton"
 safety_tier = "moderate"
 
-# ----- Primus (Phase 2 — declares but no handler yet) -----
+# ----- Primus -----
 # Rook is the engineering primus. Its bulletin row registers as
-# 'rook-primus' / generation=1, but no LocalHandler exists yet — Phase 2
-# will land a primus handler that dispatches to subordinates.
+# 'rook-primus' / generation=1 and the LocalHandler is wired automatically.
+# Pipeline per dispatch: PLAN (primus) → IMPLEMENT (implementer subordinate)
+# → REVIEW (reviewer subordinate, if declared) → AGGREGATE (primus).
+# Comment out [personas.rook.subordinates.reviewer] to skip the review step.
 
 [personas.rook]
 description = "Engineering primus"
