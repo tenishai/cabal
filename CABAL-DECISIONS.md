@@ -171,6 +171,35 @@ Linked feedback memory: `feedback-decision-authority`.
   our layer, fiddly to extract from LiteLLM internals.
 - **Lands in**: `core/llm/circuit_breaker.py`, `core/llm/litellm_client.py`.
 
+### D-015: secrets table activated; env vars override DB for one-off testing
+
+- **Question**: Where do credentials for credentialed handlers (slack, github,
+  etc.) live? The `secrets` table has been in the schema since Phase 1 unused;
+  the env-var path (`CABAL_SECRET_<persona>_<handler>_<KEY>`) shipped in
+  Phase GG.
+- **Options**:
+  - A. Env vars only — simple, but doesn't persist across daemon restarts
+    unless the operator wraps the daemon in a startup script.
+  - B. DB only — durable + hot-updatable, but env vars are how operators
+    naturally test "what if I set this to X for one run."
+  - C. DB-as-default + env vars override.
+- **Choice**: C
+- **Reasoning**: The encrypted-at-rest path (Fernet with the existing
+  master_key, sibling to signing-key encryption) is the canonical durable
+  surface — `cbl secret set archivist slack SLACK_BOT_TOKEN` persists, is
+  hot-readable on the next request, and survives daemon restarts. Env vars
+  ride on top as a quick-override shim so an operator pasting a value into
+  a shell for one-off testing doesn't have to wipe DB state. The merge
+  contract (env wins) makes the precedence predictable.
+- **Naming**: secret rows keyed by `<persona>:<handler>:<KEY>` (colon
+  separator). Colons because multi-underscore handler names + multi-
+  underscore KEYs would collide if we'd used underscores like the env-var
+  path does (the env-var endpoint splits on a known prefix; the DB
+  doesn't have that anchor). KEY must match `^[A-Z][A-Z0-9_]*$` so it
+  lines up with capability_card.credential_keys conventions.
+- **Lands in**: `core/secrets.py`, `core/routes/admin.py::set_secret /
+  unset_secret / list_secrets`, `cli/main.py::secret_app`.
+
 ### D-008: techne installed from `../techne` sibling checkout (durable)
 
 - **Question**: techne is not on PyPI. How should cabal depend on it?

@@ -411,12 +411,13 @@ async def get_secrets(
 ) -> dict[str, Any]:
     """Return the credential set for `(persona, handler_name)`.
 
-    Credential source: environment variables of the form
-    `CABAL_SECRET_<persona>_<handler>_<KEY>`. The KEY is preserved
-    verbatim in the response dict so handler authors can document the
-    keys they read (SLACK_BOT_TOKEN, GITHUB_TOKEN, ...) and operators
-    can populate them by setting the corresponding env vars at daemon
-    start.
+    Two sources, in order of precedence:
+      1. DB-backed encrypted secrets, decrypted with the daemon's
+         master_key. Persisted via `cbl secret set` — hot-updatable
+         without daemon restart.
+      2. Env vars `CABAL_SECRET_<persona>_<handler>_<KEY>` — override
+         the DB so an operator can paste a one-off value into a shell
+         without disturbing persisted state.
 
     Auth: operator-scope OR a token scoped specifically for
     `secrets-fetch`. The operator gate is fine for solo; team-scale
@@ -427,33 +428,162 @@ async def get_secrets(
     import os as _os
     import re
 
+    from cabal.core.secrets import get_secrets_for, merge_with_env
+
     claims = _require_secrets_fetch(
         request, _extract_bearer(authorization)
     )
-    # Tolerate operator-style names: persona == "rook", handler == "slack"
     persona_norm = _normalize(persona)
     handler_norm = _normalize(handler_name)
     if not persona_norm or not handler_norm:
         raise HTTPException(400, detail="persona and handler must be non-empty")
 
+    # 1) DB-backed (encrypted at rest).
+    async with open_session(request.app.state.sessionmaker) as session:
+        db_creds = await get_secrets_for(
+            session,
+            master_key=request.app.state.master_key,
+            persona=persona_norm,
+            handler=handler_norm,
+        )
+
+    # 2) Env vars override.
     prefix = f"CABAL_SECRET_{persona_norm}_{handler_norm}_"
-    # Allow case-insensitive prefix match; preserve the KEY suffix in
-    # the response as-is.
     pat = re.compile(f"^{re.escape(prefix)}", re.IGNORECASE)
-    creds: dict[str, str] = {}
+    env_pairs: list[tuple[str, str]] = []
     for env_key, value in _os.environ.items():
         m = pat.match(env_key)
         if m is None:
             continue
-        local_key = env_key[m.end():]
+        local_key = env_key[m.end() :]
         if local_key:
-            creds[local_key] = value
+            env_pairs.append((local_key, value))
+
+    creds = merge_with_env(db_values=db_creds, env_values=env_pairs)
 
     return {
         "persona": persona_norm,
         "handler": handler_norm,
         "credentials": creds,
         "caller": claims.get("sub"),
+        "sources": {"db": len(db_creds), "env": len(env_pairs)},
+    }
+
+
+# ---- secret write/list/unset (Phase KK) -----------------------------
+
+
+class SecretSetRequest(BaseModel):
+    key: str
+    value: str
+    purpose: str | None = None
+
+
+@router.post("/secrets/{persona}/{handler_name}")
+async def set_secret(
+    persona: str,
+    handler_name: str,
+    req: SecretSetRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Store an encrypted secret. Operator-scope only.
+
+    KEY must look like an env-var (upper-snake): handler authors document
+    the keys they expect in their capability_card.credential_keys, so
+    consistency matters."""
+    import re
+
+    from cabal.core.secrets import set_secret as _set
+
+    _require_operator_claims(request, _extract_bearer(authorization))
+    persona_norm = _normalize(persona)
+    handler_norm = _normalize(handler_name)
+    if not req.key or not req.value:
+        raise HTTPException(400, detail="key and value must be non-empty")
+    if not re.match(r"^[A-Z][A-Z0-9_]*$", req.key):
+        raise HTTPException(
+            400,
+            detail=(
+                "key must match ^[A-Z][A-Z0-9_]*$ "
+                "(upper-snake to match env-var convention)"
+            ),
+        )
+
+    async with open_session(request.app.state.sessionmaker) as session:
+        await _set(
+            session,
+            master_key=request.app.state.master_key,
+            persona=persona_norm,
+            handler=handler_norm,
+            key=req.key,
+            value=req.value,
+            purpose=req.purpose,
+        )
+
+    return {
+        "persona": persona_norm,
+        "handler": handler_norm,
+        "key": req.key,
+        "stored": True,
+    }
+
+
+@router.delete("/secrets/{persona}/{handler_name}/{key}")
+async def unset_secret(
+    persona: str,
+    handler_name: str,
+    key: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    from cabal.core.secrets import unset_secret as _unset
+
+    _require_operator_claims(request, _extract_bearer(authorization))
+    persona_norm = _normalize(persona)
+    handler_norm = _normalize(handler_name)
+    if not key:
+        raise HTTPException(400, detail="key must be non-empty")
+
+    async with open_session(request.app.state.sessionmaker) as session:
+        existed = await _unset(
+            session,
+            persona=persona_norm,
+            handler=handler_norm,
+            key=key,
+        )
+    return {
+        "persona": persona_norm,
+        "handler": handler_norm,
+        "key": key,
+        "deleted": existed,
+    }
+
+
+@router.get("/secrets")
+async def list_secrets(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    persona: str | None = None,
+    handler: str | None = None,
+) -> dict[str, Any]:
+    """List secret NAMES (persona, handler, key tuples) — never values.
+    Operator scope required."""
+    from cabal.core.secrets import list_secret_entries
+
+    _require_operator_claims(request, _extract_bearer(authorization))
+    persona_norm = _normalize(persona) if persona is not None else None
+    handler_norm = _normalize(handler) if handler is not None else None
+
+    async with open_session(request.app.state.sessionmaker) as session:
+        entries = await list_secret_entries(
+            session, persona=persona_norm, handler=handler_norm
+        )
+    return {
+        "entries": [
+            {"persona": e.persona, "handler": e.handler, "key": e.key}
+            for e in entries
+        ]
     }
 
 

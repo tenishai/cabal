@@ -436,6 +436,112 @@ def primus_rotate(
         typer.echo(f"  note: {body['note']}")
 
 
+secret_app = typer.Typer(help="Persisted, encrypted secrets for credentialed handlers.")
+app.add_typer(secret_app, name="secret")
+
+
+def _require_token() -> str:
+    token = api.TokenStore().load()
+    if token is None:
+        typer.echo("no token; run `cbl login` first.", err=True)
+        raise typer.Exit(code=1)
+    return token
+
+
+@secret_app.command("set")
+def secret_set(
+    persona: str = typer.Argument(..., help="Persona name (e.g. 'archivist')."),
+    handler: str = typer.Argument(..., help="Handler name (e.g. 'slack')."),
+    key: str = typer.Argument(..., help="KEY in upper-snake (e.g. 'SLACK_BOT_TOKEN')."),
+    value: str = typer.Option(
+        None,
+        "--value",
+        help=(
+            "Value to store. If omitted you'll be prompted (hidden input; "
+            "preferred for tokens since shell history won't capture it)."
+        ),
+    ),
+    purpose: str = typer.Option(
+        None, "--purpose", help="Free-form note about what this secret is for."
+    ),
+) -> None:
+    """Persist an encrypted secret keyed by (persona, handler, KEY)."""
+    if value is None:
+        value = typer.prompt("value", hide_input=True, confirmation_prompt=False)
+    if not value:
+        typer.echo("value must be non-empty", err=True)
+        raise typer.Exit(code=1)
+    token = _require_token()
+    try:
+        api.secret_set(
+            token=token,
+            persona=persona,
+            handler=handler,
+            key=key,
+            value=value,
+            purpose=purpose,
+        )
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get("detail", exc.response.text)
+        except Exception:  # noqa: BLE001
+            detail = exc.response.text
+        typer.echo(f"set failed: {detail}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"stored: {persona}:{handler}:{key}")
+
+
+@secret_app.command("unset")
+def secret_unset(
+    persona: str = typer.Argument(..., help="Persona name."),
+    handler: str = typer.Argument(..., help="Handler name."),
+    key: str = typer.Argument(..., help="KEY to remove."),
+) -> None:
+    token = _require_token()
+    try:
+        body = api.secret_unset(
+            token=token, persona=persona, handler=handler, key=key
+        )
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get("detail", exc.response.text)
+        except Exception:  # noqa: BLE001
+            detail = exc.response.text
+        typer.echo(f"unset failed: {detail}", err=True)
+        raise typer.Exit(code=1) from exc
+    if body.get("deleted"):
+        typer.echo(f"deleted: {persona}:{handler}:{key}")
+    else:
+        typer.echo(f"(no such secret: {persona}:{handler}:{key})")
+
+
+@secret_app.command("list")
+def secret_list(
+    persona: str = typer.Option(None, "--persona", help="Filter by persona."),
+    handler: str = typer.Option(None, "--handler", help="Filter by handler."),
+) -> None:
+    """List stored secret NAMES. Values are never printed."""
+    token = _require_token()
+    try:
+        body = api.secret_list(token=token, persona=persona, handler=handler)
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get("detail", exc.response.text)
+        except Exception:  # noqa: BLE001
+            detail = exc.response.text
+        typer.echo(f"list failed: {detail}", err=True)
+        raise typer.Exit(code=1) from exc
+    entries = body.get("entries", [])
+    if not entries:
+        typer.echo("(no secrets stored)")
+        return
+    header = f"{'PERSONA':<14} {'HANDLER':<14} KEY"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for e in entries:
+        typer.echo(f"{e['persona']:<14} {e['handler']:<14} {e['key']}")
+
+
 token_app = typer.Typer(help="Session token management.")
 app.add_typer(token_app, name="token")
 
