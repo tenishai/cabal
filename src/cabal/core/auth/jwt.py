@@ -40,6 +40,7 @@ class JWTClaims:
     exp: int
     cabal_persona: str | None = None
     cabal_scope: list[str] | None = None
+    cabal_tool_extras: dict[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -53,6 +54,8 @@ class JWTClaims:
             payload["cabal_persona"] = self.cabal_persona
         if self.cabal_scope is not None:
             payload["cabal_scope"] = self.cabal_scope
+        if self.cabal_tool_extras:
+            payload["cabal_tool_extras"] = self.cabal_tool_extras
         return payload
 
 
@@ -67,11 +70,17 @@ def mint(
     aud: str,
     persona: str | None = None,
     scope: list[str] | None = None,
+    tool_extras: dict[str, Any] | None = None,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     issuer: str = DEFAULT_ISS,
     now: int | None = None,
 ) -> str:
-    """Mint a JWT signed by `signing_key`."""
+    """Mint a JWT signed by `signing_key`.
+
+    `tool_extras` becomes the `cabal_tool_extras` claim — limenal forwards
+    it into Context.extra so handlers can read per-persona scoping
+    config. Defaults to None / omitted from payload when not provided.
+    """
     now_int = now if now is not None else int(time.time())
     claims = JWTClaims(
         iss=issuer,
@@ -81,6 +90,7 @@ def mint(
         exp=now_int + ttl_seconds,
         cabal_persona=persona,
         cabal_scope=scope,
+        cabal_tool_extras=tool_extras,
     )
     private_jwk = RSAKey.import_key(signing_key.private_key)
     header = {"alg": "RS256", "kid": signing_key.kid, "typ": "JWT"}

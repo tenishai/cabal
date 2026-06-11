@@ -65,6 +65,16 @@ safety_tier = "moderate"
 enabled = true
 # max_steps = 4  # uncomment to override LLMPersona's default tool-use cap
 
+# Per-persona scoping config forwarded to limenal as Context.extra. The
+# key names are the handler-author's contract (web reads
+# `web.allowed_hosts`, files reads `files.allowed_paths`, memory reads
+# `memory.db_path`). Anything in this table flows verbatim into the JWT
+# `cabal_tool_extras` claim limenal extracts.
+[personas.archivist.mcp.tool_extras]
+"web.allowed_hosts" = ["docs.python.org", "*.example.com"]
+# "files.allowed_paths" = ["~/notes/archivist"]
+# "memory.db_path" = "data/archivist-memory.db"
+
 [personas.architect]
 description = "Patterns and design"
 role = "singleton"

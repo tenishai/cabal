@@ -57,8 +57,9 @@ for the per-decision rationale log.
 | Y (33) | identity hot reload | +5 | `POST /admin/reload/identity` + `cbl reload identity`; rebuilds persona handlers without restarting; LiteLLMClient (breaker + budget state) preserved |
 | Z (34) | limenal integration | +6 | `cabal.core.tools.MCPToolProxy` + persona tool-use loop; end-to-end Cabal persona → limenal MCP gateway → handler with real JWT auth |
 | AA (35) | identity-driven MCP | +4 | `[limenal]` block + per-persona `[personas.X.mcp].enabled` auto-wires tool_proxy at lifespan; hot-reload preserves shared httpx + signing key |
+| BB (36) | tool_extras forwarding | +3 | `[personas.X.mcp.tool_extras]` → JWT `cabal_tool_extras` claim → limenal `Context.extra` → handler reads per-persona allowlist. End-to-end: archivist's web allowlist tightened to one host |
 
-**Total: 247 tests, 42 commits.**
+**Total: 250 tests, 43 commits.**
 
 ## What the morning operator can demo
 

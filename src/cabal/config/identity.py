@@ -60,10 +60,16 @@ class PersonaMCPConfig(_Open):
     gets a tool_proxy when its `mcp.enabled = true`. This keeps
     operators in control — Architect-the-thinker probably doesn't want
     tools, Rook-the-engineer probably does.
+
+    `tool_extras` is a dict of arbitrary scoping config forwarded to
+    limenal as `Context.extra`. The handler-author's contract decides
+    the shape — e.g. for the web handler the operator writes
+    `tool_extras = { "web.allowed_hosts" = ["docs.python.org"] }`.
     """
 
     enabled: bool = False
     max_steps: int | None = None  # overrides LLMPersona.tool_use_max_steps
+    tool_extras: dict[str, Any] = Field(default_factory=dict)
 
 
 class PersonaConfig(_Open):
