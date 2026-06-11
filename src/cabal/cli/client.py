@@ -70,6 +70,61 @@ def primus_rotate(*, token: str, persona: str, hard: bool = False) -> dict[str, 
     return resp.json()
 
 
+def stream_dispatch(
+    *,
+    token: str,
+    target: str,
+    message_text: str,
+):
+    """Open an SSE stream against /agents/{target}/stream.
+
+    Yields (event_name, payload_dict) tuples. Last event with final=True
+    in result.status is the terminal frame.
+
+    Synchronous — runs httpx.Client.stream() and parses SSE inline.
+    """
+    import json
+    import uuid
+
+    body = {
+        "jsonrpc": "2.0",
+        "id": f"req-{uuid.uuid4().hex[:8]}",
+        "method": "message/stream",
+        "params": {
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": message_text}],
+            }
+        },
+    }
+    with make_client() as c:
+        with c.stream(
+            "POST",
+            f"/agents/{target}/stream",
+            json=body,
+            headers={"Authorization": f"Bearer {token}"},
+        ) as resp:
+            resp.raise_for_status()
+            event_name: str | None = None
+            data_lines: list[str] = []
+            for raw in resp.iter_lines():
+                line = raw if isinstance(raw, str) else raw.decode("utf-8")
+                if line == "":
+                    if event_name is not None:
+                        try:
+                            payload = json.loads("\n".join(data_lines))
+                        except Exception:  # noqa: BLE001
+                            payload = {"raw": "\n".join(data_lines)}
+                        yield (event_name, payload)
+                    event_name = None
+                    data_lines = []
+                    continue
+                if line.startswith("event:"):
+                    event_name = line.split(":", 1)[1].strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line.split(":", 1)[1].lstrip())
+
+
 def dispatch(
     *,
     token: str,

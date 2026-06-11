@@ -130,6 +130,9 @@ def dispatch(
 @app.command("chat")
 def chat(
     target: str = typer.Argument(..., help="Persona to chat with (e.g. 'archivist')."),
+    stream: bool = typer.Option(
+        True, "--stream/--no-stream", help="SSE streaming (default true)."
+    ),
 ) -> None:
     """Multi-turn chat with a persona. Empty line or :exit to quit."""
     import sys
@@ -144,7 +147,11 @@ def chat(
 
     context_id = f"chat-{uuid.uuid4().hex[:12]}"
     history: list[dict] = []
-    typer.echo(f"chat with {target} (context: {context_id}). type :exit to quit.")
+    mode_note = "streaming" if stream else "single-shot"
+    typer.echo(
+        f"chat with {target} ({mode_note}, context: {context_id}). "
+        "type :exit to quit."
+    )
     typer.echo("─" * 60)
 
     while True:
@@ -158,44 +165,81 @@ def chat(
             typer.echo("bye.")
             return
 
-        try:
-            response = api.dispatch(
-                token=token,
-                target=target,
-                message_text=user_text,
-                history=history,
-                context_id=context_id,
-            )
-        except httpx.HTTPStatusError as exc:
+        if stream:
+            agent_text = _stream_chat_turn(target, token, user_text)
+            if agent_text is None:
+                continue  # error already printed
+        else:
             try:
-                detail = exc.response.json().get("detail", exc.response.text)
-            except Exception:  # noqa: BLE001
-                detail = exc.response.text
-            typer.echo(f"\nerror: {detail}", err=True)
-            continue
-        except httpx.RequestError as exc:
-            typer.echo(f"\ncould not reach daemon: {exc}", err=True)
-            return
+                response = api.dispatch(
+                    token=token,
+                    target=target,
+                    message_text=user_text,
+                    history=history,
+                    context_id=context_id,
+                )
+            except httpx.HTTPStatusError as exc:
+                try:
+                    detail = exc.response.json().get("detail", exc.response.text)
+                except Exception:  # noqa: BLE001
+                    detail = exc.response.text
+                typer.echo(f"\nerror: {detail}", err=True)
+                continue
+            except httpx.RequestError as exc:
+                typer.echo(f"\ncould not reach daemon: {exc}", err=True)
+                return
+            message = response.get("status", {}).get("message") or {}
+            agent_text = "".join(
+                part.get("text", "")
+                for part in message.get("parts", [])
+                if part.get("kind") == "text"
+            )
+            state = response.get("status", {}).get("state", "?")
+            prefix = target if state == "completed" else f"{target} [{state}]"
+            typer.echo(f"{prefix}: {agent_text}")
 
         history.append(
             {"role": "user", "parts": [{"kind": "text", "text": user_text}]}
         )
-        message = response.get("status", {}).get("message") or {}
-        agent_text = "".join(
-            part.get("text", "")
-            for part in message.get("parts", [])
-            if part.get("kind") == "text"
+        history.append(
+            {"role": "agent", "parts": [{"kind": "text", "text": agent_text}]}
         )
-        if message.get("parts"):
-            history.append(
-                {"role": message.get("role", "agent"), "parts": message["parts"]}
-            )
-
-        state = response.get("status", {}).get("state", "?")
-        prefix = target if state == "completed" else f"{target} [{state}]"
-        typer.echo(f"{prefix}: {agent_text}")
         typer.echo("")
         sys.stdout.flush()
+
+
+def _stream_chat_turn(target: str, token: str, user_text: str) -> str | None:
+    """Run one streaming turn. Print deltas as they arrive. Return the
+    full assembled agent text or None on error."""
+    import sys
+
+    typer.echo(f"{target}: ", nl=False)
+    sys.stdout.flush()
+    full_text = ""
+    try:
+        for event_name, payload in api.stream_dispatch(
+            token=token, target=target, message_text=user_text
+        ):
+            if event_name == "chunk":
+                delta = payload.get("delta", "")
+                typer.echo(delta, nl=False)
+                sys.stdout.flush()
+                full_text += delta
+            elif event_name == "error":
+                err = payload.get("error") or {}
+                typer.echo(f"\n[error] {err.get('message', 'unknown')}", err=True)
+                return None
+            elif event_name == "status-update":
+                typer.echo("")  # newline at end
+                return full_text
+    except httpx.HTTPStatusError as exc:
+        typer.echo(f"\nerror: {exc.response.text}", err=True)
+        return None
+    except httpx.RequestError as exc:
+        typer.echo(f"\ncould not reach daemon: {exc}", err=True)
+        return None
+    typer.echo("")
+    return full_text
 
 
 @app.command("status")

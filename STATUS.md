@@ -44,6 +44,14 @@ for the per-decision rationale log.
 | L (20) | primus rotate | +5 | `cbl primus rotate` + admin endpoint + schema-level rotation |
 | M (21) | budget wired | +7 | BudgetGuard reserves/refunds per Task; 702 on exhaustion |
 | N (22) | cbl chat | +5 | Multi-turn interactive chat with client-side history accumulation |
+| O (23) | sibling techne | (docs) | `pip install -e ../techne` convention + Dockerfile additional_contexts |
+| P (24) | rook reviewer | +4 | Rook now runs IMPLEMENTER → REVIEWER → AGGREGATE pipeline |
+| Q (25) | session checkpoint | +9 | SessionTracker Protocol + TechneSessionTracker; per-Task techne sessions |
+| R (26) | persona memory | +5 | Architect, Librarian, Rook + subordinates all opt into memory + session |
+| S (27) | streaming | +8 | `astream`, `astream_task`, `POST /agents/{name}/stream` SSE endpoint |
+| T (28) | streaming chat | +4 | `cbl chat` consumes SSE; prints deltas live; `--no-stream` fallback |
+
+**Total: 206 tests, 35 commits.**
 
 ## What the morning operator can demo
 
