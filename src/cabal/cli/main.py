@@ -447,6 +447,65 @@ def token_mint() -> None:
     raise typer.Exit(code=2)
 
 
+@token_app.command("mint-service")
+def token_mint_service(
+    sub: str = typer.Option(
+        "service:limenal",
+        "--sub",
+        help="`sub` claim. Default 'service:limenal' for the canonical use case.",
+    ),
+    scope: list[str] = typer.Option(
+        ["secrets-fetch"],
+        "--scope",
+        help="`cabal_scope` array; repeat the flag for multiple. Default: secrets-fetch.",
+    ),
+    aud: str = typer.Option(
+        "cabal-core",
+        "--aud",
+        help="`aud` claim. Default 'cabal-core' — the secrets endpoint accepts that.",
+    ),
+    ttl_days: int = typer.Option(
+        30,
+        "--ttl-days",
+        help="Token lifetime in days. Service tokens are long-lived (operator-rotated).",
+    ),
+) -> None:
+    """Mint a long-lived service JWT for limenal (or any peer service).
+
+    Prints the JWT to stdout. The operator copies it into the peer's
+    env (limenal expects `LIMENAL_CABAL_TOKEN` by default; configurable
+    via `limenal serve --cabal-token-env <NAME>`).
+
+    Requires an active daemon — this command hits an admin endpoint
+    that signs with the daemon's active signing key.
+    """
+    token = api.TokenStore().load()
+    if token is None:
+        typer.echo("no token; run `cbl login` first.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        body = api.mint_service_token(
+            token=token, sub=sub, scope=list(scope), aud=aud, ttl_days=ttl_days
+        )
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get("detail", exc.response.text)
+        except Exception:  # noqa: BLE001
+            detail = exc.response.text
+        typer.echo(f"mint failed: {detail}", err=True)
+        raise typer.Exit(code=1) from exc
+    except httpx.RequestError as exc:
+        typer.echo(f"could not reach daemon at {api.base_url()}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(body["access_token"])
+    typer.echo(
+        f"# sub={body['sub']} scope={body['scope']} aud={body['aud']} "
+        f"expires={body['expires_at']}",
+        err=True,
+    )
+
+
 reload_app = typer.Typer(help="Hot-reload subsystems.")
 app.add_typer(reload_app, name="reload")
 
