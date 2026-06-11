@@ -161,6 +161,58 @@ def mint_service_token(
     return resp.json()
 
 
+def secret_set(
+    *,
+    token: str,
+    persona: str,
+    handler: str,
+    key: str,
+    value: str,
+    purpose: str | None = None,
+) -> dict[str, Any]:
+    with make_client() as c:
+        resp = c.post(
+            f"/admin/secrets/{persona}/{handler}",
+            json={"key": key, "value": value, "purpose": purpose},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def secret_unset(
+    *, token: str, persona: str, handler: str, key: str
+) -> dict[str, Any]:
+    with make_client() as c:
+        resp = c.delete(
+            f"/admin/secrets/{persona}/{handler}/{key}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def secret_list(
+    *,
+    token: str,
+    persona: str | None = None,
+    handler: str | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    if persona is not None:
+        params["persona"] = persona
+    if handler is not None:
+        params["handler"] = handler
+    with make_client() as c:
+        resp = c.get(
+            "/admin/secrets",
+            params=params,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def stream_dispatch(
     *,
     token: str,
