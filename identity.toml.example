@@ -7,16 +7,39 @@ host = "127.0.0.1"
 port = 7400
 data_dir = "data"
 
-# ----- LiteLLM proxy (used by personas to reach LLM providers) -----
-# Phase 2 wiring; declared here so identity.toml parses today.
+# ----- LiteLLM proxy -----
+# api_base points at a running LiteLLM proxy. api_key_env names the env
+# var Cabal reads to inject the master key as Bearer.
 
 [litellm]
 api_base = "http://litellm:4000"
 api_key_env = "LITELLM_MASTER_KEY"
 
-# ----- Personas -----
-# Phase 2 wires these into the bulletin board. Phase 1 only registers the
-# built-in `echo` agent, so anything here is informational until then.
+# ----- Singletons (built-in personas) -----
+# Each persona declared here gets a bulletin-board row at daemon startup.
+# Personas named in PERSONA_REGISTRY (archivist, architect, librarian)
+# also get a LocalHandler so dispatches actually reach an LLM. Personas
+# NOT in the registry register a bulletin row but error on dispatch.
+
+[personas.archivist]
+description = "Memory and search"
+role = "singleton"
+safety_tier = "moderate"
+
+[personas.architect]
+description = "Patterns and design"
+role = "singleton"
+safety_tier = "moderate"
+
+[personas.librarian]
+description = "External-documentation lookup"
+role = "singleton"
+safety_tier = "moderate"
+
+# ----- Primus (Phase 2 — declares but no handler yet) -----
+# Rook is the engineering primus. Its bulletin row registers as
+# 'rook-primus' / generation=1, but no LocalHandler exists yet — Phase 2
+# will land a primus handler that dispatches to subordinates.
 
 [personas.rook]
 description = "Engineering primus"
@@ -30,13 +53,3 @@ max_tokens = 16384
 [personas.rook.subordinates.reviewer]
 model = "anthropic/claude-opus-4-7"
 max_tokens = 8192
-
-[personas.archivist]
-description = "Memory and search"
-role = "singleton"
-safety_tier = "moderate"
-
-[personas.librarian]
-description = "Documentation lookup"
-role = "singleton"
-safety_tier = "moderate"

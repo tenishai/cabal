@@ -224,6 +224,14 @@ class DispatchRouter:
     async def _dispatch_remote(
         self, target: AgentRow, task: Task, caller_jwt: str
     ) -> Task:
+        if target.endpoint.startswith("local://"):
+            # The bulletin row says "local handler" but none is registered
+            # — this is a misconfiguration, not a transport failure.
+            raise DispatchError(
+                f"agent {target.name!r} is declared local but no handler "
+                f"is registered (identity.toml persona without an "
+                f"implementation in PERSONA_REGISTRY)"
+            )
         if self._http_client is None:
             raise DispatchError(
                 "remote dispatch attempted without an http client wired in"
