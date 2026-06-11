@@ -64,6 +64,13 @@ safety_tier = "moderate"
 [personas.archivist.mcp]
 enabled = true
 # max_steps = 4  # uncomment to override LLMPersona's default tool-use cap
+# Which limenal handlers this persona can see + call. Omit (or set to
+# null) for "unrestricted" (every handler limenal serves is reachable).
+# An empty list `[]` is meaningful too: revokes all tool access without
+# disabling mcp.enabled. Folds into cabal_tool_extras["limenal.allowed_handlers"]
+# at JWT-mint time; limenal filters tools/list AND refuses tools/call
+# accordingly.
+allowed_handlers = ["memory", "notify"]
 
 # Per-persona scoping config forwarded to limenal as Context.extra. The
 # key names are the handler-author's contract (web reads
