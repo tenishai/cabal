@@ -52,9 +52,9 @@ jobs:
 
   # ---- integration: full suite with siblings --------------------------------
   integration:
-    # Only run integration on main or manual dispatch — not on every PR
-    # (requires GH_PAT_REPOS secret which forks won't have).
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    # Manual dispatch only until GH_PAT_REPOS secret is added.
+    # Once that's available, can re-enable `|| github.ref == 'refs/heads/main'`.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       matrix:
