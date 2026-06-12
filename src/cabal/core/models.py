@@ -7,7 +7,7 @@ rows for the same name can coexist in `draining` and `active` status.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
@@ -45,7 +45,7 @@ class Persona(Base):
     name: Mapped[str] = mapped_column(String, primary_key=True)
     config_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=_utcnow_default()
+        DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
     )
 
     agents: Mapped[list[Agent]] = relationship(
@@ -77,8 +77,8 @@ class Agent(Base):
     status: Mapped[str] = mapped_column(
         String, nullable=False, server_default=text("'active'")
     )
-    drain_started_at: Mapped[datetime | None] = mapped_column(DateTime)
-    last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime)
+    drain_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     persona: Mapped[Persona] = relationship(back_populates="agents")
 
@@ -118,10 +118,13 @@ class Conversation(Base):
     # tasks/resubscribe (A2A v1.0) without replaying the event log.
     result_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=_utcnow_default()
+        DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=_utcnow_default()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_utcnow_default(),
+        onupdate=lambda: datetime.now(UTC),
     )
 
     __table_args__ = (
@@ -151,7 +154,7 @@ class Event(Base):
     event_type: Mapped[str] = mapped_column(String, nullable=False)
     payload_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=_utcnow_default()
+        DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
     )
 
     __table_args__ = (
@@ -173,7 +176,7 @@ class Secret(Base):
     value_encrypted: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     purpose: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=_utcnow_default()
+        DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
     )
 
 
@@ -194,9 +197,9 @@ class SigningKey(Base):
         String, nullable=False, server_default=text("'active'")
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=_utcnow_default()
+        DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
     )
-    retired_at: Mapped[datetime | None] = mapped_column(DateTime)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 # ---------- bootstrap_codes --------------------------------------------------
@@ -209,5 +212,5 @@ class BootstrapCode(Base):
 
     code: Mapped[str] = mapped_column(String, primary_key=True)
     persona_name: Mapped[str | None] = mapped_column(String)
-    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

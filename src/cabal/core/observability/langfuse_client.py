@@ -28,6 +28,8 @@ class LangfuseTraceClient:
     secrets stay in env and the SDK import stays lazy.
     """
 
+    _MAX_ACTIVE_TRACES = 10_000
+
     def __init__(self, client: Any) -> None:  # langfuse.Langfuse
         self._client = client
         self._traces: dict[str, Any] = {}
@@ -60,6 +62,8 @@ class LangfuseTraceClient:
     def start_trace(
         self, *, trace_id: str, task_id: str, target: str, caller: str | None
     ) -> None:
+        if len(self._traces) >= self._MAX_ACTIVE_TRACES:
+            self._traces.pop(next(iter(self._traces)))
         trace = self._client.trace(
             id=trace_id,
             name=f"cabal:{target}",
