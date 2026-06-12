@@ -23,8 +23,10 @@ import structlog
 from joserfc.jwk import KeySet
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from collections.abc import AsyncIterator
+
 from cabal.agents.base import LocalHandler
-from cabal.core.a2a.types import Task
+from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.auth.jwt import JWTError, verify
 from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.bulletin import store as bulletin_store
@@ -105,6 +107,10 @@ class DispatchRouter:
     def has_local(self, name: str) -> bool:
         return name in self._local
 
+    def get_local(self, name: str) -> LocalHandler | None:
+        """Return the local handler for `name`, or None if not registered."""
+        return self._local.get(name)
+
     def unregister_local(self, name: str) -> None:
         self._local.pop(name, None)
 
@@ -176,6 +182,93 @@ class DispatchRouter:
                 },
             )
         return response
+
+    async def dispatch_streaming(
+        self,
+        *,
+        target_agent: str,
+        target_generation: int | None,
+        task: Task,
+        caller_jwt: str,
+    ) -> AsyncIterator[str]:
+        """Like dispatch() but yields string deltas from astream_task.
+
+        Enforces the same §6.12 invariants as dispatch(): JWT re-verification,
+        Conversation/Event bookkeeping, session hooks, and annotated failure
+        Tasks on exception. Streaming callers get the invariants; they just
+        receive chunks instead of a single returned Task.
+
+        Raises DispatchError (before yielding) if the target has no local
+        handler or its handler doesn't implement astream_task.
+        """
+        ctx = await self._prepare(target_agent, target_generation, caller_jwt)
+
+        if target_agent not in self._local:
+            raise DispatchError(
+                f"agent {target_agent!r} has no in-process handler "
+                "(streaming requires a local persona)"
+            )
+        handler = self._local[target_agent]
+        if not hasattr(handler, "astream_task"):
+            raise DispatchError(
+                f"agent {target_agent!r}'s handler does not implement astream_task"
+            )
+
+        task = _ensure_trace(task)
+        await self._bookkeeper.on_dispatch_start(task, ctx.target, ctx.caller_agent)
+
+        is_session_root = "cabal_session_started" not in task.metadata
+        if is_session_root:
+            task.metadata["cabal_session_started"] = True
+            await self._hooks.fire(
+                HookName.SESSION_START,
+                {
+                    "task_id": task.id,
+                    "target": ctx.target.name,
+                    "caller": ctx.caller_agent,
+                    "trace_id": task.metadata.get("cabal_trace_id"),
+                },
+            )
+
+        full_text = ""
+        try:
+            async for delta in handler.astream_task(task):
+                full_text += delta
+                yield delta
+        except Exception as exc:
+            await self._bookkeeper.on_dispatch_failure(task, exc)
+            if is_session_root:
+                await self._hooks.fire(
+                    HookName.SESSION_END,
+                    {
+                        "task_id": task.id,
+                        "state": "failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            raise
+
+        final_task = Task(
+            id=task.id,
+            status=TaskStatus(
+                state="completed",
+                message=Message(
+                    role="agent",
+                    parts=[TextPart(kind="text", text=full_text)],
+                ),
+            ),
+            metadata=task.metadata,
+        )
+        await self._bookkeeper.on_dispatch_success(task, final_task)
+        if is_session_root:
+            await self._hooks.fire(
+                HookName.SESSION_END,
+                {
+                    "task_id": task.id,
+                    "state": "completed",
+                    "reason_code": final_task.metadata.get("cabal_reason_code"),
+                },
+            )
 
     # --- internal pieces --------------------------------------------------
 

@@ -283,3 +283,185 @@ async def test_stream_endpoint_wrong_method_rejected(
     ) as resp:
         body_text = "".join([chunk async for chunk in resp.aiter_text()])
     assert "message/stream" in body_text
+
+
+# ---- Phase 2: invariant enforcement for streaming --------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_creates_conversation_row(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """Streaming dispatch must write a Conversation row (invariant 3)."""
+    from sqlalchemy import select as _select
+
+    from cabal.core.models import Conversation
+
+    class CountedStreamer:
+        name = "counter-stream"
+
+        async def astream_task(self, task: Task) -> AsyncIterator[str]:
+            yield "ok"
+
+    app.state.dispatch_router.register_local(CountedStreamer())
+
+    from cabal.core.bulletin import store as bulletin_store
+    from cabal.core.db import open_session
+    from cabal.core.models import Persona
+
+    async with open_session(app.state.sessionmaker) as s:
+        s.add(Persona(name="counter-stream", config_json={}))
+        await s.flush()
+        await bulletin_store.register_agent(
+            s,
+            name="counter-stream",
+            persona_name="counter-stream",
+            role="builtin",
+            endpoint="local://counter-stream",
+            capabilities={},
+            safety_tier="strict",
+            agent_card_json={"name": "counter-stream"},
+            agent_card_kid=app.state.active_kid,
+        )
+
+    token = await _bootstrap_token(app, client)
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "message/stream",
+        "params": {
+            "message": {"role": "user", "parts": [{"kind": "text", "text": "ping"}]}
+        },
+    }
+    async with client.stream(
+        "POST",
+        "/agents/counter-stream/stream",
+        json=body,
+        headers={"Authorization": f"Bearer {token}"},
+    ) as resp:
+        assert resp.status_code == 200
+        async for _ in resp.aiter_lines():
+            pass  # drain the stream
+
+    # Conversation row must exist after the stream completes.
+    async with open_session(app.state.sessionmaker) as s:
+        rows = (
+            await s.execute(_select(Conversation).where(Conversation.target_agent == "counter-stream"))
+        ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].state == "completed"
+
+
+@pytest.mark.asyncio
+async def test_stream_hooks_fire(app: FastAPI, client: AsyncClient) -> None:
+    """SESSION_START and SESSION_END hooks must fire for streaming dispatches."""
+    from cabal.core.hooks.registry import HookName
+
+    fired: list[str] = []
+    app.state.hook_registry.register(HookName.SESSION_START, lambda p: fired.append("start"))
+    app.state.hook_registry.register(HookName.SESSION_END, lambda p: fired.append("end"))
+
+    class HookStreamer:
+        name = "hook-stream"
+
+        async def astream_task(self, task: Task) -> AsyncIterator[str]:
+            yield "hooky"
+
+    app.state.dispatch_router.register_local(HookStreamer())
+
+    from cabal.core.bulletin import store as bulletin_store
+    from cabal.core.db import open_session
+    from cabal.core.models import Persona
+
+    async with open_session(app.state.sessionmaker) as s:
+        s.add(Persona(name="hook-stream", config_json={}))
+        await s.flush()
+        await bulletin_store.register_agent(
+            s,
+            name="hook-stream",
+            persona_name="hook-stream",
+            role="builtin",
+            endpoint="local://hook-stream",
+            capabilities={},
+            safety_tier="strict",
+            agent_card_json={"name": "hook-stream"},
+            agent_card_kid=app.state.active_kid,
+        )
+
+    token = await _bootstrap_token(app, client)
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "message/stream",
+        "params": {
+            "message": {"role": "user", "parts": [{"kind": "text", "text": "x"}]}
+        },
+    }
+    async with client.stream(
+        "POST",
+        "/agents/hook-stream/stream",
+        json=body,
+        headers={"Authorization": f"Bearer {token}"},
+    ) as resp:
+        async for _ in resp.aiter_lines():
+            pass
+
+    assert "start" in fired
+    assert "end" in fired
+
+
+@pytest.mark.asyncio
+async def test_stream_handler_exception_produces_error_event(
+    app: FastAPI, client: AsyncClient,
+) -> None:
+    """A handler crash mid-stream must produce an error SSE event, not a 500."""
+
+    class CrashStreamer:
+        name = "crash-stream"
+
+        async def astream_task(self, task: Task) -> AsyncIterator[str]:
+            yield "partial "
+            raise RuntimeError("deliberate crash")
+
+    app.state.dispatch_router.register_local(CrashStreamer())
+
+    from cabal.core.bulletin import store as bulletin_store
+    from cabal.core.db import open_session
+    from cabal.core.models import Persona
+
+    async with open_session(app.state.sessionmaker) as s:
+        s.add(Persona(name="crash-stream", config_json={}))
+        await s.flush()
+        await bulletin_store.register_agent(
+            s,
+            name="crash-stream",
+            persona_name="crash-stream",
+            role="builtin",
+            endpoint="local://crash-stream",
+            capabilities={},
+            safety_tier="strict",
+            agent_card_json={"name": "crash-stream"},
+            agent_card_kid=app.state.active_kid,
+        )
+
+    token = await _bootstrap_token(app, client)
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "message/stream",
+        "params": {
+            "message": {"role": "user", "parts": [{"kind": "text", "text": "boom"}]}
+        },
+    }
+    async with client.stream(
+        "POST",
+        "/agents/crash-stream/stream",
+        json=body,
+        headers={"Authorization": f"Bearer {token}"},
+    ) as resp:
+        assert resp.status_code == 200  # SSE responses always 200
+        body_text = "".join([chunk async for chunk in resp.aiter_text()])
+
+    # Must get an error event with partial text, not a server 500
+    assert "event: error" in body_text
+    assert "deliberate crash" in body_text or "stream failed" in body_text
