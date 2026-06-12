@@ -6,28 +6,55 @@ the Rook primus run as agent modules registered with the bulletin board.
 
 ## Status
 
-Pre-alpha. Phase 1 (Cabal Core skeleton + first end-to-end dispatch loop) in
-progress. See `../claude/cabal-handoff.md` for the build spec.
+**305 tests passing.** All phases through the security + hygiene sweep are complete:
+trust boundary enforcement, streaming dispatch router, techne correctness, async
+hygiene, SSRF defense, CI on all three repos, MCP spec compliance, and a full
+hygiene pass. The end-to-end demo (`make demo`) runs cleanly with Docker Compose.
+
+## What works
+
+- **Full A2A dispatch loop** — submit a task via HTTP or CLI, get a completed
+  Task back. In-process local dispatch and HTTP remote dispatch both work.
+- **JWT trust boundary** — audience + scope + RS256 algorithm pin enforced on
+  every inbound call. Operator tokens cannot impersonate limenal service tokens
+  and vice versa. `allow_dev_master_key` defaults to `False`.
+- **limenal integration** — personas that have `[mcp]` wired in their identity.toml
+  persona block get a `tool_proxy` that dispatches to limenal over JSON-RPC. The
+  credential flow (`cbl secret set` → `/admin/secrets` → `ctx.credentials` in the
+  handler) is complete and tested end-to-end.
+- **LLM personas** — `LLMPersona` wraps LiteLLM acompletion with tool-use loop,
+  budget guard, circuit breaker, and per-step hook callbacks.
+- **CLI** — `cbl` covers daemon, login, dispatch, token mint/list, secret set,
+  persona reload, agent status.
+- **Docker Compose dev stack** — `make up / bootstrap / demo` runs the full
+  cabal + limenal stack; `make demo` is a 6-step smoke test that passes reliably.
 
 ## Layout
 
 ```
-src/cabal/        Python package
+src/cabal/
   core/           FastAPI + SQLite + A2A broker + bulletin board
+    auth/         JWT mint/verify, bootstrap codes, JWKS provider
+    broker/       Dispatch router + bookkeeping + circuit breaker + budget guard
+    routes/       admin, a2a, tasks, well-known, auth, healthz
+    observability/ Trace exporter + Langfuse adapter
   cli/            cbl entrypoint
-  agents/         Local handler interface (registered at startup)
+  personas/       LLMPersona, RookPrimusPersona, EchoPersona
   config/         identity.toml loader
 migrations/       Alembic revisions
-tests/            pytest suite (router tests run in both modes)
+tests/            pytest suite (305 tests)
+scripts/          bootstrap.sh, demo.sh
+compose/          identity.dev.toml, litellm-config.yaml, litestream.yml
 ```
 
 ## Quickstart (development)
 
-**Prerequisite**: clone `dimartin/techne` as a sibling directory of `cabal`:
+**Prerequisite**: clone `dimartin/techne` and `dimartin/limenal` as siblings:
 
 ```
 parent/
 ├── cabal/        # this repo
+├── limenal/      # github.com/dimartin/limenal
 └── techne/       # github.com/dimartin/techne
 ```
 
@@ -35,40 +62,61 @@ parent/
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-pip install -e ../techne                 # sibling checkout
-cp identity.toml.example identity.toml
+pip install -e ../techne
+pip install -e ../limenal
 
-# Generate a master key once
+# Generate a master key
 export CABAL_MASTER_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 
-# Terminal 1: start the daemon
 cbl daemon up
-
-# Terminal 2: log in with the bootstrap code printed in the daemon log,
-# then dispatch a task to the built-in echo agent.
+# In another terminal: grab the bootstrap code from the log
 cbl login --code <CODE>
 cbl dispatch echo "hello cabal"
-cbl status                       # see registered agents
 ```
 
-## Quickstart (docker compose)
+Run the unit suite (no sibling deps needed):
 
 ```bash
-cp .env.example .env             # fill in CABAL_MASTER_KEY, LITELLM_MASTER_KEY, ANTHROPIC_API_KEY
-cp identity.toml.example identity.toml
-docker compose build
-docker compose up
-docker compose logs cabal-core | grep bootstrap_code   # grab the code
-cbl login --code <CODE>          # from host (port 7400 published to 127.0.0.1)
-cbl dispatch archivist "what do you remember?"
+pytest -q
 ```
 
-The compose stack includes a LiteLLM proxy (model list in
-`compose/litellm-config.yaml`) and a Litestream sidecar (config in
-`compose/litestream.yml`) replicating the SQLite DB to a local volume by
-default.
+## Quickstart (Docker Compose)
 
-Run the test suite with `pytest -q`.
+```bash
+make up
+make bootstrap           # mints operator + limenal service token, restarts limenal
+make demo                # 6-step smoke test: healthz → mint → init → tools/list → set → get
+```
+
+Logs: `make logs`. Tear down: `make down`.
+
+The dev stack (`docker-compose.dev.yml`) includes cabal + limenal only. The
+production stack (`docker-compose.yml`) adds a LiteLLM proxy and Litestream
+sidecar replicating the SQLite DB.
+
+## Configuration (identity.toml)
+
+```toml
+[operator]
+operator_id = "alice"
+
+[personas.archivist]
+role = "LLM"
+model = "claude-haiku-4-5-20251001"
+system_prompt = "You are an archivist."
+budget_tokens = 20000
+
+[personas.archivist.mcp]
+enabled = true
+max_steps = 6
+allowed_handlers = ["memory", "scratchpad"]
+tool_extras = { "memory.db_path" = "/data/archivist.db" }
+
+[langfuse]                        # optional; omit to disable tracing
+host = "https://cloud.langfuse.com"
+public_key_env = "LANGFUSE_PUBLIC_KEY"
+secret_key_env = "LANGFUSE_SECRET_KEY"
+```
 
 ## Modes
 
@@ -77,8 +125,7 @@ Run the test suite with `pytest -q`.
 - **Scale**: per-agent containers, dispatch router routes via HTTP.
 
 Same package, same code, same tests — `--agent` flag at startup decides which
-handlers register locally. See `cabal-handoff.md` §6.12 for the dispatch router
-invariants that hold in both modes.
+handlers register locally.
 
 ## License
 
