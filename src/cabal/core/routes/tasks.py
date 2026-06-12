@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from cabal.core.a2a.types import Task
 from cabal.core.auth.jwt import JWTError, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
-from cabal.core.broker.router import DispatchError
+from cabal.core.broker.router import AgentNotFoundError, CallerJWTError, DispatchError
 from cabal.core.db import open_session
 
 router = APIRouter(prefix="/a2a", tags=["a2a"])
@@ -101,10 +101,9 @@ async def submit_task(
             task=req.task,
             caller_jwt=dispatch_token,
         )
+    except CallerJWTError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except AgentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except DispatchError as exc:
-        msg = str(exc)
-        if "caller JWT" in msg:
-            raise HTTPException(status_code=401, detail=msg) from exc
-        if "no agent registered" in msg:
-            raise HTTPException(status_code=404, detail=msg) from exc
-        raise HTTPException(status_code=502, detail=msg) from exc
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

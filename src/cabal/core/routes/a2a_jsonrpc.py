@@ -16,7 +16,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, Header, Path, Request
+from fastapi import APIRouter, Header, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
@@ -37,7 +37,7 @@ from cabal.core.a2a.jsonrpc import (
 from cabal.core.a2a.types import Task, TaskStatus
 from cabal.core.auth.jwt import JWTError, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
-from cabal.core.broker.router import DispatchError
+from cabal.core.broker.router import AgentNotFoundError, CallerJWTError, ConfigurationError, DispatchError
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 from cabal.core.models import Conversation
@@ -107,7 +107,7 @@ async def per_agent_card(
     async with open_session(sessionmaker) as session:
         row = await bulletin_store.get_active(session, agent_name)
     if row is None:
-        return {"error": "agent not found", "name": agent_name}
+        raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
     return row.agent_card_json
 
 
@@ -230,7 +230,7 @@ async def per_agent_stream(
         )
 
     from cabal.core.a2a.types import Task, TaskStatus
-    from cabal.core.broker.router import DispatchError
+    from cabal.core.broker.router import AgentNotFoundError, CallerJWTError, ConfigurationError, DispatchError
 
     task_id = str(uuid.uuid4())
     task = Task(
@@ -276,6 +276,12 @@ async def _stream_task_events(
             yield _sse_event(
                 "chunk", {"jsonrpc": "2.0", "id": request_id, "delta": delta}
             )
+    except (AgentNotFoundError, ConfigurationError) as exc:
+        yield _sse_event("error", {"jsonrpc": "2.0", "id": request_id, "error": {"code": ERROR_AGENT_NOT_FOUND, "message": str(exc), "partial_text": full_text}})
+        return
+    except CallerJWTError as exc:
+        yield _sse_event("error", {"jsonrpc": "2.0", "id": request_id, "error": {"code": ERROR_UNAUTHORIZED, "message": str(exc), "partial_text": full_text}})
+        return
     except DispatchError as exc:
         yield _sse_event(
             "error",
@@ -283,7 +289,7 @@ async def _stream_task_events(
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "error": {
-                    "code": ERROR_AGENT_NOT_FOUND,
+                    "code": ERROR_INTERNAL,
                     "message": str(exc),
                     "partial_text": full_text,
                 },
@@ -376,14 +382,12 @@ async def _message_send(
             task=task,
             caller_jwt=dispatch_token,
         )
+    except (AgentNotFoundError, ConfigurationError) as exc:
+        return make_error_response(id=rpc_req.id, code=ERROR_AGENT_NOT_FOUND, message=str(exc))
+    except CallerJWTError as exc:
+        return make_error_response(id=rpc_req.id, code=ERROR_UNAUTHORIZED, message=str(exc))
     except DispatchError as exc:
-        msg = str(exc)
-        code = ERROR_INTERNAL
-        if "no agent registered" in msg or "no handler" in msg:
-            code = ERROR_AGENT_NOT_FOUND
-        elif "caller JWT" in msg:
-            code = ERROR_UNAUTHORIZED
-        return make_error_response(id=rpc_req.id, code=code, message=msg)
+        return make_error_response(id=rpc_req.id, code=ERROR_INTERNAL, message=str(exc))
 
     return make_success_response(
         id=rpc_req.id, result=response.model_dump(by_alias=True, exclude_none=True)

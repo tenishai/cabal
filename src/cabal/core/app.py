@@ -112,7 +112,7 @@ def create_app(
     agent: str = "all",
     config_path: str = "identity.toml",
     db_url: str | None = None,
-    allow_dev_master_key: bool = True,
+    allow_dev_master_key: bool = False,
     run_migrations: bool = True,
     print_bootstrap_code: bool = True,
     acompletion_fn: Callable[..., Any] | None = None,
