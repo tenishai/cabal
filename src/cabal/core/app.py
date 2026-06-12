@@ -136,6 +136,13 @@ def create_app(
         _app.state.engine = engine
         _app.state.sessionmaker = sessionmaker
 
+        # SecretsBackend Protocol — default Fernet+SQLite; future backends
+        # (OS keychain, OpenBao, AWS/GCP SM) plug in via the same Protocol.
+        from cabal.core.secrets_backend import SqliteFernetBackend
+        _app.state.secrets_backend = SqliteFernetBackend(
+            sessionmaker=sessionmaker, master_key=master_key
+        )
+
         if run_migrations:
             sync_url = (
                 (db_url or os.environ.get("CABAL_DB_URL", "sqlite:///data/cabal.db"))
