@@ -229,56 +229,67 @@ async def per_agent_stream(
             media_type="text/event-stream",
         )
 
-    router_ = request.app.state.dispatch_router
-    if not router_.has_local(agent_name):
-        return StreamingResponse(
-            _sse_error_only(
-                ERROR_AGENT_NOT_FOUND,
-                f"agent {agent_name!r} has no in-process handler "
-                "(streaming requires a local persona)",
-            ),
-            media_type="text/event-stream",
-        )
-
-    handler = router_._local[agent_name]  # type: ignore[attr-defined]
-    if not hasattr(handler, "astream_task"):
-        return StreamingResponse(
-            _sse_error_only(
-                ERROR_METHOD_NOT_FOUND,
-                f"agent {agent_name!r}'s handler does not implement astream_task",
-            ),
-            media_type="text/event-stream",
-        )
+    from cabal.core.a2a.types import Task, TaskStatus
+    from cabal.core.broker.router import DispatchError
 
     task_id = str(uuid.uuid4())
-
-    return StreamingResponse(
-        _stream_task_events(handler, task_id, agent_name, params, rpc_req.id),
-        media_type="text/event-stream",
-    )
-
-
-async def _stream_task_events(
-    handler: Any,
-    task_id: str,
-    agent_name: str,
-    params: MessageSendParams,
-    request_id: Any,
-) -> AsyncIterator[bytes]:
-    from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
-
     task = Task(
         id=task_id,
         status=TaskStatus(state="submitted", message=params.message),
         metadata=params.metadata or {},
     )
+
+    return StreamingResponse(
+        _stream_task_events(
+            request.app.state.dispatch_router,
+            task,
+            agent_name,
+            dispatch_token,
+            rpc_req.id,
+        ),
+        media_type="text/event-stream",
+    )
+
+
+async def _stream_task_events(
+    router_: Any,
+    task: Any,
+    agent_name: str,
+    dispatch_token: str,
+    request_id: Any,
+) -> AsyncIterator[bytes]:
+    """SSE frame generator for message/stream.
+
+    Delegates to router.dispatch_streaming() so all §6.12 invariants
+    (JWT re-verification, bookkeeping, hooks) are enforced by the same
+    path as non-streaming dispatch.
+    """
     full_text = ""
     try:
-        async for delta in handler.astream_task(task):
+        async for delta in router_.dispatch_streaming(
+            target_agent=agent_name,
+            target_generation=None,
+            task=task,
+            caller_jwt=dispatch_token,
+        ):
             full_text += delta
             yield _sse_event(
                 "chunk", {"jsonrpc": "2.0", "id": request_id, "delta": delta}
             )
+    except DispatchError as exc:
+        yield _sse_event(
+            "error",
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": ERROR_AGENT_NOT_FOUND,
+                    "message": str(exc),
+                    "partial_text": full_text,
+                },
+            },
+        )
+        return
     except Exception as exc:  # noqa: BLE001
         yield _sse_event(
             "error",
@@ -294,11 +305,15 @@ async def _stream_task_events(
         )
         return
 
+    # The router has already written bookkeeping + fired hooks; emit the
+    # final SSE frame so the client gets a well-formed completion event.
+    from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
+
     final_task = Task(
-        id=task_id,
+        id=task.id,
         status=TaskStatus(
             state="completed",
-            message=Message(role="agent", parts=[TextPart(text=full_text)]),
+            message=Message(role="agent", parts=[TextPart(kind="text", text=full_text)]),
         ),
         metadata=task.metadata,
     )
