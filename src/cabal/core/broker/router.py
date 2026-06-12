@@ -41,6 +41,18 @@ class DispatchError(RuntimeError):
     """Routing-layer failures: missing target, JWT invalid, transport error."""
 
 
+class AgentNotFoundError(DispatchError):
+    """Target agent has no registered or stored bulletin entry."""
+
+
+class CallerJWTError(DispatchError):
+    """Caller JWT failed verification at the router boundary."""
+
+
+class ConfigurationError(DispatchError):
+    """Agent is declared local but no handler is registered."""
+
+
 @dataclass(slots=True)
 class DispatchContext:
     """Resolved + verified context for a single dispatch."""
@@ -286,7 +298,7 @@ class DispatchRouter:
                     session, target_agent, target_generation
                 )
         if row is None:
-            raise DispatchError(
+            raise AgentNotFoundError(
                 f"no agent registered: {target_agent!r}"
                 + (
                     f" generation={target_generation}"
@@ -303,7 +315,7 @@ class DispatchRouter:
                 expected_audience=target_agent,
             )
         except JWTError as exc:
-            raise DispatchError(f"caller JWT rejected: {exc}") from exc
+            raise CallerJWTError(f"caller JWT rejected: {exc}") from exc
 
         return DispatchContext(
             target=row,
@@ -320,7 +332,7 @@ class DispatchRouter:
         if target.endpoint.startswith("local://"):
             # The bulletin row says "local handler" but none is registered
             # — this is a misconfiguration, not a transport failure.
-            raise DispatchError(
+            raise ConfigurationError(
                 f"agent {target.name!r} is declared local but no handler "
                 f"is registered (identity.toml persona without an "
                 f"implementation in PERSONA_REGISTRY)"

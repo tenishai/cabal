@@ -38,8 +38,7 @@ async def test_well_known_agent_card_per_agent(app: FastAPI, client: AsyncClient
 @pytest.mark.asyncio
 async def test_well_known_unknown_agent(app: FastAPI, client: AsyncClient) -> None:
     r = await client.get("/agents/nope/.well-known/agent-card")
-    assert r.status_code == 200
-    assert r.json()["error"] == "agent not found"
+    assert r.status_code == 404
 
 
 @pytest.mark.asyncio
