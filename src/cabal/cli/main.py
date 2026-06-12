@@ -138,8 +138,6 @@ def chat(
     import sys
     import uuid
 
-    import click
-
     token = api.TokenStore().load()
     if token is None:
         typer.echo("no token; run `cbl login` first.", err=True)
@@ -157,7 +155,7 @@ def chat(
     while True:
         try:
             user_text = typer.prompt(">", prompt_suffix=" ", show_default=False)
-        except (EOFError, click.exceptions.Abort):
+        except (EOFError, typer.Abort):
             typer.echo("\nbye.")
             return
         user_text = user_text.strip()
