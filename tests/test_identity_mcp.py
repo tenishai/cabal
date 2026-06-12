@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import pytest
+
 pytest.importorskip("limenal")
 import os
 from pathlib import Path

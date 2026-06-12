@@ -5,13 +5,14 @@ Archivist, verifies that the system prompt sent to the LLM included the
 relevant memory hit.
 """
 from __future__ import annotations
+
 import pytest
+
 pytest.importorskip("techne")
 
 
 from pathlib import Path
 from typing import Any
-
 
 from cabal.agents.personas import ArchivistPersona
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pytest
+
 pytest.importorskip("limenal")
 
 from typing import Any
@@ -22,7 +23,6 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from cabal.core.models import BootstrapCode
-
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -65,15 +65,16 @@ async def test_secret_flows_from_cabal_to_handler(
 ) -> None:
     """Full round-trip: secret stored in Cabal → fetched by limenal resolver
     → arrives in handler's ctx.credentials."""
-    from cabal.core.auth.jwt import mint as _mint_jwt
-    from cabal.core.auth.keys import load_active_signing_key
-    from cabal.core.db import open_session
     from limenal.protocol import Context, ToolResult, ToolSpec
     from limenal.registry import Registry
     from limenal.registry.discover import register_explicit
     from limenal.server import StaticKeySetVerifier
     from limenal.server import create_app as limenal_create_app
     from limenal.server.credentials import CabalCoreCredentialResolver
+
+    from cabal.core.auth.jwt import mint as _mint_jwt
+    from cabal.core.auth.keys import load_active_signing_key
+    from cabal.core.db import open_session
 
     # 1. Get operator token, store a secret.
     op_token = await _operator_token(app, client)
@@ -172,15 +173,16 @@ async def test_multiple_secrets_all_flow_through(
     app: FastAPI, client: AsyncClient
 ) -> None:
     """All keys stored for (persona, handler) arrive together in ctx.credentials."""
-    from cabal.core.auth.jwt import mint as _mint_jwt
-    from cabal.core.auth.keys import load_active_signing_key
-    from cabal.core.db import open_session
     from limenal.protocol import Context, ToolResult, ToolSpec
     from limenal.registry import Registry
     from limenal.registry.discover import register_explicit
     from limenal.server import StaticKeySetVerifier
     from limenal.server import create_app as limenal_create_app
     from limenal.server.credentials import CabalCoreCredentialResolver
+
+    from cabal.core.auth.jwt import mint as _mint_jwt
+    from cabal.core.auth.keys import load_active_signing_key
+    from cabal.core.db import open_session
 
     op_token = await _operator_token(app, client)
 
@@ -272,15 +274,16 @@ async def test_persona_isolation_different_personas_different_creds(
 ) -> None:
     """rook/notify and archivist/notify have separate credential sets; each
     persona's token only retrieves its own secrets."""
-    from cabal.core.auth.jwt import mint as _mint_jwt
-    from cabal.core.auth.keys import load_active_signing_key
-    from cabal.core.db import open_session
     from limenal.protocol import Context, ToolResult, ToolSpec
     from limenal.registry import Registry
     from limenal.registry.discover import register_explicit
     from limenal.server import StaticKeySetVerifier
     from limenal.server import create_app as limenal_create_app
     from limenal.server.credentials import CabalCoreCredentialResolver
+
+    from cabal.core.auth.jwt import mint as _mint_jwt
+    from cabal.core.auth.keys import load_active_signing_key
+    from cabal.core.db import open_session
 
     op_token = await _operator_token(app, client)
 
@@ -376,15 +379,16 @@ async def test_cabal_unreachable_yields_empty_creds_not_error(
     app: FastAPI, client: AsyncClient
 ) -> None:
     """If Cabal Core is unreachable the handler gets {} not an exception."""
-    from cabal.core.auth.jwt import mint as _mint_jwt
-    from cabal.core.auth.keys import load_active_signing_key
-    from cabal.core.db import open_session
     from limenal.protocol import Context, ToolResult, ToolSpec
     from limenal.registry import Registry
     from limenal.registry.discover import register_explicit
     from limenal.server import StaticKeySetVerifier
     from limenal.server import create_app as limenal_create_app
     from limenal.server.credentials import CabalCoreCredentialResolver
+
+    from cabal.core.auth.jwt import mint as _mint_jwt
+    from cabal.core.auth.keys import load_active_signing_key
+    from cabal.core.db import open_session
 
     # Resolver that always raises a network error.
     def _dead_transport(request: httpx.Request) -> httpx.Response:
@@ -466,15 +470,16 @@ async def test_resolver_cache_hit_reuses_value(
 ) -> None:
     """Two limenal calls for the same (persona, handler) only fetch from
     Cabal once (TTL has not expired)."""
-    from cabal.core.auth.jwt import mint as _mint_jwt
-    from cabal.core.auth.keys import load_active_signing_key
-    from cabal.core.db import open_session
     from limenal.protocol import Context, ToolResult, ToolSpec
     from limenal.registry import Registry
     from limenal.registry.discover import register_explicit
     from limenal.server import StaticKeySetVerifier
     from limenal.server import create_app as limenal_create_app
     from limenal.server.credentials import CabalCoreCredentialResolver
+
+    from cabal.core.auth.jwt import mint as _mint_jwt
+    from cabal.core.auth.keys import load_active_signing_key
+    from cabal.core.db import open_session
 
     op_token = await _operator_token(app, client)
     await client.post(

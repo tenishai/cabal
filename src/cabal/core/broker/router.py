@@ -15,6 +15,7 @@ one independently and assert them identically across solo + scale modes.
 from __future__ import annotations
 
 import secrets
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -22,8 +23,6 @@ import httpx
 import structlog
 from joserfc.jwk import KeySet
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-from collections.abc import AsyncIterator
 
 from cabal.agents.base import LocalHandler
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart

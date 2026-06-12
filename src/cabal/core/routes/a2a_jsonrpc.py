@@ -37,7 +37,12 @@ from cabal.core.a2a.jsonrpc import (
 from cabal.core.a2a.types import Task, TaskStatus
 from cabal.core.auth.jwt import JWTError, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
-from cabal.core.broker.router import AgentNotFoundError, CallerJWTError, ConfigurationError, DispatchError
+from cabal.core.broker.router import (
+    AgentNotFoundError,
+    CallerJWTError,
+    ConfigurationError,
+    DispatchError,
+)
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 from cabal.core.models import Conversation
@@ -230,7 +235,12 @@ async def per_agent_stream(
         )
 
     from cabal.core.a2a.types import Task, TaskStatus
-    from cabal.core.broker.router import AgentNotFoundError, CallerJWTError, ConfigurationError, DispatchError
+    from cabal.core.broker.router import (
+        AgentNotFoundError,
+        CallerJWTError,
+        ConfigurationError,
+        DispatchError,
+    )
 
     task_id = str(uuid.uuid4())
     task = Task(
