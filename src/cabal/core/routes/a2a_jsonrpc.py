@@ -408,10 +408,8 @@ async def _tasks_get(
             id=rpc_req.id, code=ERROR_INVALID_PARAMS, message=f"invalid params: {exc}"
         )
 
-    # tasks/get requires any valid token; we don't enforce a specific aud
-    # because both the original caller and the operator can poll a task.
     try:
-        verify(
+        claims = verify(
             raw_token,
             key_set=request.app.state.jwks_provider(),
             expected_audience=None,
@@ -420,6 +418,9 @@ async def _tasks_get(
         return make_error_response(
             id=rpc_req.id, code=ERROR_UNAUTHORIZED, message=str(exc)
         )
+
+    caller_sub = claims.get("sub")
+    is_operator = "operator" in (claims.get("cabal_scope") or [])
 
     sessionmaker = request.app.state.sessionmaker
     async with open_session(sessionmaker) as session:
@@ -430,6 +431,11 @@ async def _tasks_get(
     if row is None:
         return make_error_response(
             id=rpc_req.id, code=ERROR_AGENT_NOT_FOUND, message=f"task {params.id!r} not found"
+        )
+    # Owner scoping: caller must be the task owner or have operator scope.
+    if not is_operator and caller_sub != row.caller_agent:
+        return make_error_response(
+            id=rpc_req.id, code=ERROR_UNAUTHORIZED, message="access denied"
         )
     if row.result_json is None:
         # Task is still in flight; return what we know
