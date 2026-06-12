@@ -302,12 +302,16 @@ def create_app(
             await engine.dispose()
             log.info("cabal.shutdown")
 
+    # openapi_url/docs_url are only exposed when CABAL_ENABLE_DOCS=1.
+    # Leaving them enabled by default leaks API surface and internal types
+    # to any network-reachable client.
+    _enable_docs = os.getenv("CABAL_ENABLE_DOCS") == "1"
     app = FastAPI(
         title="Cabal Core",
         version=__version__,
         lifespan=lifespan,
-        openapi_url="/openapi.json",
-        docs_url="/docs",
+        openapi_url="/openapi.json" if _enable_docs else None,
+        docs_url="/docs" if _enable_docs else None,
     )
 
     app.state.agent_mode = agent
