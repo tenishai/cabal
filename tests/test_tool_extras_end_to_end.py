@@ -10,6 +10,7 @@ per-persona allowlist.
 from __future__ import annotations
 
 import pytest
+
 pytest.importorskip("limenal")
 
 import json

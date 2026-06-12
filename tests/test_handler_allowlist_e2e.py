@@ -9,7 +9,9 @@ test_handler_allowlist.py — this test verifies the cabal side puts the
 right values in the right places.
 """
 from __future__ import annotations
+
 import pytest
+
 pytest.importorskip("limenal")
 
 

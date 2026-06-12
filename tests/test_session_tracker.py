@@ -1,11 +1,12 @@
 """SessionTracker tests (NoOp + techne adapter)."""
 from __future__ import annotations
+
 import pytest
+
 pytest.importorskip("techne")
 
 
 from pathlib import Path
-
 
 from cabal.core.memory.session_tracker import (
     NoOpSessionTracker,

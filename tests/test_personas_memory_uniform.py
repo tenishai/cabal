@@ -4,13 +4,14 @@ These tests verify the architectural property — that any persona can be
 wired with the shared memory/session components, not just Archivist.
 """
 from __future__ import annotations
+
 import pytest
+
 pytest.importorskip("techne")
 
 
 from pathlib import Path
 from typing import Any
-
 
 from cabal.agents.personas import (
     ArchitectPersona,

@@ -8,10 +8,10 @@ specific error code so the client can distinguish unknown/expired/used.
 
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
-
-import os
 
 from cabal.core.auth.bootstrap_codes import BootstrapCodeError, consume
 from cabal.core.auth.jwt import mint
