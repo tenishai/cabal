@@ -61,6 +61,13 @@ dev = [
 [project.scripts]
 cbl = "cabal.cli.main:app"
 
+# Cabal-shipped MCP handlers — limenal discovers them via this entry-point
+# group when limenal is installed alongside cabal. Each handler exposes a
+# slice of cabal's substrate (Architect's patterns corpus today, more
+# personas to follow) through limenal's standard wire protocol.
+[project.entry-points."limenal.handlers"]
+patterns = "cabal.handlers.patterns:get_handler"
+
 [project.urls]
 Source = "https://github.com/dimartin/cabal"
 
