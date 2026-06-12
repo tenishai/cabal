@@ -428,7 +428,7 @@ async def get_secrets(
     import os as _os
     import re
 
-    from cabal.core.secrets import get_secrets_for, merge_with_env
+    from cabal.core.secrets import merge_with_env
 
     claims = _require_secrets_fetch(
         request, extract_bearer(authorization)
@@ -438,14 +438,10 @@ async def get_secrets(
     if not persona_norm or not handler_norm:
         raise HTTPException(400, detail="persona and handler must be non-empty")
 
-    # 1) DB-backed (encrypted at rest).
-    async with open_session(request.app.state.sessionmaker) as session:
-        db_creds = await get_secrets_for(
-            session,
-            master_key=request.app.state.master_key,
-            persona=persona_norm,
-            handler=handler_norm,
-        )
+    # 1) Backend-stored (Fernet-encrypted SQLite by default).
+    db_creds = await request.app.state.secrets_backend.get(
+        persona=persona_norm, handler=handler_norm
+    )
 
     # 2) Env vars override.
     prefix = f"CABAL_SECRET_{persona_norm}_{handler_norm}_"
@@ -494,8 +490,6 @@ async def set_secret(
     consistency matters."""
     import re
 
-    from cabal.core.secrets import set_secret as _set
-
     _require_operator_claims(request, extract_bearer(authorization))
     persona_norm = _normalize(persona)
     handler_norm = _normalize(handler_name)
@@ -510,16 +504,13 @@ async def set_secret(
             ),
         )
 
-    async with open_session(request.app.state.sessionmaker) as session:
-        await _set(
-            session,
-            master_key=request.app.state.master_key,
-            persona=persona_norm,
-            handler=handler_norm,
-            key=req.key,
-            value=req.value,
-            purpose=req.purpose,
-        )
+    await request.app.state.secrets_backend.set(
+        persona=persona_norm,
+        handler=handler_norm,
+        key=req.key,
+        value=req.value,
+        purpose=req.purpose,
+    )
 
     return {
         "persona": persona_norm,
@@ -537,21 +528,17 @@ async def unset_secret(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    from cabal.core.secrets import unset_secret as _unset
-
     _require_operator_claims(request, extract_bearer(authorization))
     persona_norm = _normalize(persona)
     handler_norm = _normalize(handler_name)
     if not key:
         raise HTTPException(400, detail="key must be non-empty")
 
-    async with open_session(request.app.state.sessionmaker) as session:
-        existed = await _unset(
-            session,
-            persona=persona_norm,
-            handler=handler_norm,
-            key=key,
-        )
+    existed = await request.app.state.secrets_backend.unset(
+        persona=persona_norm,
+        handler=handler_norm,
+        key=key,
+    )
     return {
         "persona": persona_norm,
         "handler": handler_norm,
@@ -569,16 +556,13 @@ async def list_secrets(
 ) -> dict[str, Any]:
     """List secret NAMES (persona, handler, key tuples) — never values.
     Operator scope required."""
-    from cabal.core.secrets import list_secret_entries
-
     _require_operator_claims(request, extract_bearer(authorization))
     persona_norm = _normalize(persona) if persona is not None else None
     handler_norm = _normalize(handler) if handler is not None else None
 
-    async with open_session(request.app.state.sessionmaker) as session:
-        entries = await list_secret_entries(
-            session, persona=persona_norm, handler=handler_norm
-        )
+    entries = await request.app.state.secrets_backend.list_entries(
+        persona=persona_norm, handler=handler_norm
+    )
     return {
         "entries": [
             {"persona": e.persona, "handler": e.handler, "key": e.key}
