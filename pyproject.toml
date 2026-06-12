@@ -35,6 +35,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# `mcp` pulls in limenal so personas with `[mcp].enabled = true` in
+# identity.toml can connect to a limenal gateway. Without this extra,
+# cabal still runs — personas without an [mcp] block work fine; personas
+# with one fail at first dispatch with a clear "install cabal[mcp]" error.
+mcp = ["limenal>=0.1"]
+
+# `memory` pulls in techne for the Archivist persona + any persona that
+# binds a TechneMemoryStore. Same shape — cabal runs without it; personas
+# that need it raise a clear error pointing at this extra.
+memory = ["techne>=0.6.1"]
+
+# Everything wired together, for the canonical platform install.
+full = ["limenal>=0.1", "techne>=0.6.1"]
+
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",

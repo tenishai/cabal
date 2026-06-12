@@ -256,6 +256,18 @@ def create_app(
             mcp_http_client: httpx.AsyncClient | None = None
             stored_signing_key = None
             if identity.limenal.url:
+                # Fail fast at startup if limenal is missing — beats a
+                # confusing error on first dispatch hours later.
+                try:
+                    import limenal  # noqa: F401  # availability check
+                except ImportError as exc:
+                    raise RuntimeError(
+                        "identity.toml configures `[limenal] url = "
+                        f"{identity.limenal.url!r}` but the limenal package "
+                        "is not installed. Run `pip install cabal[mcp]` "
+                        "(or `pip install -e ../limenal` for the "
+                        "sibling-checkout dev layout)."
+                    ) from exc
                 mcp_http_client = httpx.AsyncClient(timeout=httpx.Timeout(60.0))
                 _app.state.mcp_http_client = mcp_http_client
                 async with open_session(sessionmaker) as session:
