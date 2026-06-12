@@ -1,12 +1,25 @@
-"""LiteLLM client wrapper.
+"""LiteLLM client wrapper — the default LLMClient implementation.
 
 Wraps `litellm.acompletion` with:
     - circuit breaker (§6.11)
     - hook fires (litellm_pre / litellm_post)
     - structured error mapping (litellm exceptions → CabalLLMError variants)
+    - budget reservation / refund (when wired)
 
-The wrapper is THE only place in Cabal that calls litellm directly;
-personas dispatch through it via `LiteLLMClient`.
+Supports both deployment shapes via `api_base` / `api_key`:
+
+    Library mode — provider env vars (ANTHROPIC_API_KEY etc.) handle auth,
+    litellm dispatches directly to the provider. Use when running solo or
+    when the daemon has direct provider credentials.
+
+    Proxy mode — `api_base` points at a LiteLLM proxy server, `api_key`
+    is the proxy's service token. Same litellm code path; proxy holds
+    provider credentials, enforces budgets centrally, surfaces all
+    LLM traffic for observability. Use in scale deployments.
+
+Satisfies the LLMClient Protocol in `cabal.core.llm.protocol`. Future
+non-LiteLLM clients implement the same Protocol; persona code does not
+change between impls.
 """
 
 from __future__ import annotations
