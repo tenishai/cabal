@@ -135,3 +135,19 @@ def verify(
         raise JWTError("token issued in the future")
 
     return dict(claims)
+
+
+def extract_bearer(authorization: str | None) -> str:
+    """Extract the raw token from an Authorization: Bearer <token> header.
+
+    Raises HTTPException(401) if the header is absent or malformed.
+    Import from here so routes don't each define their own copy.
+    """
+    from fastapi import HTTPException
+
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="missing or malformed Authorization header",
+        )
+    return authorization.split(" ", 1)[1].strip()
