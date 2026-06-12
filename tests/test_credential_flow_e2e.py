@@ -6,8 +6,10 @@ Both services run in-process via httpx.ASGITransport — zero real network
 calls, but the full HTTP path runs: cabal route → DB decrypt → JSON body
 → resolver cache → context.credentials → handler dispatch.
 """
-
 from __future__ import annotations
+
+import pytest
+pytest.importorskip("limenal")
 
 from typing import Any
 

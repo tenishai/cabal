@@ -11,7 +11,6 @@ side gets a tool call routed through limenal, executes against
 limenal's scratchpad handler, and the result lands back in the LLM
 conversation.
 """
-
 from __future__ import annotations
 
 import json
@@ -20,6 +19,7 @@ from typing import Any
 import httpx
 import pytest
 import pytest_asyncio
+pytest.importorskip("limenal")
 from cryptography.hazmat.primitives import serialization
 from joserfc.jwk import KeySet, RSAKey
 
