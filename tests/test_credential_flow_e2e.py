@@ -8,6 +8,8 @@ calls, but the full HTTP path runs: cabal route → DB decrypt → JSON body
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 pytest.importorskip("limenal")
 
@@ -160,7 +162,7 @@ async def test_secret_flows_from_cabal_to_handler(
     # 7. Assert the secret from step 1 landed in the handler.
     body = r.json()
     assert body.get("error") is None, body
-    result_data = body["result"]["content"][0]["data"]
+    result_data = json.loads(body["result"]["content"][0]["text"])
     assert result_data["creds"]["WEBHOOK_URL"] == "https://hooks.example.com/test"
     assert result_data["persona"] == "archivist"
 
@@ -260,7 +262,7 @@ async def test_multiple_secrets_all_flow_through(
 
     body = r.json()
     assert body.get("error") is None, body
-    creds = body["result"]["content"][0]["data"]["creds"]
+    creds = json.loads(body["result"]["content"][0]["text"])["creds"]
     assert creds == {"API_KEY": "key-abc", "API_SECRET": "secret-xyz", "REGION": "us-east-1"}
 
 
@@ -358,7 +360,7 @@ async def test_persona_isolation_different_personas_different_creds(
             )
         body = r.json()
         assert body.get("error") is None, body
-        return body["result"]["content"][0]["data"]["creds"]
+        return json.loads(body["result"]["content"][0]["text"])["creds"]
 
     rook_creds = await _call_as("rook", "rook-primus")
     archivist_creds = await _call_as("archivist", "archivist")
@@ -454,7 +456,7 @@ async def test_cabal_unreachable_yields_empty_creds_not_error(
     body = r.json()
     # Must be a successful tool call result, not a JSON-RPC error.
     assert body.get("error") is None, body
-    creds = body["result"]["content"][0]["data"]["creds"]
+    creds = json.loads(body["result"]["content"][0]["text"])["creds"]
     assert creds == {}
 
 
@@ -553,7 +555,7 @@ async def test_resolver_cache_hit_reuses_value(
             )
         body = r.json()
         assert body.get("error") is None, body
-        return body["result"]["content"][0]["data"]["creds"]
+        return json.loads(body["result"]["content"][0]["text"])["creds"]
 
     creds1 = await _call()
     creds2 = await _call()

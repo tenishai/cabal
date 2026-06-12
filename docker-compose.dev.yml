@@ -25,7 +25,10 @@ services:
       - "127.0.0.1:7400:7400"
     volumes:
       - cabal-dev-data:/data
-      - ./compose/identity.dev.toml:/app/identity.toml:ro
+      # CABAL_IDENTITY_FILE lets test-docker.sh supply the HOST-absolute path
+      # when compose runs inside a socket-mounted container. Relative path is
+      # fine for normal local use (make up from the repo root).
+      - ${CABAL_IDENTITY_FILE:-./compose/identity.dev.toml}:/app/identity.toml:ro
     networks:
       - cabal-dev
 

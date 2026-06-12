@@ -192,7 +192,7 @@ async def test_persona_loops_through_tool_use_and_returns_final_text(
     outcome = await tool_proxy.call_tool(
         "scratchpad__get", {"key": "favorite_color"}
     )
-    assert outcome.content[0]["data"]["value"] == "purple"
+    assert json.loads(outcome.content[0]["text"])["value"] == "purple"
 
 
 @pytest.mark.asyncio
