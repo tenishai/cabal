@@ -15,16 +15,33 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
-from limenal.client import (
-    AsyncMCPClient,
-    MCPError,
-    MCPRemoteError,
-    ToolCallOutcome,
-)
+
+# limenal is loaded lazily — cabal can be imported without it. The MCPToolProxy
+# is only instantiated when a persona declares `[mcp].enabled = true` in
+# identity.toml, so the import deferral is exactly the right shape. With
+# `from __future__ import annotations` above, the type hints in this module
+# stay as strings and don't trigger the import at module load.
+
+if TYPE_CHECKING:  # pragma: no cover
+    from limenal.client import AsyncMCPClient, ToolCallOutcome
+
+
+def _require_limenal() -> Any:
+    """Lazy-load limenal.client at runtime. Raises a clear error if missing."""
+    try:
+        from limenal import client as _limenal_client
+    except ImportError as exc:
+        raise ImportError(
+            "cabal MCP tool surface requires limenal. Install it via the "
+            "`mcp` extra: `pip install cabal[mcp]` (or `pip install -e ../limenal` "
+            "if you're using the sibling-checkout layout)."
+        ) from exc
+    return _limenal_client
+
 
 log = structlog.get_logger(__name__)
 
@@ -48,9 +65,10 @@ class MCPToolProxy:
     async def list_tools_for_llm(self) -> list[dict[str, Any]]:
         """Fetch limenal's tool surface and reshape into LiteLLM's
         `tools=[...]` array (OpenAI function-tool shape)."""
+        limenal_client = _require_limenal()
         try:
             tools = await self.client.list_tools()
-        except MCPError as exc:
+        except limenal_client.MCPError as exc:
             log.warning(
                 "mcp_proxy.list_tools_failed",
                 persona=self.persona,
@@ -74,16 +92,17 @@ class MCPToolProxy:
     ) -> ToolCallOutcome:
         """Translate from the LiteLLM-flat name back to limenal's
         `<handler>.<tool>` and dispatch."""
+        limenal_client = _require_limenal()
         mcp_name = llm_name.replace("__", ".", 1)
         try:
             return await self.client.call_tool(mcp_name, arguments)
-        except MCPRemoteError as exc:
-            return ToolCallOutcome(
+        except limenal_client.MCPRemoteError as exc:
+            return limenal_client.ToolCallOutcome(
                 content=[{"type": "text", "text": f"tool error: {exc.message}"}],
                 is_error=True,
             )
-        except MCPError as exc:
-            return ToolCallOutcome(
+        except limenal_client.MCPError as exc:
+            return limenal_client.ToolCallOutcome(
                 content=[{"type": "text", "text": f"tool transport error: {exc}"}],
                 is_error=True,
             )
@@ -122,7 +141,8 @@ def build_proxy(
     token_provider: Callable[[], str],
     http_client: httpx.AsyncClient | None = None,
 ) -> MCPToolProxy:
-    client = AsyncMCPClient(
+    limenal_client = _require_limenal()
+    client = limenal_client.AsyncMCPClient(
         base_url=base_url,
         token_provider=token_provider,
         http_client=http_client,
