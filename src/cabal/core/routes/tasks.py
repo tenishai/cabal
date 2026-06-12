@@ -17,11 +17,11 @@ streaming + tasks/get + resubscribe.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from cabal.core.a2a.types import Task
-from cabal.core.auth.jwt import JWTError, mint, verify
+from cabal.core.auth.jwt import JWTError, extract_bearer, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.broker.router import AgentNotFoundError, CallerJWTError, DispatchError
 from cabal.core.db import open_session
@@ -34,14 +34,6 @@ class TaskRequest(BaseModel):
     target_generation: int | None = None
     task: Task
 
-
-def _extract_bearer(authorization: str | None) -> str:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="missing or malformed Authorization header",
-        )
-    return authorization.split(" ", 1)[1].strip()
 
 
 async def _resolve_dispatch_token(
@@ -91,7 +83,7 @@ async def submit_task(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> Task:
-    raw_token = _extract_bearer(authorization)
+    raw_token = extract_bearer(authorization)
     dispatch_token = await _resolve_dispatch_token(request, raw_token, req.target)
     router_ = request.app.state.dispatch_router
     try:

@@ -23,7 +23,7 @@ from sqlalchemy import desc, select
 
 from cabal.core.a2a.card import sign_card
 from cabal.core.a2a.types import AgentCapabilities, AgentCard, Skill
-from cabal.core.auth.jwt import JWTError, verify
+from cabal.core.auth.jwt import JWTError, extract_bearer, verify
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
@@ -36,12 +36,6 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 # Limenal service tokens: aud="limenal" (minted by `cbl token mint-service`).
 _AUD_OPERATOR = "cabal-core"
 _AUD_LIMENAL = "limenal"
-
-
-def _extract_bearer(authorization: str | None) -> str:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(401, detail="missing or malformed Authorization header")
-    return authorization.split(" ", 1)[1].strip()
 
 
 def _require_operator_claims(
@@ -65,7 +59,7 @@ async def list_agents(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    _require_operator_claims(request, _extract_bearer(authorization))
+    _require_operator_claims(request, extract_bearer(authorization))
     async with open_session(request.app.state.sessionmaker) as session:
         rows = await bulletin_store.list_all(session)
     return {
@@ -108,7 +102,7 @@ async def primus_rotate(
     object. Phase L v2 will orchestrate handler replacement.
     """
     claims = _require_operator_claims(
-        request, _extract_bearer(authorization)
+        request, extract_bearer(authorization)
     )
     agent_name = req.persona if req.persona.endswith("-primus") else f"{req.persona}-primus"
 
@@ -185,7 +179,7 @@ async def list_conversations(
     target: str | None = None,
 ) -> dict[str, Any]:
     """Most-recent first, filterable. Snippets only (no full result_json)."""
-    _require_operator_claims(request, _extract_bearer(authorization))
+    _require_operator_claims(request, extract_bearer(authorization))
     limit = max(1, min(limit, 200))
     async with open_session(request.app.state.sessionmaker) as session:
         stmt = select(Conversation).order_by(desc(Conversation.updated_at))
@@ -220,7 +214,7 @@ async def get_conversation(
     task_id: str,
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    _require_operator_claims(request, _extract_bearer(authorization))
+    _require_operator_claims(request, extract_bearer(authorization))
     async with open_session(request.app.state.sessionmaker) as session:
         conv = (
             await session.execute(
@@ -289,7 +283,7 @@ async def events_stream(
     the connection opens are NOT replayed — use GET
     /admin/conversations/{id} for historical events.
     """
-    _require_operator_claims(request, _extract_bearer(authorization))
+    _require_operator_claims(request, extract_bearer(authorization))
     event_bus = getattr(request.app.state, "event_bus", None)
     if event_bus is None:
         raise HTTPException(500, detail="event bus not configured")
@@ -342,7 +336,7 @@ async def reload_identity(
     from cabal.core.identity_sync import sync_personas
     from cabal.core.persona_factory import register_personas_from_identity
 
-    _require_operator_claims(request, _extract_bearer(authorization))
+    _require_operator_claims(request, extract_bearer(authorization))
     state = request.app.state
     identity_path = getattr(state, "identity_path", None)
     if identity_path is None or not identity_path.exists():
@@ -437,7 +431,7 @@ async def get_secrets(
     from cabal.core.secrets import get_secrets_for, merge_with_env
 
     claims = _require_secrets_fetch(
-        request, _extract_bearer(authorization)
+        request, extract_bearer(authorization)
     )
     persona_norm = _normalize(persona)
     handler_norm = _normalize(handler_name)
@@ -502,7 +496,7 @@ async def set_secret(
 
     from cabal.core.secrets import set_secret as _set
 
-    _require_operator_claims(request, _extract_bearer(authorization))
+    _require_operator_claims(request, extract_bearer(authorization))
     persona_norm = _normalize(persona)
     handler_norm = _normalize(handler_name)
     if not req.key or not req.value:
@@ -545,7 +539,7 @@ async def unset_secret(
 ) -> dict[str, Any]:
     from cabal.core.secrets import unset_secret as _unset
 
-    _require_operator_claims(request, _extract_bearer(authorization))
+    _require_operator_claims(request, extract_bearer(authorization))
     persona_norm = _normalize(persona)
     handler_norm = _normalize(handler_name)
     if not key:
@@ -577,7 +571,7 @@ async def list_secrets(
     Operator scope required."""
     from cabal.core.secrets import list_secret_entries
 
-    _require_operator_claims(request, _extract_bearer(authorization))
+    _require_operator_claims(request, extract_bearer(authorization))
     persona_norm = _normalize(persona) if persona is not None else None
     handler_norm = _normalize(handler) if handler is not None else None
 
@@ -675,7 +669,7 @@ async def mint_service_token(
     """
     from datetime import datetime, timedelta
 
-    _require_operator_claims(request, _extract_bearer(authorization))
+    _require_operator_claims(request, extract_bearer(authorization))
 
     if not req.sub or not req.scope or not req.aud:
         raise HTTPException(
