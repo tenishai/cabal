@@ -7,8 +7,10 @@ at every dispatch token mint, limenal extracts it into Context.extra,
 and limenal's web handler refuses URLs that aren't on the tightened
 per-persona allowlist.
 """
-
 from __future__ import annotations
+
+import pytest
+pytest.importorskip("limenal")
 
 import json
 import os

@@ -1,6 +1,6 @@
 COMPOSE := docker compose -f docker-compose.dev.yml
 
-.PHONY: up down build rebuild logs bootstrap demo clean
+.PHONY: up down build rebuild logs bootstrap demo test-docker test-unit test-integration clean
 
 # Generate .env with a fresh master key on first run; skip if it exists.
 .env:
@@ -40,6 +40,18 @@ bootstrap:
 ## demo: end-to-end smoke test — scratchpad write + read via limenal.
 demo:
 	@bash scripts/demo.sh
+
+## test-unit: run unit tests only (no sibling deps required; CI unit job).
+test-unit:
+	pytest -q
+
+## test-integration: run full suite (sibling deps must be installed).
+test-integration:
+	pytest -q
+
+## test-docker: run the full demo flow in a clean Ubuntu 22.04 container.
+test-docker:
+	@bash scripts/test-docker.sh
 
 ## clean: stop containers AND delete volumes (wipes cabal DB and secrets).
 clean:

@@ -1,10 +1,11 @@
 """MemoryStore (techne adapter + NoOp) tests."""
-
 from __future__ import annotations
+import pytest
+pytest.importorskip("techne")
+
 
 from pathlib import Path
 
-import pytest
 
 from cabal.core.memory.store import MemoryHit, NoOpMemoryStore
 from cabal.core.memory.techne_store import TechneMemoryStore

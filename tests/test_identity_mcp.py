@@ -5,10 +5,12 @@ persona that has [personas.NAME.mcp].enabled=true makes that persona's
 handler arrive with a real, working tool_proxy without anyone wiring it
 manually.
 """
-
 from __future__ import annotations
 
 import json
+
+import pytest
+pytest.importorskip("limenal")
 import os
 from pathlib import Path
 from textwrap import dedent
