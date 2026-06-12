@@ -243,7 +243,7 @@ async def test_archivist_dispatches_through_limenal_end_to_end(
     outcome = await archivist.tool_proxy.call_tool(
         "scratchpad__get", {"key": "color"}
     )
-    assert outcome.content[0]["data"]["value"] == "green"
+    assert json.loads(outcome.content[0]["text"])["value"] == "green"
 
 
 @pytest.mark.asyncio
