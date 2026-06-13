@@ -93,17 +93,25 @@ def register_personas_from_identity(
         # Apply remaining overrides uniformly.
         if persona_cfg.system_prompt_override:
             handler.system_prompt = persona_cfg.system_prompt_override
-            log.info(
-                "personas.system_prompt_overridden", persona=persona_name
-            )
+            log.info("personas.system_prompt_overridden", persona=persona_name)
         if persona_cfg.commit_to_memory is not None:
             handler.commit_to_memory = persona_cfg.commit_to_memory
 
-        agent_name = (
-            f"{persona_name}-primus"
-            if persona_cfg.role == "primus"
-            else persona_name
-        )
+        # Auto-augment system prompt with edit-format instructions so
+        # the operator doesn't have to paste them into identity.toml.
+        # Append AFTER any system_prompt_override so the override stays
+        # the operator's voice and the format rules are added below it.
+        if persona_cfg.edit_format == "search-replace":
+            from cabal.cli.edit_format import SEARCH_REPLACE_INSTRUCTIONS
+
+            handler.system_prompt = handler.system_prompt + SEARCH_REPLACE_INSTRUCTIONS
+            log.info(
+                "personas.edit_format_instructions_appended",
+                persona=persona_name,
+                edit_format=persona_cfg.edit_format,
+            )
+
+        agent_name = f"{persona_name}-primus" if persona_cfg.role == "primus" else persona_name
         handler.name = agent_name
 
         # MCP tool surface: wire iff [limenal].url is set AND this persona
@@ -121,9 +129,7 @@ def register_personas_from_identity(
             _agent = agent_name  # capture for the closure
             _persona = persona_name
             _tool_extras_dict = (
-                dict(persona_cfg.mcp.tool_extras)
-                if persona_cfg.mcp.tool_extras
-                else {}
+                dict(persona_cfg.mcp.tool_extras) if persona_cfg.mcp.tool_extras else {}
             )
             # First-class persona_cfg.mcp.allowed_handlers folds into the
             # tool_extras dict here. Explicit None means "unrestricted"
@@ -174,9 +180,7 @@ def register_personas_from_identity(
         # Register capability tags so cabal#3 late-binding dispatch can
         # reach this persona via required_capabilities. Empty list is
         # fine — agent just isn't reachable by capability.
-        dispatch_router.register_capabilities(
-            agent_name, list(persona_cfg.capabilities)
-        )
+        dispatch_router.register_capabilities(agent_name, list(persona_cfg.capabilities))
         registered.append(agent_name)
         log.info(
             "personas.handler_registered",

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
@@ -99,6 +99,12 @@ class PersonaConfig(_Open):
     # set is a superset of the requirement. Examples: ["architectural-advice"],
     # ["code-search", "blame"], ["team-memory.read"].
     capabilities: list[str] = Field(default_factory=list)
+    # Output format for code-editing personas. "search-replace" appends
+    # aider-style SEARCH/REPLACE block instructions to the system prompt
+    # and tells `cbl chat` to parse + apply blocks (with operator y/n).
+    # "none" (default) keeps current text-only behavior. "udiff" and
+    # "whole-file" are reserved for follow-up issues — see cabal#4.
+    edit_format: Literal["none", "search-replace"] = "none"
 
 
 class LiteLLMConfig(_Open):
@@ -120,8 +126,8 @@ class TechneConfig(_Open):
 class LimenalConfig(_Open):
     """Cabal's connection settings for a limenal MCP gateway."""
 
-    url: str | None = None              # e.g. http://limenal:9100
-    token_ttl_seconds: int = 60 * 60    # JWT TTL for per-request mints
+    url: str | None = None  # e.g. http://limenal:9100
+    token_ttl_seconds: int = 60 * 60  # JWT TTL for per-request mints
     jwt_aud: str = "limenal"
 
 

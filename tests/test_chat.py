@@ -141,9 +141,7 @@ def test_chat_streaming_prints_deltas(fake_token, monkeypatch) -> None:
     assert "streaming" in result.output  # mode note
 
 
-def test_chat_streaming_error_event_keeps_prompt_open(
-    fake_token, monkeypatch
-) -> None:
+def test_chat_streaming_error_event_keeps_prompt_open(fake_token, monkeypatch) -> None:
     """An error event should print the message but not crash the chat loop."""
 
     def err_stream(*, token, target, message_text):
@@ -167,10 +165,166 @@ def test_chat_no_stream_flag_falls_back_to_dispatch(fake_token, monkeypatch) -> 
     monkeypatch.setattr(api, "stream_dispatch", should_not_be_called)
 
     runner = CliRunner()
-    result = runner.invoke(
-        app, ["chat", "echo", "--no-stream"], input="hi\n:exit\n"
-    )
+    result = runner.invoke(app, ["chat", "echo", "--no-stream"], input="hi\n:exit\n")
     assert result.exit_code == 0, result.output
     assert "one-shot reply" in result.output
     assert "single-shot" in result.output
     assert len(calls) == 1
+
+
+# ---- edit_format (cabal#4) --------------------------------------------------
+
+
+_SEARCH_REPLACE_REPLY = (
+    "Here's the change:\n\n<<<<<<< SEARCH foo.py\nold\n=======\nnew\n>>>>>>> REPLACE\n"
+)
+
+
+def test_chat_edit_format_no_apply_dry_run_skips_disk(fake_token, monkeypatch, tmp_path) -> None:
+    """--no-apply parses + reports blocks but never touches disk."""
+    target = tmp_path / "foo.py"
+    target.write_text("old\n")
+
+    fake, _calls = _stub_dispatch([_SEARCH_REPLACE_REPLY])
+    monkeypatch.setattr(api, "dispatch", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "architect",
+            "--no-stream",
+            "--edit-format",
+            "search-replace",
+            "--no-apply",
+            "--project-root",
+            str(tmp_path),
+        ],
+        input="please change foo\n:exit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "parsed 1 edit block" in result.output
+    assert "dry-run, not applied" in result.output
+    # Disk unchanged
+    assert target.read_text() == "old\n"
+
+
+def test_chat_edit_format_applies_block_on_confirm(fake_token, monkeypatch, tmp_path) -> None:
+    """A 'y' confirm applies the block to disk."""
+    target = tmp_path / "foo.py"
+    target.write_text("old\n")
+
+    fake, _calls = _stub_dispatch([_SEARCH_REPLACE_REPLY])
+    monkeypatch.setattr(api, "dispatch", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "architect",
+            "--no-stream",
+            "--edit-format",
+            "search-replace",
+            "--project-root",
+            str(tmp_path),
+        ],
+        # 'y' confirms the apply prompt, then :exit
+        input="please change foo\ny\n:exit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert target.read_text() == "new\n"
+
+
+def test_chat_edit_format_skip_block_on_decline(fake_token, monkeypatch, tmp_path) -> None:
+    """A 'n' decline leaves disk unchanged but the chat continues."""
+    target = tmp_path / "foo.py"
+    target.write_text("old\n")
+
+    fake, _calls = _stub_dispatch([_SEARCH_REPLACE_REPLY])
+    monkeypatch.setattr(api, "dispatch", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "architect",
+            "--no-stream",
+            "--edit-format",
+            "search-replace",
+            "--project-root",
+            str(tmp_path),
+        ],
+        input="please change foo\nn\n:exit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "(skipped)" in result.output
+    assert target.read_text() == "old\n"
+
+
+def test_chat_edit_format_failed_match_renders_context(fake_token, monkeypatch, tmp_path) -> None:
+    """When SEARCH doesn't match, show the actual file content inline."""
+    target = tmp_path / "foo.py"
+    target.write_text("DIFFERENT content\n")
+
+    fake, _calls = _stub_dispatch([_SEARCH_REPLACE_REPLY])
+    monkeypatch.setattr(api, "dispatch", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "architect",
+            "--no-stream",
+            "--edit-format",
+            "search-replace",
+            "--project-root",
+            str(tmp_path),
+        ],
+        input="change\ny\n:exit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "not found" in result.output
+    assert "DIFFERENT content" in result.output
+    assert target.read_text() == "DIFFERENT content\n"
+
+
+def test_chat_edit_format_no_blocks_falls_back_to_raw_text(
+    fake_token, monkeypatch, tmp_path
+) -> None:
+    """If the assistant just asks a question (no blocks), render its
+    text as-is. Useful for clarifying-question turns."""
+    fake, _calls = _stub_dispatch(["which file did you mean?"])
+    monkeypatch.setattr(api, "dispatch", fake)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "architect",
+            "--no-stream",
+            "--edit-format",
+            "search-replace",
+            "--project-root",
+            str(tmp_path),
+        ],
+        input="rename frob\n:exit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "which file did you mean?" in result.output
+    assert "parsed" not in result.output  # no block summary
+
+
+def test_chat_edit_format_invalid_value_errors() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["chat", "x", "--edit-format", "udiff"],
+        input="hi\n",
+    )
+    assert result.exit_code == 2
+    assert "unknown --edit-format" in result.output

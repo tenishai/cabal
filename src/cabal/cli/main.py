@@ -12,6 +12,7 @@ Phase 1 surface (per cabal-handoff.md §4):
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import typer
@@ -47,9 +48,7 @@ def daemon_up(
     ),
     host: str = typer.Option("127.0.0.1", help="Bind host."),
     port: int = typer.Option(7400, help="Bind port."),
-    config: str = typer.Option(
-        "identity.toml", help="Path to identity.toml."
-    ),
+    config: str = typer.Option("identity.toml", help="Path to identity.toml."),
 ) -> None:
     """Launch Cabal Core."""
     import uvicorn
@@ -130,13 +129,40 @@ def dispatch(
 @app.command("chat")
 def chat(
     target: str = typer.Argument(..., help="Persona to chat with (e.g. 'archivist')."),
-    stream: bool = typer.Option(
-        True, "--stream/--no-stream", help="SSE streaming (default true)."
+    stream: bool = typer.Option(True, "--stream/--no-stream", help="SSE streaming (default true)."),
+    edit_format: str = typer.Option(
+        "none",
+        "--edit-format",
+        help=(
+            "Output format: 'none' (text, default) or 'search-replace' "
+            "(parse + apply aider-style SEARCH/REPLACE blocks). Must "
+            "match the persona's identity.toml edit_format."
+        ),
+    ),
+    no_apply: bool = typer.Option(
+        False,
+        "--no-apply",
+        help=(
+            "Dry-run: render diffs but never touch disk. Useful for "
+            "review without code-write trust."
+        ),
+    ),
+    project_root: Path = typer.Option(
+        Path.cwd(),
+        "--project-root",
+        help="Repo root that SEARCH/REPLACE block paths resolve against.",
     ),
 ) -> None:
     """Multi-turn chat with a persona. Empty line or :exit to quit."""
     import sys
     import uuid
+
+    if edit_format not in {"none", "search-replace"}:
+        typer.echo(
+            f"unknown --edit-format {edit_format!r}; expected 'none' or 'search-replace'.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
     token = api.TokenStore().load()
     if token is None:
@@ -146,11 +172,16 @@ def chat(
     context_id = f"chat-{uuid.uuid4().hex[:12]}"
     history: list[dict] = []
     mode_note = "streaming" if stream else "single-shot"
-    typer.echo(
-        f"chat with {target} ({mode_note}, context: {context_id}). "
-        "type :exit to quit."
-    )
+    if edit_format != "none":
+        mode_note += f", edit:{edit_format}"
+        if no_apply:
+            mode_note += ", dry-run"
+    typer.echo(f"chat with {target} ({mode_note}, context: {context_id}). type :exit to quit.")
     typer.echo("─" * 60)
+
+    # Buffer streaming when an edit_format is active — we need the full
+    # response before we can parse blocks.
+    buffer_stream = edit_format != "none"
 
     while True:
         try:
@@ -164,7 +195,7 @@ def chat(
             return
 
         if stream:
-            agent_text = _stream_chat_turn(target, token, user_text)
+            agent_text = _stream_chat_turn(target, token, user_text, buffered=buffer_stream)
             if agent_text is None:
                 continue  # error already printed
         else:
@@ -194,25 +225,78 @@ def chat(
             )
             state = response.get("status", {}).get("state", "?")
             prefix = target if state == "completed" else f"{target} [{state}]"
-            typer.echo(f"{prefix}: {agent_text}")
+            if edit_format == "none":
+                typer.echo(f"{prefix}: {agent_text}")
+            else:
+                typer.echo(f"{prefix}:")
 
-        history.append(
-            {"role": "user", "parts": [{"kind": "text", "text": user_text}]}
-        )
-        history.append(
-            {"role": "agent", "parts": [{"kind": "text", "text": agent_text}]}
-        )
+        if edit_format == "search-replace":
+            _render_search_replace_turn(agent_text, root=project_root, no_apply=no_apply)
+
+        history.append({"role": "user", "parts": [{"kind": "text", "text": user_text}]})
+        history.append({"role": "agent", "parts": [{"kind": "text", "text": agent_text}]})
         typer.echo("")
         sys.stdout.flush()
 
 
-def _stream_chat_turn(target: str, token: str, user_text: str) -> str | None:
-    """Run one streaming turn. Print deltas as they arrive. Return the
-    full assembled agent text or None on error."""
+def _render_search_replace_turn(agent_text: str, *, root: Path, no_apply: bool) -> None:
+    """Parse SEARCH/REPLACE blocks from the agent's response, prompt the
+    operator y/n for each, apply (unless --no-apply), and render the
+    resulting diff. Falls through to printing raw text when no blocks
+    are present (e.g. the assistant asked a clarifying question)."""
+    from cabal.cli.edit_format import (
+        apply_block,
+        parse_search_replace_blocks,
+        render_diff,
+        render_failed_match,
+    )
+
+    blocks = parse_search_replace_blocks(agent_text)
+    if not blocks:
+        typer.echo(agent_text)
+        return
+
+    typer.echo(agent_text)
+    typer.echo("")
+    typer.echo(f"  parsed {len(blocks)} edit block(s).")
+
+    for i, block in enumerate(blocks, 1):
+        prefix = f"  [{i}/{len(blocks)}] {block.path}"
+        if no_apply:
+            typer.echo(f"{prefix} (dry-run, not applied)")
+            continue
+        try:
+            confirm = typer.confirm(f"{prefix} — apply?", default=True)
+        except typer.Abort:
+            typer.echo("  aborted; remaining blocks skipped.")
+            return
+        if not confirm:
+            typer.echo("  (skipped)")
+            continue
+        result = apply_block(block, root=root)
+        if not result.applied:
+            typer.echo(render_failed_match(result))
+            continue
+        diff = render_diff(block.path, root=root)
+        if diff:
+            typer.echo(diff)
+        else:
+            typer.echo(f"  applied (no diff output for {block.path}).")
+
+
+def _stream_chat_turn(
+    target: str, token: str, user_text: str, *, buffered: bool = False
+) -> str | None:
+    """Run one streaming turn. When `buffered=False` (default), prints
+    deltas as they arrive. When `buffered=True`, accumulates silently —
+    the caller renders the assembled text (used for edit-format
+    parsing, which can't run mid-stream). Returns the full assembled
+    agent text or None on error."""
     import sys
 
-    typer.echo(f"{target}: ", nl=False)
-    sys.stdout.flush()
+    if not buffered:
+        typer.echo(f"{target}: ", nl=False)
+        sys.stdout.flush()
     full_text = ""
     try:
         for event_name, payload in api.stream_dispatch(
@@ -220,15 +304,17 @@ def _stream_chat_turn(target: str, token: str, user_text: str) -> str | None:
         ):
             if event_name == "chunk":
                 delta = payload.get("delta", "")
-                typer.echo(delta, nl=False)
-                sys.stdout.flush()
+                if not buffered:
+                    typer.echo(delta, nl=False)
+                    sys.stdout.flush()
                 full_text += delta
             elif event_name == "error":
                 err = payload.get("error") or {}
                 typer.echo(f"\n[error] {err.get('message', 'unknown')}", err=True)
                 return None
             elif event_name == "status-update":
-                typer.echo("")  # newline at end
+                if not buffered:
+                    typer.echo("")  # newline at end
                 return full_text
     except httpx.HTTPStatusError as exc:
         typer.echo(f"\nerror: {exc.response.text}", err=True)
@@ -236,7 +322,8 @@ def _stream_chat_turn(target: str, token: str, user_text: str) -> str | None:
     except httpx.RequestError as exc:
         typer.echo(f"\ncould not reach daemon: {exc}", err=True)
         return None
-    typer.echo("")
+    if not buffered:
+        typer.echo("")
     return full_text
 
 
@@ -342,9 +429,7 @@ def conversations_show(
 
     conv = body["conversation"]
     typer.echo(f"task:      {conv['task_id']}")
-    typer.echo(
-        f"target:    {conv['target_agent']} (gen {conv['target_generation']})"
-    )
+    typer.echo(f"target:    {conv['target_agent']} (gen {conv['target_generation']})")
     typer.echo(f"caller:    {conv.get('caller_agent') or '—'}")
     typer.echo(f"state:     {conv['state']}")
     if conv.get("cabal_escalated_from"):
@@ -385,9 +470,7 @@ def tail() -> None:
                 continue
             task_id = payload.get("task_id") or "—"
             inner = payload.get("payload") or {}
-            typer.echo(
-                f"{event_name:<24} task={task_id} {_json.dumps(inner)}"
-            )
+            typer.echo(f"{event_name:<24} task={task_id} {_json.dumps(inner)}")
     except KeyboardInterrupt:
         typer.echo("\nbye.")
         return
@@ -427,8 +510,7 @@ def primus_rotate(
         typer.echo(f"could not reach daemon at {api.base_url()}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(
-        f"rotated {body['agent']}: gen {body['previous_generation']} → "
-        f"{body['new_generation']}"
+        f"rotated {body['agent']}: gen {body['previous_generation']} → {body['new_generation']}"
     )
     if body.get("note"):
         typer.echo(f"  note: {body['note']}")
@@ -497,9 +579,7 @@ def secret_unset(
 ) -> None:
     token = _require_token()
     try:
-        body = api.secret_unset(
-            token=token, persona=persona, handler=handler, key=key
-        )
+        body = api.secret_unset(token=token, persona=persona, handler=handler, key=key)
     except httpx.HTTPStatusError as exc:
         try:
             detail = exc.response.json().get("detail", exc.response.text)
@@ -601,7 +681,11 @@ def token_mint_service(
         raise typer.Exit(code=1)
     try:
         body = api.mint_service_token(
-            token=token, sub=sub, scope=list(scope), aud=aud, ttl_days=ttl_days,
+            token=token,
+            sub=sub,
+            scope=list(scope),
+            aud=aud,
+            ttl_days=ttl_days,
             persona=persona,
         )
     except httpx.HTTPStatusError as exc:
@@ -617,8 +701,7 @@ def token_mint_service(
 
     typer.echo(body["access_token"])
     typer.echo(
-        f"# sub={body['sub']} scope={body['scope']} aud={body['aud']} "
-        f"expires={body['expires_at']}",
+        f"# sub={body['sub']} scope={body['scope']} aud={body['aud']} expires={body['expires_at']}",
         err=True,
     )
 
