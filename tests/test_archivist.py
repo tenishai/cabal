@@ -1,0 +1,383 @@
+"""Tests for the Archivist MVP — schema + dedup + search + MCP handler (cabal#9)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("limenal")
+
+from limenal.protocol import Context  # noqa: E402
+
+from cabal.archivist import ArchivistStore, Entry  # noqa: E402
+from cabal.handlers.archivist import ArchivistConfig, ArchivistHandler  # noqa: E402
+
+
+@pytest.fixture
+def archivist_db(tmp_path: Path) -> Path:
+    return tmp_path / "archivist.db"
+
+
+@pytest.fixture
+def store(archivist_db: Path) -> ArchivistStore:
+    return ArchivistStore(archivist_db)
+
+
+# ---- Entry + content_hash ------------------------------------------------
+
+
+def test_entry_content_hash_is_stable() -> None:
+    a = Entry(resource_name="x", summary="hello", entry_type="fact")
+    b = Entry(resource_name="x", summary="hello", entry_type="fact")
+    assert a.compute_hash() == b.compute_hash()
+
+
+def test_entry_content_hash_changes_on_summary_change() -> None:
+    a = Entry(resource_name="x", summary="hello", entry_type="fact")
+    b = Entry(resource_name="x", summary="goodbye", entry_type="fact")
+    assert a.compute_hash() != b.compute_hash()
+
+
+def test_entry_content_hash_changes_on_entry_type_change() -> None:
+    a = Entry(resource_name="x", summary="hi", entry_type="fact")
+    b = Entry(resource_name="x", summary="hi", entry_type="decision")
+    assert a.compute_hash() != b.compute_hash()
+
+
+# ---- publish: L0 / L1 / Tier-1 paths -------------------------------------
+
+
+def test_publish_first_entry_is_new(store: ArchivistStore) -> None:
+    result = store.publish(Entry(
+        resource_name="gke-prod-cluster",
+        summary="Cluster is in us-east-1.",
+        entry_type="fact",
+    ))
+    assert result.outcome == "new"
+    assert result.related_ids == []
+    fetched = store.get(result.entry_id)
+    assert fetched is not None
+    assert fetched.resource_name == "gke-prod-cluster"
+
+
+def test_publish_same_content_hits_l0(store: ArchivistStore) -> None:
+    """First call writes; second call (same hash) hits L0 in-memory cache."""
+    a = store.publish(Entry(
+        resource_name="r", summary="same content", entry_type="fact",
+    ))
+    b = store.publish(Entry(
+        resource_name="r", summary="same content", entry_type="fact",
+    ))
+    assert a.outcome == "new"
+    assert b.outcome == "duplicate_l0"
+    assert b.entry_id == a.entry_id
+
+
+def test_publish_same_content_in_fresh_store_hits_l1(
+    archivist_db: Path,
+) -> None:
+    """Two store instances over the same DB — second one sees L1 hit."""
+    store_a = ArchivistStore(archivist_db)
+    first = store_a.publish(Entry(
+        resource_name="r", summary="abc", entry_type="fact",
+    ))
+    # Fresh store has empty L0 cache; same DB → L1 should hit
+    store_b = ArchivistStore(archivist_db)
+    second = store_b.publish(Entry(
+        resource_name="r", summary="abc", entry_type="fact",
+    ))
+    assert first.outcome == "new"
+    assert second.outcome == "duplicate_l1"
+    assert second.entry_id == first.entry_id
+
+
+def test_publish_resource_overlap_is_related(store: ArchivistStore) -> None:
+    """Two entries with same resource_name + entry_type but different
+    summaries → second one is `related` and links via RELATED edges."""
+    first = store.publish(Entry(
+        resource_name="payment-api",
+        summary="Service runs on port 8080.",
+        entry_type="fact",
+    ))
+    second = store.publish(Entry(
+        resource_name="payment-api",
+        summary="Service uses Postgres.",
+        entry_type="fact",
+    ))
+    assert first.outcome == "new"
+    assert second.outcome == "related"
+    assert first.entry_id in second.related_ids
+
+    edges = store.list_related(second.entry_id)
+    assert any(e["relation_type"] == "RELATED" for e in edges)
+
+
+def test_publish_different_resource_is_new(store: ArchivistStore) -> None:
+    store.publish(Entry(
+        resource_name="payment-api", summary="x", entry_type="fact",
+    ))
+    second = store.publish(Entry(
+        resource_name="auth-api", summary="x", entry_type="fact",
+    ))
+    assert second.outcome == "new"
+    assert second.related_ids == []
+
+
+# ---- search --------------------------------------------------------------
+
+
+def test_search_finds_by_summary(store: ArchivistStore) -> None:
+    store.publish(Entry(
+        resource_name="r1", summary="circuit breaker pattern saves us", entry_type="pattern",
+    ))
+    store.publish(Entry(
+        resource_name="r2", summary="postgres replication is hard", entry_type="decision",
+    ))
+    hits = store.search("circuit breaker")
+    assert len(hits) >= 1
+    assert any("circuit breaker" in h.summary for h in hits)
+
+
+def test_search_filters_by_entry_type(store: ArchivistStore) -> None:
+    store.publish(Entry(
+        resource_name="r1", summary="kubernetes restart strategy", entry_type="decision",
+    ))
+    store.publish(Entry(
+        resource_name="r2", summary="kubernetes restart issue", entry_type="error",
+    ))
+    decisions_only = store.search("kubernetes", entry_type="decision")
+    assert all(e.entry_type == "decision" for e in decisions_only)
+
+
+def test_search_filters_by_tags(store: ArchivistStore) -> None:
+    store.publish(Entry(
+        resource_name="r1", summary="cache problem", entry_type="error",
+        tags=["redis", "production"],
+    ))
+    store.publish(Entry(
+        resource_name="r2", summary="cache problem", entry_type="error",
+        tags=["staging"],
+    ))
+    prod_only = store.search("cache", tags=["production"])
+    assert len(prod_only) == 1
+    assert "production" in prod_only[0].tags
+
+
+def test_search_returns_empty_on_no_match(store: ArchivistStore) -> None:
+    store.publish(Entry(
+        resource_name="r1", summary="something", entry_type="fact",
+    ))
+    assert store.search("nothing-here-at-all") == []
+
+
+def test_search_returns_empty_on_blank_query(store: ArchivistStore) -> None:
+    store.publish(Entry(
+        resource_name="r1", summary="something", entry_type="fact",
+    ))
+    assert store.search("   ") == []
+
+
+# ---- gotchas + commands fields ------------------------------------------
+
+
+def test_entry_round_trip_preserves_gotchas_and_commands(store: ArchivistStore) -> None:
+    result = store.publish(Entry(
+        resource_name="jwt-mount",
+        summary="Adding cluster to JWT mount.",
+        entry_type="procedure",
+        gotchas=(
+            "1) One JWT mount = one OIDC URL — adding cluster OVERWRITES existing. "
+            "2) ESO secret sync breaks when TLS cert mismatch."
+        ),
+        commands=["vault auth enable jwt", "vault write auth/jwt/config ..."],
+        tags=["vault", "jwt", "production"],
+    ))
+    fetched = store.get(result.entry_id)
+    assert fetched is not None
+    assert "OVERWRITES" in fetched.gotchas
+    assert "vault auth enable jwt" in fetched.commands
+    assert "vault" in fetched.tags
+
+
+# ---- schema -------------------------------------------------------------
+
+
+def test_schema_reports_counts_by_type(store: ArchivistStore) -> None:
+    store.publish(Entry(
+        resource_name="r1", summary="a", entry_type="decision",
+    ))
+    store.publish(Entry(
+        resource_name="r2", summary="b", entry_type="decision",
+    ))
+    store.publish(Entry(
+        resource_name="r3", summary="c", entry_type="error",
+    ))
+    schema = store.schema()
+    assert schema["counts"]["total_active"] == 3
+    assert schema["counts"]["by_type"]["decision"] == 2
+    assert schema["counts"]["by_type"]["error"] == 1
+
+
+def test_schema_lists_sample_resources(store: ArchivistStore) -> None:
+    store.publish(Entry(
+        resource_name="alpha", summary="a", entry_type="fact",
+    ))
+    store.publish(Entry(
+        resource_name="beta", summary="b", entry_type="fact",
+    ))
+    samples = store.schema()["sample_resources"]
+    assert "alpha" in samples
+    assert "beta" in samples
+
+
+# ---- MCP handler --------------------------------------------------------
+
+
+def _ctx() -> Context:
+    return Context(identity="archivist", agent_name="archivist", credentials={}, extra={})
+
+
+@pytest.fixture
+def archivist_handler(archivist_db: Path) -> ArchivistHandler:
+    return ArchivistHandler(
+        default_config=ArchivistConfig(db_path=archivist_db),
+    )
+
+
+@pytest.mark.asyncio
+async def test_handler_publish_then_search(archivist_handler) -> None:
+    pub = await archivist_handler.dispatch(
+        "publish",
+        {
+            "resource_name": "gke-cluster",
+            "summary": "Cluster is in us-east-1, zone a.",
+            "entry_type": "fact",
+            "tags": ["gke", "production"],
+        },
+        _ctx(),
+    )
+    assert pub.is_error is False
+    pub_data = pub.content[0]["data"]
+    assert pub_data["outcome"] == "new"
+    assert pub_data["entry_id"]
+
+    search = await archivist_handler.dispatch(
+        "search", {"query": "us-east-1"}, _ctx(),
+    )
+    assert search.is_error is False
+    hits = search.content[0]["data"]["hits"]
+    assert any("us-east-1" in h["summary"] for h in hits)
+
+
+@pytest.mark.asyncio
+async def test_handler_publish_rejects_unknown_entry_type(archivist_handler) -> None:
+    result = await archivist_handler.dispatch(
+        "publish",
+        {
+            "resource_name": "x", "summary": "y", "entry_type": "not-a-type",
+        },
+        _ctx(),
+    )
+    assert result.is_error is True
+    assert "entry_type" in result.error
+
+
+@pytest.mark.asyncio
+async def test_handler_publish_rejects_missing_required(archivist_handler) -> None:
+    result = await archivist_handler.dispatch(
+        "publish", {"resource_name": "x", "entry_type": "fact"}, _ctx(),
+    )
+    assert result.is_error is True
+    assert "summary" in result.error
+
+
+@pytest.mark.asyncio
+async def test_handler_get_returns_entry_with_relations(archivist_handler) -> None:
+    # Publish two related entries
+    first = await archivist_handler.dispatch(
+        "publish",
+        {
+            "resource_name": "redis-cluster", "summary": "Runs on port 6379.",
+            "entry_type": "fact",
+        },
+        _ctx(),
+    )
+    first_id = first.content[0]["data"]["entry_id"]
+    second = await archivist_handler.dispatch(
+        "publish",
+        {
+            "resource_name": "redis-cluster", "summary": "Uses AOF persistence.",
+            "entry_type": "fact",
+        },
+        _ctx(),
+    )
+    second_id = second.content[0]["data"]["entry_id"]
+
+    # Get the second one — it should expose its RELATED edge to the first
+    get_result = await archivist_handler.dispatch(
+        "get", {"entry_id": second_id}, _ctx(),
+    )
+    assert get_result.is_error is False
+    data = get_result.content[0]["data"]
+    assert data["entry"]["id"] == second_id
+    assert any(
+        e["dst_id"] == first_id and e["relation_type"] == "RELATED"
+        for e in data["related"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_handler_schema(archivist_handler) -> None:
+    result = await archivist_handler.dispatch("schema", {}, _ctx())
+    assert result.is_error is False
+    schema = result.content[0]["data"]
+    assert "memory_entries" in schema["tables"]
+    assert "fact" in schema["entry_types"]
+    assert "decision" in schema["entry_types"]
+    assert schema["counts"]["total_active"] == 0
+
+
+@pytest.mark.asyncio
+async def test_handler_unknown_tool(archivist_handler) -> None:
+    result = await archivist_handler.dispatch("ghost", {}, _ctx())
+    assert result.is_error is True
+    assert "unknown tool" in result.error
+
+
+@pytest.mark.asyncio
+async def test_handler_missing_db_returns_clear_error(tmp_path) -> None:
+    """Handler with no db_path → structured failure, not exception."""
+    handler = ArchivistHandler()
+    result = await handler.dispatch(
+        "publish",
+        {
+            "resource_name": "x", "summary": "y", "entry_type": "fact",
+        },
+        _ctx(),
+    )
+    assert result.is_error is True
+    assert "no archivist corpus" in result.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_handler_db_path_rejects_traversal(archivist_handler) -> None:
+    ctx = Context(
+        identity="x", agent_name="x", credentials={},
+        extra={"archivist.db_path": "../../etc/passwd"},
+    )
+    result = await archivist_handler.dispatch("schema", {}, ctx)
+    assert result.is_error is True
+
+
+def test_get_handler_factory() -> None:
+    from cabal.handlers.archivist import get_handler
+    assert isinstance(get_handler(), ArchivistHandler)
+
+
+def test_capability_card_shape() -> None:
+    handler = ArchivistHandler()
+    card = handler.capability_card()
+    assert card["handler"] == "archivist"
+    tool_names = {t["name"] for t in card["tools"]}
+    assert tool_names == {"publish", "search", "get", "schema"}

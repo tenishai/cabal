@@ -69,6 +69,7 @@ cbl = "cabal.cli.main:app"
 patterns = "cabal.handlers.patterns:get_handler"
 documents = "cabal.handlers.documents:get_handler"
 code = "cabal.handlers.code:get_handler"
+archivist = "cabal.handlers.archivist:get_handler"
 
 [project.urls]
 Source = "https://github.com/dimartin/cabal"
