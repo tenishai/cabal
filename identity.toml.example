@@ -92,6 +92,13 @@ safety_tier = "moderate"
 # model_override = "anthropic/claude-opus-4-7"
 # max_tokens_override = 16384
 # commit_to_memory = true
+# edit_format: "none" (default) or "search-replace". When set to
+# "search-replace", Cabal Core auto-appends aider-style SEARCH/REPLACE
+# block instructions to this persona's system prompt, AND `cbl chat`
+# parses + applies the resulting blocks (with operator y/n) when
+# launched with `--edit-format search-replace`. Recommended for any
+# persona that emits code edits (architect, codex, rook).
+# edit_format = "search-replace"
 
 [personas.librarian]
 description = "External-documentation lookup"
