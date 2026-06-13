@@ -23,6 +23,7 @@ from cabal.core.a2a.codes import (
     annotate,
 )
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
+from cabal.core.checkpoint import Checkpoint, CheckpointStore, NoOpCheckpointStore
 from cabal.core.llm.litellm_client import (
     CabalLLMError,
     LiteLLMClient,
@@ -67,6 +68,12 @@ class LLMPersona:
     # calls per dispatch.
     tool_proxy: Any | None = None
     tool_use_max_steps: int = 4
+    # cabal#2 — when set to a real CheckpointStore (i.e. not the no-op),
+    # handle_task writes a checkpoint before every LLM call and drops it
+    # on successful completion. Opt-in per persona via identity.toml
+    # `[personas.NAME.checkpointing] enabled = true`; the persona_factory
+    # swaps the no-op default for the SQLite-backed store at registration.
+    checkpoint_store: CheckpointStore = field(default_factory=NoOpCheckpointStore)
 
     def _recall_for_task(self, task: Task) -> str:
         """Return a formatted memory-hits block, or empty string."""
@@ -92,9 +99,7 @@ class LLMPersona:
         Default: [system+memories, ...history (user/agent alternating), current].
         """
         system_content = self.system_prompt + self._recall_for_task(task)
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_content}
-        ]
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
         for hist in task.history:
             messages.append(_message_to_chat(hist))
         if task.status.message is not None:
@@ -116,19 +121,29 @@ class LLMPersona:
             return ""
         return content
 
-    async def handle_task(self, task: Task) -> Task:
+    async def handle_task(self, task: Task, *, resume_from: Checkpoint | None = None) -> Task:
+        """Run the LLM dispatch for `task`.
+
+        When `resume_from` is provided, skip the initial LLM call and
+        re-enter the tool-use loop with the saved `messages` and
+        `step_index`. The initial LLM call would have been the *first*
+        thing checkpointed, so its replay is just `acompletion(messages)`
+        with the checkpointed history — same code path as the tool-use
+        iteration, hence the unified loop below.
+        """
         budget_override = task.metadata.get("cabal_token_budget")
-        if (
-            budget_override is not None
-            and getattr(self.llm_client, "budget", None) is not None
-        ):
+        if budget_override is not None and getattr(self.llm_client, "budget", None) is not None:
             self.llm_client.budget.set_budget(task.id, int(budget_override))
 
-        session_id = self.session_tracker.start(
-            external_id=task.id, agent_identity=self.name
-        )
+        session_id = self.session_tracker.start(external_id=task.id, agent_identity=self.name)
 
-        messages = self.build_messages(task)
+        if resume_from is None:
+            messages = self.build_messages(task)
+            step_index = 0
+        else:
+            messages = list(resume_from.messages)
+            step_index = resume_from.step_index
+
         # If a tool proxy is wired, fetch the tool surface and pass it to
         # the LLM. Returned tool_calls drive a recursive call loop capped
         # at tool_use_max_steps total LLM invocations per dispatch.
@@ -141,6 +156,19 @@ class LLMPersona:
             except Exception:  # noqa: BLE001
                 # Tool surface lookup must not block dispatch
                 pass
+
+        # Checkpoint BEFORE the LLM call so a crash inside the call (or
+        # the network) leaves a recoverable state. The no-op store
+        # short-circuits when checkpointing is disabled.
+        await self.checkpoint_store.save(
+            Checkpoint(
+                task_id=task.id,
+                step_index=step_index,
+                messages=messages,
+                task_json=task.model_dump(by_alias=True, exclude_none=True),
+                persona_state={"session_id": session_id},
+            )
+        )
 
         try:
             response = await self.llm_client.acompletion(
@@ -176,9 +204,7 @@ class LLMPersona:
                 ),
             )
         except LLMInvalidRequestError as exc:
-            self.session_tracker.end(
-                session_id=session_id, summary=f"[failed] LLM rejected: {exc}"
-            )
+            self.session_tracker.end(session_id=session_id, summary=f"[failed] LLM rejected: {exc}")
             return annotate(
                 task,
                 CabalReason(
@@ -202,9 +228,7 @@ class LLMPersona:
                     break
                 messages = _extend_with_tool_calls(messages, response, tool_calls)
                 for call in tool_calls:
-                    outcome = await self.tool_proxy.call_tool(
-                        call["name"], call["arguments"]
-                    )
+                    outcome = await self.tool_proxy.call_tool(call["name"], call["arguments"])
                     messages.append(
                         {
                             "role": "tool",
@@ -213,6 +237,19 @@ class LLMPersona:
                         }
                     )
                 steps_remaining -= 1
+                step_index += 1
+                # Tool execution is the natural checkpoint boundary —
+                # the loop has just produced new state, but the next
+                # LLM call hasn't started yet. If we crash inside the
+                # call, resume re-issues it with the same messages.
+                await self.checkpoint_store.save(
+                    Checkpoint(
+                        task_id=task.id,
+                        step_index=step_index,
+                        messages=messages,
+                        persona_state={"session_id": session_id},
+                    )
+                )
                 try:
                     response = await self.llm_client.acompletion(
                         model=self.model,
@@ -246,6 +283,9 @@ class LLMPersona:
         text = self.parse_response(response)
         self.session_tracker.end(session_id=session_id, summary=text)
         self._commit_qa_to_memory(task, text)
+        # Successful completion — drop the checkpoint so resume doesn't
+        # try to replay a finished Task.
+        await self.checkpoint_store.drop(task.id)
         agent_msg = Message(role="agent", parts=[TextPart(text=text)])
         history = list(task.history)
         if task.status.message is not None:
@@ -300,9 +340,7 @@ class LLMPersona:
         caller (typically the SSE route) decides what status-update event
         to emit.
         """
-        session_id = self.session_tracker.start(
-            external_id=task.id, agent_identity=self.name
-        )
+        session_id = self.session_tracker.start(external_id=task.id, agent_identity=self.name)
         messages = self.build_messages(task)
         full_text = ""
         try:
@@ -319,9 +357,7 @@ class LLMPersona:
                 full_text += delta
                 yield delta
         except Exception as exc:
-            self.session_tracker.end(
-                session_id=session_id, summary=f"[stream-failed] {exc}"
-            )
+            self.session_tracker.end(session_id=session_id, summary=f"[stream-failed] {exc}")
             raise
         self.session_tracker.end(session_id=session_id, summary=full_text)
         self._commit_qa_to_memory(task, full_text)

@@ -56,6 +56,23 @@ class SubordinateConfig(_Open):
     max_tokens: int = 8192
 
 
+class PersonaCheckpointingConfig(_Open):
+    """Per-persona checkpoint opt-in (cabal#2).
+
+    When `enabled = true`, LLMPersona.handle_task writes a checkpoint
+    before every LLM call (initial + each tool-use iteration) and drops
+    it on successful completion. Crashes mid-loop leave a recoverable
+    row in `task_checkpoints`; the operator restarts the Task via
+    POST /admin/tasks/{id}/resume.
+
+    Heavy step writes aren't free — only flip this on for personas
+    whose tool-use loops are long enough that restarting from scratch
+    would burn meaningful compute.
+    """
+
+    enabled: bool = False
+
+
 class PersonaMCPConfig(_Open):
     """Per-persona MCP tool surface settings.
 
@@ -105,6 +122,8 @@ class PersonaConfig(_Open):
     # "none" (default) keeps current text-only behavior. "udiff" and
     # "whole-file" are reserved for follow-up issues — see cabal#4.
     edit_format: Literal["none", "search-replace"] = "none"
+    # cabal#2 — opt into checkpoint-based durable execution + Task resume.
+    checkpointing: PersonaCheckpointingConfig = Field(default_factory=PersonaCheckpointingConfig)
 
 
 class LiteLLMConfig(_Open):

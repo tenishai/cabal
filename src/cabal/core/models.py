@@ -48,9 +48,7 @@ class Persona(Base):
         DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
     )
 
-    agents: Mapped[list[Agent]] = relationship(
-        back_populates="persona", cascade="all"
-    )
+    agents: Mapped[list[Agent]] = relationship(back_populates="persona", cascade="all")
 
 
 # ---------- agents -----------------------------------------------------------
@@ -62,21 +60,15 @@ class Agent(Base):
     __tablename__ = "agents"
 
     name: Mapped[str] = mapped_column(String, primary_key=True)
-    generation: Mapped[int] = mapped_column(
-        Integer, primary_key=True, server_default=text("1")
-    )
-    persona_name: Mapped[str] = mapped_column(
-        String, ForeignKey("personas.name"), nullable=False
-    )
+    generation: Mapped[int] = mapped_column(Integer, primary_key=True, server_default=text("1"))
+    persona_name: Mapped[str] = mapped_column(String, ForeignKey("personas.name"), nullable=False)
     role: Mapped[str] = mapped_column(String, nullable=False)
     endpoint: Mapped[str] = mapped_column(String, nullable=False)
     capabilities_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     safety_tier: Mapped[str] = mapped_column(String, nullable=False)
     agent_card_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     agent_card_kid: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(
-        String, nullable=False, server_default=text("'active'")
-    )
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'active'"))
     drain_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -117,6 +109,12 @@ class Conversation(Base):
     # Full Task body persisted on dispatch success — enables tasks/get and
     # tasks/resubscribe (A2A v1.0) without replaying the event log.
     result_json: Mapped[dict | None] = mapped_column(JSON)
+    # cabal#2 — points at a `task_checkpoints` row when a persona's
+    # tool-use loop has saved partial state. Cleared when the Task
+    # completes. Most rows are NULL (checkpointing is opt-in).
+    checkpoint_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("task_checkpoints.task_id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
     )
@@ -164,6 +162,36 @@ class Event(Base):
     )
 
 
+# ---------- task_checkpoints ------------------------------------------------
+
+
+class TaskCheckpoint(Base):
+    """cabal#2 — in-flight tool-use loop snapshot, keyed by task_id.
+
+    Latest-write-wins (upsert on save). Dropped when the Task completes.
+    NULLs in Conversation.checkpoint_id are the common case; rows here
+    only exist for personas with `[personas.NAME.checkpointing] enabled`
+    that crashed mid-loop, or are still in flight.
+    """
+
+    __tablename__ = "task_checkpoints"
+
+    task_id: Mapped[str] = mapped_column(String, primary_key=True)
+    step_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    messages_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    task_json: Mapped[dict | None] = mapped_column(JSON)
+    persona_state_json: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_utcnow_default(),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
 # ---------- secrets ----------------------------------------------------------
 
 
@@ -190,12 +218,8 @@ class SigningKey(Base):
 
     kid: Mapped[str] = mapped_column(String, primary_key=True)
     public_jwk_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    private_key_pem_encrypted: Mapped[bytes] = mapped_column(
-        LargeBinary, nullable=False
-    )
-    status: Mapped[str] = mapped_column(
-        String, nullable=False, server_default=text("'active'")
-    )
+    private_key_pem_encrypted: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'active'"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
     )

@@ -22,12 +22,12 @@ from pydantic import BaseModel
 from sqlalchemy import desc, select
 
 from cabal.core.a2a.card import sign_card
-from cabal.core.a2a.types import AgentCapabilities, AgentCard, Skill
+from cabal.core.a2a.types import AgentCapabilities, AgentCard, Skill, Task
 from cabal.core.auth.jwt import JWTError, extract_bearer, verify
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
-from cabal.core.models import Agent, Conversation, Event
+from cabal.core.models import Agent, Conversation, Event, TaskCheckpoint
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -38,9 +38,7 @@ _AUD_OPERATOR = "cabal-core"
 _AUD_LIMENAL = "limenal"
 
 
-def _require_operator_claims(
-    request: Request, raw_token: str
-) -> dict[str, Any]:
+def _require_operator_claims(request: Request, raw_token: str) -> dict[str, Any]:
     try:
         claims = verify(
             raw_token,
@@ -101,28 +99,20 @@ async def primus_rotate(
     generations); but the Python handler the new-gen calls is the SAME
     object. Phase L v2 will orchestrate handler replacement.
     """
-    claims = _require_operator_claims(
-        request, extract_bearer(authorization)
-    )
+    claims = _require_operator_claims(request, extract_bearer(authorization))
     agent_name = req.persona if req.persona.endswith("-primus") else f"{req.persona}-primus"
 
     async with open_session(request.app.state.sessionmaker) as session:
         # 1. Find the current active row
         existing = await session.execute(
-            select(Agent).where(
-                Agent.name == agent_name, Agent.status == "active"
-            )
+            select(Agent).where(Agent.name == agent_name, Agent.status == "active")
         )
         current = existing.scalar_one_or_none()
         if current is None:
-            raise HTTPException(
-                404, detail=f"no active row for primus {agent_name!r}"
-            )
+            raise HTTPException(404, detail=f"no active row for primus {agent_name!r}")
 
         # 2. Mint a fresh signed AgentCard for the new generation
-        stored = await load_active_signing_key(
-            session, master_key=request.app.state.master_key
-        )
+        stored = await load_active_signing_key(session, master_key=request.app.state.master_key)
         if stored is None:
             raise HTTPException(500, detail="no active signing key")
         new_generation = current.generation + 1
@@ -217,19 +207,19 @@ async def get_conversation(
     _require_operator_claims(request, extract_bearer(authorization))
     async with open_session(request.app.state.sessionmaker) as session:
         conv = (
-            await session.execute(
-                select(Conversation).where(Conversation.task_id == task_id)
-            )
+            await session.execute(select(Conversation).where(Conversation.task_id == task_id))
         ).scalar_one_or_none()
         if conv is None:
             raise HTTPException(404, detail=f"task {task_id!r} not found")
         events = (
-            await session.execute(
-                select(Event)
-                .where(Event.task_id == task_id)
-                .order_by(Event.id)
+            (
+                await session.execute(
+                    select(Event).where(Event.task_id == task_id).order_by(Event.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     return {
         "conversation": {
@@ -252,6 +242,88 @@ async def get_conversation(
             }
             for e in events
         ],
+    }
+
+
+@router.post("/tasks/{task_id}/resume")
+async def resume_task(
+    request: Request,
+    task_id: str,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """cabal#2 — replay a checkpointed Task on its persona, continuing
+    from the latest saved step. Operator-only. Returns the resumed Task
+    once it completes.
+
+    Looks up:
+      1. The Conversation row to identify the target agent.
+      2. The task_checkpoints row to load the saved messages + step_index.
+      3. The in-process LocalHandler (resume requires local persona).
+
+    Drops the checkpoint on successful completion (handle_task does it).
+    """
+    _require_operator_claims(request, extract_bearer(authorization))
+
+    sessionmaker = request.app.state.sessionmaker
+    async with open_session(sessionmaker) as session:
+        conv = (
+            await session.execute(select(Conversation).where(Conversation.task_id == task_id))
+        ).scalar_one_or_none()
+        if conv is None:
+            raise HTTPException(404, detail=f"task {task_id!r} not found")
+        ckpt_row = (
+            await session.execute(select(TaskCheckpoint).where(TaskCheckpoint.task_id == task_id))
+        ).scalar_one_or_none()
+
+    if ckpt_row is None:
+        raise HTTPException(
+            404,
+            detail=(
+                f"no checkpoint for task {task_id!r} — either the persona "
+                "did not opt into checkpointing or the Task already completed"
+            ),
+        )
+    if not ckpt_row.task_json:
+        raise HTTPException(
+            500,
+            detail=f"checkpoint for {task_id!r} is missing task_json; cannot resume",
+        )
+
+    dispatch_router = request.app.state.dispatch_router
+    handler = dispatch_router.get_local(conv.target_agent)
+    if handler is None:
+        raise HTTPException(
+            503,
+            detail=(
+                f"agent {conv.target_agent!r} has no in-process handler; "
+                "resume is only supported for local personas"
+            ),
+        )
+
+    checkpoint_store = request.app.state.checkpoint_store
+    checkpoint = await checkpoint_store.load(task_id)
+    if checkpoint is None:
+        # Race: checkpoint dropped between the select above and load.
+        raise HTTPException(
+            409,
+            detail=f"checkpoint for {task_id!r} vanished before resume could load it",
+        )
+
+    try:
+        task = Task.model_validate(ckpt_row.task_json)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, detail=f"checkpoint task_json failed to parse: {exc}") from exc
+
+    response = await dispatch_router.resume_local(
+        target_agent=conv.target_agent,
+        task=task,
+        resume_from=checkpoint,
+    )
+
+    return {
+        "task_id": task_id,
+        "state": response.status.state,
+        "result": response.model_dump(by_alias=True, exclude_none=True),
     }
 
 
@@ -349,9 +421,7 @@ async def reload_identity(
 
     # 1. Sync bulletin board for any newly-declared personas.
     async with open_session(state.sessionmaker) as session:
-        stored = await load_active_signing_key(
-            session, master_key=state.master_key
-        )
+        stored = await load_active_signing_key(session, master_key=state.master_key)
     if stored is None:
         raise HTTPException(500, detail="no active signing key")
     await sync_personas(state.sessionmaker, identity, stored)
@@ -361,6 +431,7 @@ async def reload_identity(
     litellm_client = getattr(state, "litellm_client", None)
     if litellm_client is not None:
         import os as _os
+
         litellm_client.api_base = identity.litellm.api_base
         if identity.litellm.api_key_env:
             litellm_client.api_key = _os.environ.get(identity.litellm.api_key_env)
@@ -391,11 +462,13 @@ async def reload_identity(
 
 def _make_default_memory_store():
     from cabal.core.memory.store import NoOpMemoryStore
+
     return NoOpMemoryStore()
 
 
 def _make_default_session_tracker():
     from cabal.core.memory.session_tracker import NoOpSessionTracker
+
     return NoOpSessionTracker()
 
 
@@ -430,9 +503,7 @@ async def get_secrets(
 
     from cabal.core.secrets import merge_with_env
 
-    claims = _require_secrets_fetch(
-        request, extract_bearer(authorization)
-    )
+    claims = _require_secrets_fetch(request, extract_bearer(authorization))
     persona_norm = _normalize(persona)
     handler_norm = _normalize(handler_name)
     if not persona_norm or not handler_norm:
@@ -498,10 +569,7 @@ async def set_secret(
     if not re.match(r"^[A-Z][A-Z0-9_]*$", req.key):
         raise HTTPException(
             400,
-            detail=(
-                "key must match ^[A-Z][A-Z0-9_]*$ "
-                "(upper-snake to match env-var convention)"
-            ),
+            detail=("key must match ^[A-Z][A-Z0-9_]*$ (upper-snake to match env-var convention)"),
         )
 
     await request.app.state.secrets_backend.set(
@@ -564,10 +632,7 @@ async def list_secrets(
         persona=persona_norm, handler=handler_norm
     )
     return {
-        "entries": [
-            {"persona": e.persona, "handler": e.handler, "key": e.key}
-            for e in entries
-        ]
+        "entries": [{"persona": e.persona, "handler": e.handler, "key": e.key} for e in entries]
     }
 
 
@@ -587,9 +652,7 @@ def _normalize(s: str) -> str:
     return s
 
 
-def _require_secrets_fetch(
-    request: Request, raw_token: str
-) -> dict[str, Any]:
+def _require_secrets_fetch(request: Request, raw_token: str) -> dict[str, Any]:
     """Like _require_operator_claims, but also accepts tokens whose scope
     contains 'secrets-fetch' (the dedicated limenal service scope).
 
@@ -656,16 +719,12 @@ async def mint_service_token(
     _require_operator_claims(request, extract_bearer(authorization))
 
     if not req.sub or not req.scope or not req.aud:
-        raise HTTPException(
-            400, detail="sub, scope, and aud must all be non-empty"
-        )
+        raise HTTPException(400, detail="sub, scope, and aud must all be non-empty")
 
     async with open_session(request.app.state.sessionmaker) as session:
         from cabal.core.auth.keys import load_active_signing_key
 
-        stored = await load_active_signing_key(
-            session, master_key=request.app.state.master_key
-        )
+        stored = await load_active_signing_key(session, master_key=request.app.state.master_key)
     if stored is None:
         raise HTTPException(500, detail="no active signing key")
 
@@ -680,9 +739,7 @@ async def mint_service_token(
         scope=req.scope,
         ttl_seconds=ttl,
     )
-    expires_at = (
-        datetime.now(UTC) + timedelta(seconds=ttl)
-    ).isoformat()
+    expires_at = (datetime.now(UTC) + timedelta(seconds=ttl)).isoformat()
     return {
         "access_token": token,
         "sub": req.sub,

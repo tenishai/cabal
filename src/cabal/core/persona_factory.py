@@ -22,6 +22,7 @@ from cabal.agents.subordinate import Subordinate
 from cabal.config.identity import IdentityConfig
 from cabal.core.auth.keys import StoredKey
 from cabal.core.broker.router import DispatchRouter
+from cabal.core.checkpoint import CheckpointStore
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 from cabal.core.memory.session_tracker import SessionTracker
@@ -40,6 +41,7 @@ def register_personas_from_identity(
     hook_registry: HookRegistry,
     mcp_http_client: httpx.AsyncClient | None = None,
     signing_key: StoredKey | None = None,
+    checkpoint_store: CheckpointStore | None = None,
 ) -> list[str]:
     """Build + register LocalHandlers for every persona in PERSONA_REGISTRY
     that's also declared in identity.toml. Returns the list of registered
@@ -109,6 +111,27 @@ def register_personas_from_identity(
                 "personas.edit_format_instructions_appended",
                 persona=persona_name,
                 edit_format=persona_cfg.edit_format,
+            )
+
+        # cabal#2 — swap the LLMPersona's no-op CheckpointStore for the
+        # real one when the persona opts in. RookPrimusPersona is excluded
+        # for now (multi-stage pipeline checkpointing is a follow-up;
+        # see cabal/core/checkpoint.py module docstring).
+        if (
+            persona_cfg.checkpointing.enabled
+            and checkpoint_store is not None
+            and persona_name != "rook"
+        ):
+            handler.checkpoint_store = checkpoint_store
+            log.info("personas.checkpointing_enabled", persona=persona_name)
+        elif persona_cfg.checkpointing.enabled and persona_name == "rook":
+            log.warning(
+                "personas.checkpointing_unsupported",
+                persona=persona_name,
+                msg=(
+                    "RookPrimusPersona checkpointing is not yet implemented; "
+                    "the [personas.rook.checkpointing] enabled flag is ignored."
+                ),
             )
 
         agent_name = f"{persona_name}-primus" if persona_cfg.role == "primus" else persona_name

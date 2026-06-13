@@ -99,6 +99,13 @@ safety_tier = "moderate"
 # launched with `--edit-format search-replace`. Recommended for any
 # persona that emits code edits (architect, codex, rook).
 # edit_format = "search-replace"
+# cabal#2 — opt into checkpoint-based durable execution. When enabled,
+# every LLM call inside handle_task writes a row to task_checkpoints;
+# if the daemon dies mid-loop, the operator can resume via
+# POST /admin/tasks/{id}/resume. Default off — heavy step writes
+# aren't free; flip on for personas with long tool-use chains.
+# [personas.architect.checkpointing]
+# enabled = true
 
 [personas.librarian]
 description = "External-documentation lookup"
