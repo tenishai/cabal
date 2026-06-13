@@ -17,7 +17,7 @@ from __future__ import annotations
 import secrets
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 import structlog
@@ -164,8 +164,7 @@ class DispatchRouter:
         if not required_set:
             return None
         candidates = sorted(
-            name for name, caps in self._capabilities.items()
-            if required_set.issubset(caps)
+            name for name, caps in self._capabilities.items() if required_set.issubset(caps)
         )
         return candidates[0] if candidates else None
 
@@ -186,9 +185,7 @@ class DispatchRouter:
         """
         ctx = await self._prepare(target_agent, target_generation, caller_jwt)
         task = _ensure_trace(task)
-        await self._bookkeeper.on_dispatch_start(
-            task, ctx.target, ctx.caller_agent
-        )
+        await self._bookkeeper.on_dispatch_start(task, ctx.target, ctx.caller_agent)
 
         is_session_root = "cabal_session_started" not in task.metadata
         if is_session_root:
@@ -265,9 +262,7 @@ class DispatchRouter:
             )
         handler = self._local[target_agent]
         if not hasattr(handler, "astream_task"):
-            raise DispatchError(
-                f"agent {target_agent!r}'s handler does not implement astream_task"
-            )
+            raise DispatchError(f"agent {target_agent!r}'s handler does not implement astream_task")
 
         task = _ensure_trace(task)
         await self._bookkeeper.on_dispatch_start(task, ctx.target, ctx.caller_agent)
@@ -325,6 +320,39 @@ class DispatchRouter:
                 },
             )
 
+    async def resume_local(
+        self,
+        *,
+        target_agent: str,
+        task: Task,
+        resume_from: Any,
+    ) -> Task:
+        """Re-enter a previously-checkpointed Task on its local handler.
+
+        cabal#2 — used by POST /admin/tasks/{id}/resume. Bypasses the
+        JWT/bulletin/session-start path because the original dispatch
+        already ran those; this is a continuation, not a fresh
+        dispatch. Bookkeeping fires success/failure exactly like the
+        primary path so /admin/conversations/{id} reflects the resumed
+        outcome.
+        """
+        if target_agent not in self._local:
+            raise DispatchError(
+                f"agent {target_agent!r} has no in-process handler "
+                "(resume requires a local persona)"
+            )
+        handler = self._local[target_agent]
+        if not hasattr(handler, "handle_task"):
+            raise DispatchError(f"agent {target_agent!r}'s handler does not implement handle_task")
+
+        try:
+            response = await handler.handle_task(task, resume_from=resume_from)
+        except Exception as exc:
+            await self._bookkeeper.on_dispatch_failure(task, exc)
+            raise
+        await self._bookkeeper.on_dispatch_success(task, response)
+        return response
+
     # --- internal pieces --------------------------------------------------
 
     async def _prepare(
@@ -337,17 +365,11 @@ class DispatchRouter:
             if target_generation is None:
                 row = await bulletin_store.get_active(session, target_agent)
             else:
-                row = await bulletin_store.get(
-                    session, target_agent, target_generation
-                )
+                row = await bulletin_store.get(session, target_agent, target_generation)
         if row is None:
             raise AgentNotFoundError(
                 f"no agent registered: {target_agent!r}"
-                + (
-                    f" generation={target_generation}"
-                    if target_generation is not None
-                    else ""
-                )
+                + (f" generation={target_generation}" if target_generation is not None else "")
             )
 
         # Invariant 2: caller-JWT verification, even for in-process.
@@ -369,9 +391,7 @@ class DispatchRouter:
     async def _dispatch_local(self, handler: LocalHandler, task: Task) -> Task:
         return await handler.handle_task(task)
 
-    async def _dispatch_remote(
-        self, target: AgentRow, task: Task, caller_jwt: str
-    ) -> Task:
+    async def _dispatch_remote(self, target: AgentRow, task: Task, caller_jwt: str) -> Task:
         if target.endpoint.startswith("local://"):
             # The bulletin row says "local handler" but none is registered
             # — this is a misconfiguration, not a transport failure.
@@ -381,9 +401,7 @@ class DispatchRouter:
                 f"implementation in PERSONA_REGISTRY)"
             )
         if self._http_client is None:
-            raise DispatchError(
-                "remote dispatch attempted without an http client wired in"
-            )
+            raise DispatchError("remote dispatch attempted without an http client wired in")
         url = target.endpoint.rstrip("/") + self._a2a_path
         try:
             resp = await self._http_client.post(
@@ -394,7 +412,5 @@ class DispatchRouter:
         except httpx.HTTPError as exc:
             raise DispatchError(f"remote dispatch transport error: {exc}") from exc
         if resp.status_code >= 400:
-            raise DispatchError(
-                f"remote dispatch returned HTTP {resp.status_code}: {resp.text}"
-            )
+            raise DispatchError(f"remote dispatch returned HTTP {resp.status_code}: {resp.text}")
         return Task.model_validate(resp.json())

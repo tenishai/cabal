@@ -69,9 +69,7 @@ def _run_migrations(db_url: str) -> None:
     # In Docker / installed packages, REPO_ROOT points inside site-packages
     # which doesn't have alembic.ini or migrations/. Env vars override.
     ini = Path(os.environ.get("CABAL_ALEMBIC_INI", str(ALEMBIC_INI)))
-    migrations = os.environ.get(
-        "CABAL_ALEMBIC_MIGRATIONS", str(REPO_ROOT / "migrations")
-    )
+    migrations = os.environ.get("CABAL_ALEMBIC_MIGRATIONS", str(REPO_ROOT / "migrations"))
     cfg = AlembicConfig(str(ini))
     cfg.set_main_option("script_location", migrations)
     os.environ["CABAL_DB_URL"] = db_url
@@ -139,15 +137,23 @@ def create_app(
         # SecretsBackend Protocol — default Fernet+SQLite; future backends
         # (OS keychain, OpenBao, AWS/GCP SM) plug in via the same Protocol.
         from cabal.core.secrets_backend import SqliteFernetBackend
+
         _app.state.secrets_backend = SqliteFernetBackend(
             sessionmaker=sessionmaker, master_key=master_key
         )
 
+        # CheckpointStore Protocol — default SQLite. Same shape: future
+        # backends (Postgres, Redis, in-memory) plug in by satisfying the
+        # Protocol. Wired into individual personas in persona_factory
+        # only when the persona opts in via identity.toml.
+        from cabal.core.checkpoint import SqliteCheckpointStore
+
+        _app.state.checkpoint_store = SqliteCheckpointStore(sessionmaker=sessionmaker)
+
         if run_migrations:
             sync_url = (
-                (db_url or os.environ.get("CABAL_DB_URL", "sqlite:///data/cabal.db"))
-                .replace("sqlite+aiosqlite://", "sqlite://", 1)
-            )
+                db_url or os.environ.get("CABAL_DB_URL", "sqlite:///data/cabal.db")
+            ).replace("sqlite+aiosqlite://", "sqlite://", 1)
             _run_migrations(sync_url)
 
         kid = await ensure_signing_key(sessionmaker, master_key=master_key)
@@ -166,9 +172,7 @@ def create_app(
         if config_path_obj.exists():
             identity = load_identity(config_path_obj)
             async with open_session(sessionmaker) as session:
-                stored = await load_active_signing_key(
-                    session, master_key=master_key
-                )
+                stored = await load_active_signing_key(session, master_key=master_key)
             if stored is not None:
                 await sync_personas(sessionmaker, identity, stored)
             _app.state.identity = identity
@@ -222,9 +226,7 @@ def create_app(
             memory_store = TechneMemoryStore(
                 db_path=techne_db, use_vectors=identity.techne.use_vectors
             )
-            session_tracker = TechneSessionTracker(
-                db_path=techne_db, data_dir=techne_db.parent
-            )
+            session_tracker = TechneSessionTracker(db_path=techne_db, data_dir=techne_db.parent)
             _app.state.memory_store = memory_store
             _app.state.session_tracker = session_tracker
             log.info("memory.techne_enabled", db_path=str(techne_db))
@@ -288,6 +290,7 @@ def create_app(
                 hook_registry=hook_registry,
                 mcp_http_client=mcp_http_client,
                 signing_key=stored_signing_key,
+                checkpoint_store=_app.state.checkpoint_store,
             )
             registered_persona_names.extend(registered)
 
