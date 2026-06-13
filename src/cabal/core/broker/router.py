@@ -105,6 +105,9 @@ class DispatchRouter:
         self._jwks_provider = jwks_provider
         self._http_client = http_client
         self._local: dict[str, LocalHandler] = {}
+        # Capability tags per agent — populated at startup from identity.toml.
+        # Used by select_by_capabilities() for late-binding task dispatch.
+        self._capabilities: dict[str, set[str]] = {}
         self._a2a_path = a2a_path
         self._hooks = hook_registry or HookRegistry()
 
@@ -124,6 +127,47 @@ class DispatchRouter:
 
     def unregister_local(self, name: str) -> None:
         self._local.pop(name, None)
+        self._capabilities.pop(name, None)
+
+    # --- capability registry ---------------------------------------------
+
+    def register_capabilities(self, agent: str, capabilities: list[str]) -> None:
+        """Advertise an agent's capability tags.
+
+        Idempotent — replaces any prior set for this agent. Empty list
+        means "no capability tags" (the agent is still dispatchable by
+        explicit target, just not by required_capabilities).
+        """
+        self._capabilities[agent] = {c for c in capabilities if c}
+        log.info(
+            "router.capabilities_registered",
+            agent=agent,
+            capabilities=sorted(self._capabilities[agent]),
+        )
+
+    def capabilities_for(self, agent: str) -> set[str]:
+        return set(self._capabilities.get(agent, set()))
+
+    def select_by_capabilities(self, required: list[str]) -> str | None:
+        """Return an agent whose capability set is a superset of `required`.
+
+        Today picks the first match deterministically by name. Future
+        ranking (cost / circuit-breaker / round-robin) is a follow-up.
+
+        Returns None when no registered agent satisfies the requirement.
+        Empty `required` is meaningless here; callers should pass an
+        explicit target in that case.
+        """
+        if not required:
+            return None
+        required_set = {r for r in required if r}
+        if not required_set:
+            return None
+        candidates = sorted(
+            name for name, caps in self._capabilities.items()
+            if required_set.issubset(caps)
+        )
+        return candidates[0] if candidates else None
 
     # --- dispatch ---------------------------------------------------------
 
