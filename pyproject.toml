@@ -67,6 +67,7 @@ cbl = "cabal.cli.main:app"
 # personas to follow) through limenal's standard wire protocol.
 [project.entry-points."limenal.handlers"]
 patterns = "cabal.handlers.patterns:get_handler"
+documents = "cabal.handlers.documents:get_handler"
 
 [project.urls]
 Source = "https://github.com/dimartin/cabal"
