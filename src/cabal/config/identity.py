@@ -93,6 +93,12 @@ class PersonaConfig(_Open):
     max_tokens_override: int | None = None
     commit_to_memory: bool | None = None
     mcp: PersonaMCPConfig = Field(default_factory=PersonaMCPConfig)
+    # Capability tags advertised by this persona. Used by the dispatch
+    # router's late-binding path: a Task with `required_capabilities=[...]`
+    # and no explicit target gets routed to any persona whose capability
+    # set is a superset of the requirement. Examples: ["architectural-advice"],
+    # ["code-search", "blame"], ["team-memory.read"].
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class LiteLLMConfig(_Open):

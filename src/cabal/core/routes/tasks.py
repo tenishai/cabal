@@ -30,8 +30,14 @@ router = APIRouter(prefix="/a2a", tags=["a2a"])
 
 
 class TaskRequest(BaseModel):
-    target: str
+    # `target` is the explicit-dispatch path. `required_capabilities` is
+    # the late-binding path — when target is null, the router picks any
+    # registered agent whose capability set is a superset of the listed
+    # requirements. Exactly one of (target, required_capabilities) must
+    # be supplied.
+    target: str | None = None
     target_generation: int | None = None
+    required_capabilities: list[str] | None = None
     task: Task
 
 
@@ -84,11 +90,35 @@ async def submit_task(
     authorization: str | None = Header(default=None),
 ) -> Task:
     raw_token = extract_bearer(authorization)
-    dispatch_token = await _resolve_dispatch_token(request, raw_token, req.target)
     router_ = request.app.state.dispatch_router
+
+    # Resolve target: explicit-dispatch takes the target verbatim;
+    # late-binding looks up an agent that satisfies the capability
+    # requirement.
+    target = req.target
+    if target is None:
+        if not req.required_capabilities:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "request must specify either `target` (explicit "
+                    "dispatch) or `required_capabilities` (late-binding)"
+                ),
+            )
+        target = router_.select_by_capabilities(req.required_capabilities)
+        if target is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"no registered agent satisfies required_capabilities="
+                    f"{req.required_capabilities}"
+                ),
+            )
+
+    dispatch_token = await _resolve_dispatch_token(request, raw_token, target)
     try:
         return await router_.dispatch(
-            target_agent=req.target,
+            target_agent=target,
             target_generation=req.target_generation,
             task=req.task,
             caller_jwt=dispatch_token,

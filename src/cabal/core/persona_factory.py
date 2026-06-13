@@ -171,11 +171,18 @@ def register_personas_from_identity(
             )
 
         dispatch_router.register_local(handler)
+        # Register capability tags so cabal#3 late-binding dispatch can
+        # reach this persona via required_capabilities. Empty list is
+        # fine — agent just isn't reachable by capability.
+        dispatch_router.register_capabilities(
+            agent_name, list(persona_cfg.capabilities)
+        )
         registered.append(agent_name)
         log.info(
             "personas.handler_registered",
             persona=persona_name,
             agent=agent_name,
             model=handler.model,
+            capabilities=list(persona_cfg.capabilities),
         )
     return registered
