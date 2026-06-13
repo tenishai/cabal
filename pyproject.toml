@@ -68,6 +68,7 @@ cbl = "cabal.cli.main:app"
 [project.entry-points."limenal.handlers"]
 patterns = "cabal.handlers.patterns:get_handler"
 documents = "cabal.handlers.documents:get_handler"
+code = "cabal.handlers.code:get_handler"
 
 [project.urls]
 Source = "https://github.com/dimartin/cabal"
