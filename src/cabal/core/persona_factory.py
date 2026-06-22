@@ -60,7 +60,7 @@ def register_personas_from_identity(
         if persona_name == "rook":
             sub_instances: dict[str, Subordinate] = {}
             for role, sub_cfg in persona_cfg.subordinates.items():
-                sub_instances[role] = Subordinate(
+                sub = Subordinate(
                     role=role,
                     llm_client=litellm_client,
                     model=sub_cfg.model,
@@ -68,6 +68,10 @@ def register_personas_from_identity(
                     memory_store=memory_store,
                     session_tracker=session_tracker,
                 )
+                # cabal#11 — subordinates share the router's AbortGraph so a
+                # parent abort reaches their in-flight LLM calls.
+                sub.abort_coordinator = dispatch_router.abort_coordinator
+                sub_instances[role] = sub
             if "implementer" not in sub_instances:
                 log.warning(
                     "personas.rook_missing_implementer",
@@ -91,6 +95,10 @@ def register_personas_from_identity(
                 model=persona_cfg.model_override,
                 max_tokens=persona_cfg.max_tokens_override or 8192,
             )
+
+        # cabal#11 — every handler shares the router's AbortGraph coordinator
+        # so operator/budget aborts reach its dispatch loop.
+        handler.abort_coordinator = dispatch_router.abort_coordinator
 
         # Apply remaining overrides uniformly.
         if persona_cfg.system_prompt_override:

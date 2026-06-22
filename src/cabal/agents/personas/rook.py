@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from cabal.agents.llm_persona import LLMPersona, _message_to_chat
 from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
+from cabal.core.abort import KIND_SUBORDINATE
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
@@ -88,11 +89,15 @@ class RookPrimusPersona(LLMPersona):
         self.hook_registry = hook_registry
 
     async def handle_task(self, task: Task) -> Task:
+        # cabal#11 — the parent dispatch node (task.id) is registered by the
+        # router; checks here cancel Rook's own pipeline between stages.
+        self.abort_coordinator.raise_if_aborted(task.id)
         plan_text = await self._plan(task)
         implementer_output = await self._dispatch_subordinate(
             task, role="implementer", instruction=plan_text
         )
         reviewer_critique: str | None = None
+        self.abort_coordinator.raise_if_aborted(task.id)
         if "reviewer" in self.subordinates:
             reviewer_instruction = (
                 f"PLAN given to implementer:\n{plan_text}\n\n"
@@ -131,14 +136,17 @@ class RookPrimusPersona(LLMPersona):
         if task.status.message is not None:
             messages.append(_message_to_chat(task.status.message))
 
-        response = await self.llm_client.acompletion(
-            model=self.model,
-            messages=messages,
-            agent="rook-primus:plan",
-            task_id=task.id,
-            trace_id=task.metadata.get("cabal_trace_id"),
-            span_id=task.metadata.get("cabal_span_id"),
-            max_tokens=self.max_tokens,
+        response = await self.abort_coordinator.guard(
+            task.id,
+            self.llm_client.acompletion(
+                model=self.model,
+                messages=messages,
+                agent="rook-primus:plan",
+                task_id=task.id,
+                trace_id=task.metadata.get("cabal_trace_id"),
+                span_id=task.metadata.get("cabal_span_id"),
+                max_tokens=self.max_tokens,
+            ),
         )
         return self.parse_response(response)
 
@@ -160,9 +168,18 @@ class RookPrimusPersona(LLMPersona):
             },
         )
 
-        await self._fire(HookName.SUBORDINATE_DISPATCHED, sub_task, role)
-        response = await subord.handle_task(sub_task)
-        await self._fire(HookName.SUBORDINATE_RETURNED, response, role)
+        # cabal#11 — register the subordinate under the parent so an abort of
+        # the parent reaches its in-flight LLM call. Rook calls handle_task
+        # directly (bypassing the router), so the node must be registered here.
+        self.abort_coordinator.register(
+            sub_task.id, parent_id=parent_task.id, kind=KIND_SUBORDINATE
+        )
+        try:
+            await self._fire(HookName.SUBORDINATE_DISPATCHED, sub_task, role)
+            response = await subord.handle_task(sub_task)
+            await self._fire(HookName.SUBORDINATE_RETURNED, response, role)
+        finally:
+            self.abort_coordinator.complete(sub_task.id)
 
         if response.status.message is None:
             return ""
@@ -193,14 +210,17 @@ class RookPrimusPersona(LLMPersona):
             user_blocks.append(f"REVIEWER CRITIQUE:\n{condensed_review}")
         user_blocks.append("Summarize the result for the operator.")
         messages.append({"role": "user", "content": "\n\n".join(user_blocks)})
-        response = await self.llm_client.acompletion(
-            model=self.model,
-            messages=messages,
-            agent="rook-primus:aggregate",
-            task_id=task.id,
-            trace_id=task.metadata.get("cabal_trace_id"),
-            span_id=task.metadata.get("cabal_span_id"),
-            max_tokens=self.max_tokens,
+        response = await self.abort_coordinator.guard(
+            task.id,
+            self.llm_client.acompletion(
+                model=self.model,
+                messages=messages,
+                agent="rook-primus:aggregate",
+                task_id=task.id,
+                trace_id=task.metadata.get("cabal_trace_id"),
+                span_id=task.metadata.get("cabal_span_id"),
+                max_tokens=self.max_tokens,
+            ),
         )
         return self.parse_response(response)
 
