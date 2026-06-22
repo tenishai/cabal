@@ -250,6 +250,9 @@ def create_app(
                 api_key=api_key,
                 budget=budget_guard,
             )
+            # cabal#11 — share the router's AbortGraph so a budget trip / open
+            # circuit cancels the task's descendants, not just its own call.
+            litellm_client.abort_coordinator = dispatch_router.abort_coordinator
             _app.state.litellm_client = litellm_client
 
             # If [limenal] is configured, build a shared httpx.AsyncClient

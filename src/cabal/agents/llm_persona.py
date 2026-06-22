@@ -23,7 +23,7 @@ from cabal.core.a2a.codes import (
     annotate,
 )
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
-from cabal.core.abort import AbortCoordinator
+from cabal.core.abort import AbortCoordinator, TaskAborted
 from cabal.core.checkpoint import Checkpoint, CheckpointStore, NoOpCheckpointStore
 from cabal.core.llm.litellm_client import (
     CabalLLMError,
@@ -143,7 +143,20 @@ class LLMPersona:
             self.llm_client.budget.set_budget(task.id, int(budget_override))
 
         session_id = self.session_tracker.start(external_id=task.id, agent_identity=self.name)
+        try:
+            return await self._run_dispatch(
+                task, session_id=session_id, resume_from=resume_from
+            )
+        except TaskAborted:
+            # cabal#11 — cancellation hit a cooperative boundary; close the
+            # session cleanly (a checkpoint was already written for resume).
+            self.session_tracker.end(session_id=session_id, summary="[canceled] aborted")
+            raise
 
+    async def _run_dispatch(
+        self, task: Task, *, session_id: str, resume_from: Checkpoint | None
+    ) -> Task:
+        """Drive the LLM tool-use loop for `task` (session already started)."""
         if resume_from is None:
             messages = self.build_messages(task)
             step_index = 0

@@ -270,3 +270,62 @@ async def test_handle_task_unregistered_is_unaffected(coord: AbortCoordinator) -
     persona = _persona(coord, quick)  # note: never register the task id
     result = await persona.handle_task(_abort_task())
     assert result.status.state == "completed"
+
+
+async def test_handle_task_ends_session_on_abort(coord: AbortCoordinator) -> None:
+    """Aborting mid-dispatch closes the techne session cleanly (no leak)."""
+    from dataclasses import dataclass, field
+
+    @dataclass
+    class RecordingTracker:
+        ends: list[dict] = field(default_factory=list)
+
+        def start(self, *, external_id, agent_identity):  # noqa: ANN001, ANN204, ARG002
+            return "sess-1"
+
+        def end(self, *, session_id, summary):  # noqa: ANN001, ANN204
+            self.ends.append({"session_id": session_id, "summary": summary})
+
+    started = asyncio.Event()
+
+    async def slow(model, messages, **kwargs):  # noqa: ANN001, ARG001
+        started.set()
+        await asyncio.sleep(5)
+        return {"choices": [{"message": {"content": "late"}}]}
+
+    tracker = RecordingTracker()
+    persona = _persona(coord, slow)
+    persona.session_tracker = tracker
+    coord.register("t-abort")
+    run = asyncio.ensure_future(persona.handle_task(_abort_task()))
+
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    coord.abort("t-abort", reason="operator")
+    with pytest.raises(TaskAborted):
+        await run
+    assert tracker.ends == [{"session_id": "sess-1", "summary": "[canceled] aborted"}]
+
+
+async def test_budget_trip_aborts_descendants(coord: AbortCoordinator) -> None:
+    """A budget exhaustion on a task aborts its descendants (cabal#11 hook)."""
+    from cabal.core.hooks.registry import HookRegistry
+    from cabal.core.llm.budget import BudgetGuard
+    from cabal.core.llm.litellm_client import LiteLLMClient, LLMUnavailableError
+
+    async def never_called(model, messages, **kwargs):  # noqa: ANN001, ARG001
+        raise AssertionError("budget trip should short-circuit before the LLM call")
+
+    client = LiteLLMClient(
+        acompletion_fn=never_called,
+        hook_registry=HookRegistry(),
+        budget=BudgetGuard(default_budget=0),  # any reserve trips immediately
+        abort_coordinator=coord,
+    )
+    coord.register("parent")
+    coord.register("child", parent_id="parent")  # e.g. a Rook subordinate
+
+    with pytest.raises(LLMUnavailableError):
+        await client.acompletion(model="m", messages=[], task_id="parent")
+
+    assert coord.is_aborted("parent")
+    assert coord.is_aborted("child")  # descendant cancelled by the trip
