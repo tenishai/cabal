@@ -23,6 +23,7 @@ from cabal.core.a2a.codes import (
     annotate,
 )
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
+from cabal.core.abort import AbortCoordinator
 from cabal.core.checkpoint import Checkpoint, CheckpointStore, NoOpCheckpointStore
 from cabal.core.llm.litellm_client import (
     CabalLLMError,
@@ -74,6 +75,12 @@ class LLMPersona:
     # `[personas.NAME.checkpointing] enabled = true`; the persona_factory
     # swaps the no-op default for the SQLite-backed store at registration.
     checkpoint_store: CheckpointStore = field(default_factory=NoOpCheckpointStore)
+    # cabal#11 — shared AbortGraph coordinator. Default is a private,
+    # empty coordinator: cooperative checks against an unregistered task.id
+    # are no-ops, so the persona runs identically standalone. The
+    # persona_factory swaps in the router's shared coordinator at
+    # registration, at which point abort() actually reaches this loop.
+    abort_coordinator: AbortCoordinator = field(default_factory=AbortCoordinator)
 
     def _recall_for_task(self, task: Task) -> str:
         """Return a formatted memory-hits block, or empty string."""
@@ -170,16 +177,23 @@ class LLMPersona:
             )
         )
 
+        # cabal#11 — clean cancellation point: the checkpoint above is written,
+        # so an abort here leaves a resumable Task.
+        self.abort_coordinator.raise_if_aborted(task.id)
+
         try:
-            response = await self.llm_client.acompletion(
-                model=self.model,
-                messages=messages,
-                agent=self.name,
-                task_id=task.id,
-                trace_id=task.metadata.get("cabal_trace_id"),
-                span_id=task.metadata.get("cabal_span_id"),
-                max_tokens=self.max_tokens,
-                **extra_acompletion_kwargs,
+            response = await self.abort_coordinator.guard(
+                task.id,
+                self.llm_client.acompletion(
+                    model=self.model,
+                    messages=messages,
+                    agent=self.name,
+                    task_id=task.id,
+                    trace_id=task.metadata.get("cabal_trace_id"),
+                    span_id=task.metadata.get("cabal_span_id"),
+                    max_tokens=self.max_tokens,
+                    **extra_acompletion_kwargs,
+                ),
             )
         except LLMUnavailableError as exc:
             self.session_tracker.end(
@@ -226,6 +240,8 @@ class LLMPersona:
                 tool_calls = _extract_tool_calls(response)
                 if not tool_calls:
                     break
+                # cabal#11 — stop before executing tool side-effects if aborted.
+                self.abort_coordinator.raise_if_aborted(task.id)
                 messages = _extend_with_tool_calls(messages, response, tool_calls)
                 for call in tool_calls:
                     outcome = await self.tool_proxy.call_tool(call["name"], call["arguments"])
@@ -251,15 +267,18 @@ class LLMPersona:
                     )
                 )
                 try:
-                    response = await self.llm_client.acompletion(
-                        model=self.model,
-                        messages=messages,
-                        agent=self.name,
-                        task_id=task.id,
-                        trace_id=task.metadata.get("cabal_trace_id"),
-                        span_id=task.metadata.get("cabal_span_id"),
-                        max_tokens=self.max_tokens,
-                        **extra_acompletion_kwargs,
+                    response = await self.abort_coordinator.guard(
+                        task.id,
+                        self.llm_client.acompletion(
+                            model=self.model,
+                            messages=messages,
+                            agent=self.name,
+                            task_id=task.id,
+                            trace_id=task.metadata.get("cabal_trace_id"),
+                            span_id=task.metadata.get("cabal_span_id"),
+                            max_tokens=self.max_tokens,
+                            **extra_acompletion_kwargs,
+                        ),
                     )
                 except (
                     LLMUnavailableError,

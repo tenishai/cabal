@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from cabal.agents.base import LocalHandler
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
+from cabal.core.abort import KIND_DISPATCH, AbortCoordinator, TaskAborted
 from cabal.core.auth.jwt import JWTError, verify
 from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.bulletin import store as bulletin_store
@@ -80,6 +81,22 @@ def _ensure_trace(task: Task) -> Task:
     return task
 
 
+def _canceled(task: Task, reason: str) -> Task:
+    """Build a canceled Task for a cooperatively-aborted dispatch (cabal#11)."""
+    metadata = dict(task.metadata)
+    metadata["cabal_reason_message"] = reason
+    return Task(
+        id=task.id,
+        context_id=task.context_id,
+        status=TaskStatus(
+            state="canceled",
+            message=Message(role="agent", parts=[TextPart(text=f"canceled: {reason}")]),
+        ),
+        history=list(task.history),
+        metadata=metadata,
+    )
+
+
 class DispatchRouter:
     """Routes Tasks to local handlers (solo mode) or HTTP peers (scale mode).
 
@@ -99,17 +116,26 @@ class DispatchRouter:
         http_client: httpx.AsyncClient | None = None,
         a2a_path: str = "/a2a/tasks",
         hook_registry: HookRegistry | None = None,
+        abort_coordinator: AbortCoordinator | None = None,
     ) -> None:
         self._sessionmaker = sessionmaker
         self._bookkeeper = bookkeeper
         self._jwks_provider = jwks_provider
         self._http_client = http_client
+        # cabal#11 — shared AbortGraph. Owned here so personas (via the
+        # factory) and the admin surface all reference one graph.
+        self._abort = abort_coordinator or AbortCoordinator()
         self._local: dict[str, LocalHandler] = {}
         # Capability tags per agent — populated at startup from identity.toml.
         # Used by select_by_capabilities() for late-binding task dispatch.
         self._capabilities: dict[str, set[str]] = {}
         self._a2a_path = a2a_path
         self._hooks = hook_registry or HookRegistry()
+
+    @property
+    def abort_coordinator(self) -> AbortCoordinator:
+        """The shared AbortGraph coordinator (cabal#11)."""
+        return self._abort
 
     # --- registration -----------------------------------------------------
 
@@ -185,6 +211,11 @@ class DispatchRouter:
         """
         ctx = await self._prepare(target_agent, target_generation, caller_jwt)
         task = _ensure_trace(task)
+        # cabal#11 — register this invocation in the AbortGraph. Parent comes
+        # from cabal_parent_task (set by Rook fan-out); top-level tasks have none.
+        self._abort.register(
+            task.id, parent_id=task.metadata.get("cabal_parent_task"), kind=KIND_DISPATCH
+        )
         await self._bookkeeper.on_dispatch_start(task, ctx.target, ctx.caller_agent)
 
         is_session_root = "cabal_session_started" not in task.metadata
@@ -205,6 +236,12 @@ class DispatchRouter:
                 response = await self._dispatch_local(self._local[ctx.target.name], task)
             else:
                 response = await self._dispatch_remote(ctx.target, task, caller_jwt)
+        except TaskAborted as exc:
+            # Cooperative cancellation reached the dispatch boundary — surface
+            # a clean canceled Task rather than a 500. A checkpoint was written
+            # at the abort point, so this Task is resumable via /admin.
+            log.info("dispatch.aborted", task_id=task.id, reason=exc.reason)
+            response = _canceled(task, exc.reason)
         except Exception as exc:
             await self._bookkeeper.on_dispatch_failure(task, exc)
             if is_session_root:
@@ -217,6 +254,9 @@ class DispatchRouter:
                     },
                 )
             raise
+        finally:
+            # The invocation is no longer in-flight; drop it from the graph.
+            self._abort.complete(task.id)
 
         await self._bookkeeper.on_dispatch_success(task, response)
         if is_session_root and response.status.state in {

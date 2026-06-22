@@ -327,6 +327,37 @@ async def resume_task(
     }
 
 
+@router.post("/tasks/{task_id}/abort")
+async def abort_task(
+    request: Request,
+    task_id: str,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """cabal#11 — operator cancellation. Aborts the in-flight task and every
+    descendant (subordinate dispatches, nested LLM/tool calls) via the
+    AbortGraph. Cooperative: running loops stop at their next safe boundary,
+    leaving a resumable checkpoint. Returns the number of nodes signalled
+    (0 if the task is not currently in-flight)."""
+    _require_operator_claims(request, extract_bearer(authorization))
+    coordinator = request.app.state.dispatch_router.abort_coordinator
+    signalled = coordinator.abort(task_id, reason="operator")
+    return {"task_id": task_id, "signalled": signalled}
+
+
+@router.get("/tasks/{task_id}/graph")
+async def task_graph(
+    request: Request,
+    task_id: str,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """cabal#11 — live AbortGraph subtree for a task: the tree of in-flight
+    invocations rooted at `task_id`. Empty `tree` means nothing is running
+    under that id right now."""
+    _require_operator_claims(request, extract_bearer(authorization))
+    coordinator = request.app.state.dispatch_router.abort_coordinator
+    return {"task_id": task_id, "tree": coordinator.dump(task_id)}
+
+
 def _snippet(result_json: Any, max_chars: int = 120) -> str | None:
     """Pull a short text snippet from the persisted Task body."""
     try:
