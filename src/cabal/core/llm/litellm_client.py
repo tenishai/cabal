@@ -30,6 +30,7 @@ from typing import Any
 
 import structlog
 
+from cabal.core.abort import AbortCoordinator
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.budget import BudgetExhaustedError, BudgetGuard
 from cabal.core.llm.circuit_breaker import CircuitBreaker, CircuitOpenError
@@ -98,6 +99,14 @@ class LiteLLMClient:
     api_key: str | None = None
     breaker: CircuitBreaker = field(default_factory=CircuitBreaker)
     budget: BudgetGuard | None = None
+    # cabal#11 — when wired, a budget trip or open circuit aborts the task's
+    # AbortGraph node, cancelling any still-running descendant work (e.g. Rook
+    # subordinates) rather than letting them run on toward the same wall.
+    abort_coordinator: AbortCoordinator | None = None
+
+    def _abort_on_trip(self, task_id: str | None, reason: str) -> None:
+        if self.abort_coordinator is not None and task_id is not None:
+            self.abort_coordinator.abort(task_id, reason=reason)
 
     async def acompletion(
         self,
@@ -134,6 +143,7 @@ class LiteLLMClient:
                 reserved_amount = self.budget.reserve(task_id)
             except BudgetExhaustedError as exc:
                 log.warning("litellm.budget_exhausted", task_id=task_id, agent=agent)
+                self._abort_on_trip(task_id, "budget exhausted")
                 await self.hook_registry.fire(
                     HookName.LITELLM_POST,
                     {**pre_payload, "outcome": "budget_exhausted", "error": str(exc)},
@@ -146,6 +156,7 @@ class LiteLLMClient:
             if reserved_amount is not None and task_id is not None:
                 self.budget.refund(task_id, used=0, reserved=reserved_amount)
             log.warning("litellm.circuit_open", agent=agent, model=model)
+            self._abort_on_trip(task_id, "circuit open")
             await self.hook_registry.fire(
                 HookName.LITELLM_POST,
                 {**pre_payload, "outcome": "circuit_open", "error": str(exc)},
