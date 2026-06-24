@@ -89,6 +89,13 @@ def _summary(content: str, *, max_len: int = 280) -> str:
     return content.strip()[:max_len] or "(empty)"
 
 
+def _num(value: float | None, *, default: float) -> float:
+    """Coerce a SQL numeric to float; None -> default. Deliberately NOT
+    ``value or default``, which would corrupt a legitimate 0.0 into the
+    default (Prudence review: resource:falsy-default-bug)."""
+    return float(value) if value is not None else default
+
+
 def promote_techne_knowledge(
     techne_db: Path,
     store: ArchivistStore,
@@ -129,7 +136,11 @@ def promote_techne_knowledge(
         if entry_type is None or (types is not None and ttype not in types):
             report.skipped += 1
             continue
-        if float(row["confidence_numeric"] or 0.0) < min_confidence_numeric:
+        # Read confidence ONCE (None -> techne's 0.6 default) and use it for both
+        # the filter and importance, so they can't disagree and a genuine 0.0
+        # isn't corrupted to a default.
+        conf = _num(row["confidence_numeric"], default=0.6)
+        if conf < min_confidence_numeric:
             report.skipped += 1
             continue
 
@@ -141,7 +152,7 @@ def promote_techne_knowledge(
             entry_type=entry_type,
             details=content,
             tags=[t for t in tags if not t.startswith("resource:")],
-            importance=float(row["confidence_numeric"] or 1.0),
+            importance=conf,
             source_thread=f"techne:knowledge:{row['id']}",
             written_by=written_by,
         )
