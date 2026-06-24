@@ -19,7 +19,10 @@ typical wiring is:
 
     handler = DocumentsHandler(
         default_config=DocumentsConfig(
-            db_path=Path("~/.cabal/librarian/documents.db").expanduser(),
+            # Corpora belong under the agent data-root (cabal.data_dir), not the
+            # operator's home — see cabal.config.identity.resolve_data_dir.
+            # e.g. resolve_under_data_dir("librarian/documents.db", data_dir)
+            db_path=data_dir / "librarian" / "documents.db",
             adapters=[
                 FilesystemAdapter(
                     name="runbooks",
