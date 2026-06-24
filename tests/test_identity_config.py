@@ -36,6 +36,18 @@ def test_resolve_data_dir_defaults_when_no_identity(tmp_path: Path) -> None:
     assert resolve_data_dir(None, cfg_path) == tmp_path / "data"
 
 
+def test_resolve_data_dir_bare_filename_anchors_at_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The app default config_path is the bare filename "identity.toml"; its
+    # parent resolves to the CWD, which is where that file is actually read
+    # from — so data still co-locates with the identity file (Prudence, PR #22).
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "identity.toml").write_text('[cabal]\ndata_dir = "data"\n')
+    cfg = load_identity("identity.toml")  # bare filename, like the app default
+    assert resolve_data_dir(cfg, "identity.toml") == Path.cwd() / "data"
+
+
 def test_resolve_under_data_dir_relative_and_absolute(tmp_path: Path) -> None:
     root = tmp_path / "agent"
     assert resolve_under_data_dir("techne.db", root) == root / "techne.db"

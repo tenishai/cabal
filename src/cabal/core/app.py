@@ -225,8 +225,11 @@ def create_app(
         memory_store: MemoryStore = NoOpMemoryStore()
         session_tracker: SessionTracker = NoOpSessionTracker()
         if identity is not None and identity.techne.db_path:
-            # A relative db_path resolves under the agent data-root; absolute is
-            # used as-is (back-compat).
+            # Absolute db_path is used as-is (back-compat). NOTE: a *relative*
+            # db_path MOVES — it now resolves under the agent data-root instead
+            # of the old CWD-relative path, and techne re-inits an empty DB at
+            # the new location. Intended (agent-root co-location), but a behavior
+            # change for any deployment using a relative techne.db_path.
             techne_db = resolve_under_data_dir(identity.techne.db_path, data_dir)
             techne_db.parent.mkdir(parents=True, exist_ok=True)
             if not techne_db.exists():

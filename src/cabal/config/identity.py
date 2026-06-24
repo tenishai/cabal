@@ -179,9 +179,16 @@ def resolve_data_dir(identity: IdentityConfig | None, config_path: str | Path) -
     """Absolute agent data-root for cabal-owned, provisioned resources.
 
     `cabal.data_dir` is the agent's root — an agent's root is identity-defined,
-    not the operator's home (techne#441). A relative value anchors at the
-    identity.toml directory so an agent's config and data co-locate under one
-    root; an absolute value is used as-is.
+    not the operator's home (techne#441). A relative `data_dir` anchors at the
+    directory holding `config_path`, so config and data co-locate under one
+    root; an absolute `data_dir` is used as-is.
+
+    `config_path` must name the identity *file*, not a directory — its parent
+    is taken as the anchor. When it's a bare filename (the app default,
+    "identity.toml"), the anchor is the resolved CWD — which is exactly where
+    that file is read from — so data still lands beside the identity file. With
+    a bare default this coincides with a CWD-relative root; pass a config path
+    with a directory to anchor elsewhere.
 
     Pure + dependency-free (no limenal/techne import) so it resolves the same
     whether or not limenal is wired — cabal works standalone.
