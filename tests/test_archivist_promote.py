@@ -9,8 +9,38 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from cabal.archivist import ArchivistStore
+from cabal.archivist import ArchivistStore, Entry
 from cabal.archivist.promote import promote_techne_knowledge
+
+
+def test_entry_from_row_preserves_zero_importance() -> None:
+    """A stored importance of 0.0 must read back as 0.0, not the 1.0 default
+    (Prudence review: resource:falsy-default-bug, read side)."""
+    e = Entry.from_row(
+        {
+            "id": "x",
+            "resource_name": "r",
+            "summary": "s",
+            "entry_type": "fact",
+            "importance": 0.0,
+        }
+    )
+    assert e.importance == 0.0
+
+
+def test_promote_preserves_zero_confidence_as_importance(tmp_path: Path) -> None:
+    """A legitimate 0.0 techne confidence must map to importance 0.0 end-to-end —
+    not be corrupted to the 1.0 default on the way in OR back out (Lesson 2)."""
+    tdb = _techne_db(
+        tmp_path / "techne.db",
+        [{"type": "fact", "content": "an uncertain claim", "tags": "", "conf": 0.0}],
+    )
+    store = ArchivistStore(tmp_path / "arch.db")
+    rep = promote_techne_knowledge(tdb, store, written_by="Prudence")
+    assert rep.new == 1
+    hits = store.search("uncertain claim")
+    assert hits
+    assert hits[0].importance == 0.0  # not 1.0
 
 
 def _techne_db(path: Path, rows: list[dict]) -> Path:
