@@ -42,8 +42,17 @@ class ArchivistStore:
 
     # ---- write path -------------------------------------------------------
 
-    def publish(self, entry: Entry) -> PublishResult:
+    def publish(self, entry: Entry, *, supersede: bool = False) -> PublishResult:
         """Write an entry through the dedup pipeline.
+
+        Args:
+            supersede: when True and the entry overlaps existing *active* entries
+                with the same (resource_name, entry_type) — the dedup ``related``
+                case — treat the new entry as the current truth: write SUPERSEDES
+                edges to the priors and flip them to ``status='superseded'``.
+                Since ``search`` is active-only, latest-wins falls out for free.
+                Deterministic, no LLM (agent-model design §5e). Default False
+                preserves the RELATED-linking behavior.
 
         Returns:
             PublishResult.outcome:
@@ -52,6 +61,9 @@ class ArchivistStore:
               duplicate_l1  — content matched an active DB row; no write
               related       — entry was written AND linked to overlapping entries
                               via RELATED edges (Tier 1).
+              superseded    — entry was written AND it retired prior same-resource
+                              active entries (supersede=True); related_ids holds
+                              the now-superseded ids.
         """
         result = self._dedup.check(entry)
 
@@ -67,6 +79,13 @@ class ArchivistStore:
         self._dedup.record_new(entry)
 
         if result.outcome == "related" and result.related_ids:
+            if supersede:
+                self._supersede(entry.id, result.related_ids)
+                return PublishResult(
+                    outcome="superseded",
+                    entry_id=entry.id,
+                    related_ids=result.related_ids,
+                )
             edges = make_related_edges(entry.id, result.related_ids)
             self._insert_relations(edges)
 
@@ -126,10 +145,36 @@ class ArchivistStore:
                         src_id, dst_id, relation_type, metadata, created_at
                     ) VALUES (?, ?, ?, ?, ?)""",
                     (
-                        rel.src_id, rel.dst_id, rel.relation_type,
+                        rel.src_id,
+                        rel.dst_id,
+                        rel.relation_type,
                         json.dumps(rel.metadata),
                         rel.created_at or datetime.now(UTC).isoformat(),
                     ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _supersede(self, new_id: str, prior_ids: list[str]) -> None:
+        """Retire `prior_ids` in favor of `new_id` (deterministic same-resource
+        supersession, §5e): flip each still-active prior to status='superseded'
+        and record a SUPERSEDES edge new -> prior. Idempotent on the status flip
+        (guards on status='active') and on the edge (INSERT OR IGNORE)."""
+        now = datetime.now(UTC).isoformat()
+        conn = connect(self.db_path)
+        try:
+            for prior in prior_ids:
+                conn.execute(
+                    "UPDATE memory_entries SET status='superseded', updated_at=? "
+                    "WHERE id=? AND status='active'",
+                    (now, prior),
+                )
+                conn.execute(
+                    """INSERT OR IGNORE INTO memory_relations (
+                        src_id, dst_id, relation_type, metadata, created_at
+                    ) VALUES (?, ?, 'SUPERSEDES', ?, ?)""",
+                    (new_id, prior, json.dumps({"reason": "same_resource_supersedes"}), now),
                 )
             conn.commit()
         finally:
@@ -186,9 +231,7 @@ class ArchivistStore:
     def get(self, entry_id: str) -> Entry | None:
         conn = connect(self.db_path)
         try:
-            row = conn.execute(
-                "SELECT * FROM memory_entries WHERE id = ?", (entry_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM memory_entries WHERE id = ?", (entry_id,)).fetchone()
         finally:
             conn.close()
         return Entry.from_row(dict(row)) if row else None
@@ -234,17 +277,15 @@ class ArchivistStore:
                 """SELECT DISTINCT resource_name FROM memory_entries
                    WHERE status = 'active' LIMIT 10"""
             ).fetchall()
-            relations_total = conn.execute(
-                "SELECT COUNT(*) AS n FROM memory_relations"
-            ).fetchone()["n"]
+            relations_total = conn.execute("SELECT COUNT(*) AS n FROM memory_relations").fetchone()[
+                "n"
+            ]
         finally:
             conn.close()
 
         return {
             "tables": ["memory_entries", "memory_relations", "memory_entries_fts"],
-            "entry_types": [
-                "fact", "decision", "operation", "error", "procedure", "document"
-            ],
+            "entry_types": ["fact", "decision", "operation", "error", "procedure", "document"],
             "counts": {
                 "total_active": total,
                 "by_type": {row["entry_type"]: row["n"] for row in by_type},
@@ -252,7 +293,11 @@ class ArchivistStore:
             },
             "sample_resources": [r["resource_name"] for r in sample_resources],
             "search_fields": [
-                "resource_name", "summary", "details", "gotchas", "tags",
+                "resource_name",
+                "summary",
+                "details",
+                "gotchas",
+                "tags",
             ],
             "filters": ["entry_type", "tags"],
         }
