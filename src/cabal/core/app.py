@@ -29,7 +29,12 @@ from sqlalchemy import select
 
 from cabal import __version__
 from cabal.agents.echo import EchoAgent
-from cabal.config.identity import IdentityConfig, load_identity
+from cabal.config.identity import (
+    IdentityConfig,
+    load_identity,
+    resolve_data_dir,
+    resolve_under_data_dir,
+)
 from cabal.core.auth.bootstrap import ensure_signing_key
 from cabal.core.auth.bootstrap_codes import issue_operator_code
 from cabal.core.auth.jwks_provider import RefreshingJWKSProvider
@@ -180,6 +185,13 @@ def create_app(
             log.info("identity.absent", path=str(config_path_obj))
             _app.state.identity = None
 
+        # Agent data-root: where cabal-owned, provisioned resources live. Relative
+        # cabal.data_dir anchors at the identity.toml dir (agent root != user home,
+        # techne#441). Resolved in core so it holds with or without limenal.
+        data_dir = resolve_data_dir(identity, config_path_obj)
+        _app.state.data_dir = data_dir
+        log.info("cabal.data_dir", path=str(data_dir))
+
         hook_registry = HookRegistry()
         _app.state.hook_registry = hook_registry
 
@@ -213,7 +225,9 @@ def create_app(
         memory_store: MemoryStore = NoOpMemoryStore()
         session_tracker: SessionTracker = NoOpSessionTracker()
         if identity is not None and identity.techne.db_path:
-            techne_db = Path(identity.techne.db_path)
+            # A relative db_path resolves under the agent data-root; absolute is
+            # used as-is (back-compat).
+            techne_db = resolve_under_data_dir(identity.techne.db_path, data_dir)
             techne_db.parent.mkdir(parents=True, exist_ok=True)
             if not techne_db.exists():
                 try:
