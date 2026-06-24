@@ -46,9 +46,9 @@ jobs:
         working-directory: cabal
         run: ruff check src tests
 
-      - name: Pytest (unit — sibling tests auto-skip via importorskip)
+      - name: Pytest (unit — sibling tests auto-skip; live-daemon tests excluded)
         working-directory: cabal
-        run: pytest -q
+        run: pytest -q -m "not integration"
 
   # ---- integration: full suite with siblings --------------------------------
   integration:
