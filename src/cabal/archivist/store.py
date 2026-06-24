@@ -8,6 +8,7 @@ it goes through this store.
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -75,17 +76,29 @@ class ArchivistStore:
                 related_ids=[],
             )
 
+        if supersede and result.outcome == "related":
+            # Insert the new entry AND retire EVERY active prior sharing its
+            # (resource_name, entry_type) in ONE transaction (#27) — never
+            # leaving two 'current' entries or a half-applied supersession, and
+            # not capped by the dedup LIMIT-5 sample.
+            conn = connect(self.db_path)
+            try:
+                self._insert(entry, conn=conn)
+                superseded_ids = self._supersede_all(entry, conn)
+                conn.commit()
+            finally:
+                conn.close()
+            self._dedup.record_new(entry)
+            return PublishResult(
+                outcome="superseded",
+                entry_id=entry.id,
+                related_ids=superseded_ids,
+            )
+
         self._insert(entry)
         self._dedup.record_new(entry)
 
         if result.outcome == "related" and result.related_ids:
-            if supersede:
-                self._supersede(entry.id, result.related_ids)
-                return PublishResult(
-                    outcome="superseded",
-                    entry_id=entry.id,
-                    related_ids=result.related_ids,
-                )
             edges = make_related_edges(entry.id, result.related_ids)
             self._insert_relations(edges)
 
@@ -95,9 +108,14 @@ class ArchivistStore:
             related_ids=result.related_ids,
         )
 
-    def _insert(self, entry: Entry) -> None:
+    def _insert(self, entry: Entry, conn: sqlite3.Connection | None = None) -> None:
+        """Insert `entry` + its FTS row. If `conn` is given the caller owns the
+        transaction (no commit/close here), so insert can be made atomic with a
+        same-connection supersede."""
+        owned = conn is None
+        if owned:
+            conn = connect(self.db_path)
         row = entry.to_row()
-        conn = connect(self.db_path)
         try:
             conn.execute(
                 """INSERT INTO memory_entries (
@@ -130,9 +148,11 @@ class ArchivistStore:
                     row["tags"],
                 ),
             )
-            conn.commit()
+            if owned:
+                conn.commit()
         finally:
-            conn.close()
+            if owned:
+                conn.close()
 
     def _insert_relations(self, relations: list[Relation]) -> None:
         if not relations:
@@ -156,29 +176,34 @@ class ArchivistStore:
         finally:
             conn.close()
 
-    def _supersede(self, new_id: str, prior_ids: list[str]) -> None:
-        """Retire `prior_ids` in favor of `new_id` (deterministic same-resource
-        supersession, §5e): flip each still-active prior to status='superseded'
-        and record a SUPERSEDES edge new -> prior. Idempotent on the status flip
-        (guards on status='active') and on the edge (INSERT OR IGNORE)."""
+    def _supersede_all(self, entry: Entry, conn: sqlite3.Connection) -> list[str]:
+        """Within the caller's transaction (no commit here), retire EVERY active
+        entry sharing `entry`'s (resource_name, entry_type) — except `entry`
+        itself — flipping status to 'superseded' and recording a SUPERSEDES edge
+        new -> prior. Unbounded: queries all priors directly, not the dedup
+        LIMIT-5 overlap sample (#27). Returns the superseded ids."""
         now = datetime.now(UTC).isoformat()
-        conn = connect(self.db_path)
-        try:
-            for prior in prior_ids:
-                conn.execute(
-                    "UPDATE memory_entries SET status='superseded', updated_at=? "
-                    "WHERE id=? AND status='active'",
-                    (now, prior),
-                )
-                conn.execute(
-                    """INSERT OR IGNORE INTO memory_relations (
-                        src_id, dst_id, relation_type, metadata, created_at
-                    ) VALUES (?, ?, 'SUPERSEDES', ?, ?)""",
-                    (new_id, prior, json.dumps({"reason": "same_resource_supersedes"}), now),
-                )
-            conn.commit()
-        finally:
-            conn.close()
+        priors = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM memory_entries "
+                "WHERE resource_name=? AND entry_type=? AND status='active' AND id != ?",
+                (entry.resource_name, entry.entry_type, entry.id),
+            ).fetchall()
+        ]
+        for prior in priors:
+            conn.execute(
+                "UPDATE memory_entries SET status='superseded', updated_at=? "
+                "WHERE id=? AND status='active'",
+                (now, prior),
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO memory_relations (
+                    src_id, dst_id, relation_type, metadata, created_at
+                ) VALUES (?, ?, 'SUPERSEDES', ?, ?)""",
+                (entry.id, prior, json.dumps({"reason": "same_resource_supersedes"}), now),
+            )
+        return priors
 
     # ---- read path --------------------------------------------------------
 
