@@ -112,7 +112,8 @@ class Entry:
             gotchas=row.get("gotchas"),
             commands=_loads_or_default(row.get("commands"), []),
             refs=_loads_or_default(row.get("refs"), []),
-            importance=float(row.get("importance") or 1.0),
+            # None -> default; NOT `or 1.0`, which would corrupt a stored 0.0.
+            importance=(float(row["importance"]) if row.get("importance") is not None else 1.0),
             source_thread=row.get("source_thread"),
             content_hash=row.get("content_hash") or "",
             status=row.get("status") or "active",
