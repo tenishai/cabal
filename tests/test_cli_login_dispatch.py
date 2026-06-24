@@ -58,6 +58,7 @@ def serve(fastapi_app: FastAPI):
         thread.join(timeout=5)
 
 
+@pytest.mark.integration  # spins up a real uvicorn daemon — excluded from the unit job
 @pytest.mark.asyncio
 async def test_cli_login_and_dispatch_against_live_daemon(
     app: FastAPI, monkeypatch, tmp_path
