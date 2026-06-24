@@ -173,3 +173,36 @@ def load_identity(path: str | Path) -> IdentityConfig:
         log.warning("identity.unknown_section", section=section, path=str(p))
 
     return IdentityConfig.model_validate(raw)
+
+
+def resolve_data_dir(identity: IdentityConfig | None, config_path: str | Path) -> Path:
+    """Absolute agent data-root for cabal-owned, provisioned resources.
+
+    `cabal.data_dir` is the agent's root — an agent's root is identity-defined,
+    not the operator's home (techne#441). A relative `data_dir` anchors at the
+    directory holding `config_path`, so config and data co-locate under one
+    root; an absolute `data_dir` is used as-is.
+
+    `config_path` must name the identity *file*, not a directory — its parent
+    is taken as the anchor. When it's a bare filename (the app default,
+    "identity.toml"), the anchor is the resolved CWD — which is exactly where
+    that file is read from — so data still lands beside the identity file. With
+    a bare default this coincides with a CWD-relative root; pass a config path
+    with a directory to anchor elsewhere.
+
+    Pure + dependency-free (no limenal/techne import) so it resolves the same
+    whether or not limenal is wired — cabal works standalone.
+    """
+    raw = (identity.cabal.data_dir if identity is not None else CabalConfig().data_dir) or "data"
+    d = Path(raw).expanduser()
+    if d.is_absolute():
+        return d
+    return Path(config_path).expanduser().resolve().parent / d
+
+
+def resolve_under_data_dir(raw: str | Path, data_dir: Path) -> Path:
+    """Resolve a configured resource path: absolute used as-is, relative placed
+    under the agent data-root. Lets an operator write `db_path = "techne.db"`
+    and have it land under the agent root rather than an unanchored CWD path."""
+    p = Path(raw).expanduser()
+    return p if p.is_absolute() else data_dir / p
