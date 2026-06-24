@@ -81,3 +81,55 @@ def test_supersede_scoped_to_resource_and_type(store: ArchivistStore) -> None:
     c = store.publish(_entry("alpha as a fact", resource="svc-a", etype="fact"), supersede=True)
     assert c.outcome == "new"
     assert store.get(a.entry_id).status == "active"
+
+
+# ---- #26: body-only updates reach supersede (full-content hash) ----------
+
+
+def test_supersede_on_body_only_change(store: ArchivistStore) -> None:
+    """Same summary, changed details must supersede the prior — not be dropped
+    as a duplicate (the L1 hash now covers the full content) (#26)."""
+    a = store.publish(
+        Entry(resource_name="r", summary="same headline", entry_type="decision", details="v1 body")
+    )
+    assert a.outcome == "new"
+    b = store.publish(
+        Entry(
+            resource_name="r",
+            summary="same headline",
+            entry_type="decision",
+            details="v2 body — materially changed",
+        ),
+        supersede=True,
+    )
+    assert b.outcome == "superseded"
+    assert store.get(a.entry_id).status == "superseded"
+    assert store.get(b.entry_id).status == "active"
+
+
+def test_truly_identical_entry_still_dedups(store: ArchivistStore) -> None:
+    """A genuinely identical re-publish (all content fields equal) is still a
+    no-op duplicate — the full-content hash didn't break dedup."""
+    base = dict(resource_name="r", summary="s", entry_type="fact", details="body", gotchas="g")
+    store.publish(Entry(**base))
+    dup = store.publish(Entry(**base), supersede=True)
+    assert dup.outcome in ("duplicate_l0", "duplicate_l1")
+
+
+# ---- #27: supersession retires ALL priors, atomically --------------------
+
+
+def test_supersede_retires_more_than_five_priors(store: ArchivistStore) -> None:
+    """Supersession retires EVERY active same-(resource,type) prior, not the
+    dedup LIMIT-5 sample (#27)."""
+    ids = [
+        store.publish(_entry(f"variant {i}", resource="r", etype="fact"), supersede=False).entry_id
+        for i in range(7)
+    ]
+    assert all(store.get(i).status == "active" for i in ids)  # all 7 active
+
+    final = store.publish(_entry("the final word", resource="r", etype="fact"), supersede=True)
+    assert final.outcome == "superseded"
+    assert len(final.related_ids) == 7  # all 7, not capped at 5
+    assert all(store.get(i).status == "superseded" for i in ids)
+    assert store.get(final.entry_id).status == "active"

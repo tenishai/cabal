@@ -63,10 +63,24 @@ class Entry:
     updated_at: str | None = None
 
     def compute_hash(self) -> str:
-        """Stable SHA-256 over the dedup-relevant fields."""
+        """Stable SHA-256 over the full *content* — every field a legitimate
+        update would change — so a re-distilled entry whose summary is unchanged
+        but whose body evolved is NOT mistaken for a duplicate, and can reach the
+        supersede path (#26). Excludes provenance/metadata (id, tags, importance,
+        written_by, timestamps): those aren't content. Control-char separators
+        avoid field-boundary collisions."""
         import hashlib
-        material = (
-            f"{self.resource_name}|{self.entry_type}|{self.summary}"
+
+        material = "\x01".join(
+            [
+                self.resource_name,
+                self.entry_type,
+                self.summary,
+                self.details or "",
+                self.gotchas or "",
+                "\x02".join(self.commands),
+                "\x02".join(self.refs),
+            ]
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
