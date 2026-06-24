@@ -32,11 +32,25 @@ def serve(fastapi_app: FastAPI):
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
-    # Wait until uvicorn says "ready"
-    for _ in range(50):
+    # Wait until the server is actually ACCEPTING connections — not just until
+    # uvicorn flips `server.started`. On a slow/contended CI runner the app's
+    # lifespan (alembic migrate + signing-key load + persona sync) can exceed a
+    # short fixed wait, and `started` can flip before the listen socket accepts;
+    # a too-short wait then yielded a port that refused the CLI's connection
+    # (the historical flake). Poll real reachability with a generous ceiling and
+    # fail loudly if it never comes up, so a genuine boot failure is diagnosable.
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
         if server.started:
-            break
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                    break
+            except OSError:
+                pass
         time.sleep(0.05)
+    else:
+        server.should_exit = True
+        raise RuntimeError(f"uvicorn did not become reachable on 127.0.0.1:{port} within 30s")
     try:
         yield port
     finally:
