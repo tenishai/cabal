@@ -1,0 +1,28 @@
+/* Cabal TUI — minimal layout styles */
+
+/* Full-screen app background */
+CabalTUI {
+    background: $background;
+}
+
+/* PrimusPane fills the entire app viewport and stacks children vertically */
+PrimusPane {
+    layout: vertical;
+    height: 1fr;
+    width: 1fr;
+}
+
+/* Transcript expands to fill all remaining space above the input */
+#transcript {
+    height: 1fr;
+    width: 1fr;
+    border: none;
+    scrollbar-gutter: stable;
+}
+
+/* Input bar is pinned to the bottom of PrimusPane */
+#msg-input {
+    height: auto;
+    dock: bottom;
+    border: tall $accent;
+}
