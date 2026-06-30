@@ -32,10 +32,13 @@ def shared_memory(tmp_path: Path) -> TechneMemoryStore:
     db = tmp_path / "shared.db"
     techne.init_db(db)
     store = TechneMemoryStore(db_path=db)
-    # Seed two distinct memories tagged for different personas
+    # Seed two distinct memories tagged for different personas.
+    # NB: personal-memory types only (fact/decision/evaluation/procedure) —
+    # `pattern` belongs in the Architect store (architect.db), not here
+    # (techne#137), and TechneMemoryStore.commit drops it with a warning.
     store.commit(
-        "Pattern: prefer composition over inheritance",
-        type="pattern",
+        "Prefer composition over inheritance",
+        type="decision",
         tags="architect",
         confidence="high",
     )
