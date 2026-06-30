@@ -6,6 +6,7 @@ from pathlib import Path
 from textwrap import dedent
 
 import pytest
+import structlog
 
 from cabal.config.identity import (
     IdentityConfig,
@@ -103,12 +104,19 @@ def test_full_config(tmp_path: Path) -> None:
     assert cfg.litellm.api_base == "http://litellm:4000"
 
 
-def test_unknown_section_warns(tmp_path: Path, capsys) -> None:
+def test_unknown_section_warns(tmp_path: Path) -> None:
     cfg_path = tmp_path / "identity.toml"
     cfg_path.write_text("[mystery]\nx = 1\n")
-    load_identity(cfg_path)
-    captured = capsys.readouterr()
-    assert "unknown_section" in captured.out or "mystery" in captured.out
+    # capture_logs records structlog events directly, independent of the global
+    # sink (stdout/stderr) — capsys was order-dependent because structlog binds
+    # its stream at configure-once time, which capsys can't intercept later.
+    with structlog.testing.capture_logs() as logs:
+        load_identity(cfg_path)
+    assert any(
+        entry.get("event") == "identity.unknown_section"
+        and entry.get("section") == "mystery"
+        for entry in logs
+    )
 
 
 def test_missing_file_raises(tmp_path: Path) -> None:

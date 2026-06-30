@@ -1,26 +1,26 @@
 """patterns — Architect's pattern-corpus read interface.
 
-Cabal-shipped limenal handler. Exposes the techne knowledge corpus
-filtered to `type="pattern"` as MCP tools any agent (the Architect
-persona, Claude Code via MCP, third-party clients) can call.
+Cabal-shipped limenal handler. Exposes the techne Architect pattern
+store (`architect.db`, techne#87/#137) as MCP tools any agent (the
+Architect persona, Claude Code via MCP, third-party clients) can call.
 
 Tools:
-  patterns.search(query, top_k?, half_life_days?)
-    Hybrid recall over the patterns corpus. Returns top_k entries
-    with content, source URL, confidence (decay-adjusted per
-    techne#13), surveyed date, and the relevance score.
-  patterns.record(name, source_url, what, why, where_to_apply, tags?)
-    Append a new pattern. Operator-only via scope check; the
-    pattern body is rendered using the same H1-then-prose shape
-    `techne import-patterns` produces, so external surveys and
-    record-via-MCP write identical schemas.
+  patterns.search(query, top_k?)
+    FTS recall over the active patterns in architect.db. Returns
+    top_k entries with name, body, source URL, confidence, and the
+    BM25 relevance score.
+  patterns.record(name, source_url, what, why, where_to_apply)
+    Append a new pattern to architect.db — an investigation row plus
+    a pattern row, idempotent by content hash. Operator-only via
+    scope check.
 
 Lazy-imports techne — handler module loads without techne installed;
 dispatch fails with a structured "techne not installed" message when
 the user calls a tool. Same shape as limenal/handlers/memory.py.
 
-Configured per-persona via `ctx.extra["patterns.db_path"]`. Defaults
-to `default_config.db_path` (operator-set) when no override arrives.
+Configured per-persona via `ctx.extra["patterns.db_path"]` (point it at
+architect.db). Falls back to `default_config.db_path` (operator-set)
+when no override arrives.
 """
 
 from __future__ import annotations
@@ -71,20 +71,13 @@ class PatternsConfig:
     """Operator config for the patterns handler.
 
     db_path: fallback when no per-persona ctx.extra["patterns.db_path"]
-        override arrives. Should point at the techne DB holding the
-        pattern corpus.
-    use_vectors: whether to enable vector recall alongside FTS5 (techne
-        applies RRF fusion automatically when both channels return).
+        override arrives. Should point at the Architect store
+        (`architect.db`) holding the pattern corpus.
     default_top_k: default search limit when caller doesn't specify.
-    default_half_life_days: decay half-life applied to confidence
-        scores in search results. 0 disables decay (patterns rarely go
-        stale; default 0).
     """
 
     db_path: Path | None = None
-    use_vectors: bool = True
     default_top_k: int = 10
-    default_half_life_days: float = 0.0
 
 
 @dataclass
@@ -105,14 +98,6 @@ class PatternsHandler:
                         "query": {"type": "string"},
                         "top_k": {
                             "type": "integer", "minimum": 1, "maximum": 50,
-                        },
-                        "half_life_days": {
-                            "type": "number",
-                            "description": (
-                                "Override the confidence-decay half-life. "
-                                "0 disables decay. Defaults to the handler's "
-                                "default_half_life_days."
-                            ),
                         },
                     },
                     "required": ["query"],
@@ -147,13 +132,6 @@ class PatternsHandler:
                             "type": "string",
                             "description": "Where it fits in our codebase.",
                         },
-                        "tags": {
-                            "type": "string",
-                            "description": (
-                                "Comma-separated tags; appended to "
-                                "surveyed:<today>."
-                            ),
-                        },
                     },
                     "required": ["name", "source_url", "what", "why", "where_to_apply"],
                 },
@@ -174,7 +152,8 @@ class PatternsHandler:
             )
 
         try:
-            import techne  # type: ignore[import-not-found]
+            import techne  # type: ignore[import-not-found]  # noqa: F401
+            from techne.core import patterns as tp  # type: ignore[import-not-found]
         except ImportError as exc:
             return ToolResult.failure(
                 f"techne not installed; patterns handler unavailable ({exc}). "
@@ -183,9 +162,9 @@ class PatternsHandler:
             )
 
         if name == "search":
-            return await self._search(techne, db_path, payload)
+            return await self._search(tp, db_path, payload)
         if name == "record":
-            return await self._record(techne, db_path, payload)
+            return await self._record(tp, db_path, payload)
         return ToolResult.failure(f"unknown tool {name!r}")
 
     # ---- config resolution ----------------------------------------------
@@ -203,7 +182,7 @@ class PatternsHandler:
 
     # ---- tools ----------------------------------------------------------
 
-    async def _search(self, techne: Any, db_path: Path, payload: dict[str, Any]) -> ToolResult:
+    async def _search(self, tp: Any, db_path: Path, payload: dict[str, Any]) -> ToolResult:
         query = payload.get("query")
         if not isinstance(query, str) or not query.strip():
             return ToolResult.failure("'query' must be a non-empty string")
@@ -211,66 +190,32 @@ class PatternsHandler:
         top_k = int(payload.get("top_k") or self.default_config.default_top_k)
         top_k = max(1, min(top_k, 50))
 
-        half_life = float(
-            payload.get("half_life_days", self.default_config.default_half_life_days)
-        )
-
         try:
+            # search_patterns is FTS over ACTIVE patterns only; no-lift entries
+            # live in the investigations table (verdict=skip*), so they never
+            # surface here — no client-side filtering needed.
             results = await anyio.to_thread.run_sync(
-                lambda: techne.search.search(
-                    db_path,
-                    query,
-                    table="knowledge",
-                    limit=top_k,
-                    use_vectors=self.default_config.use_vectors,
-                )
+                lambda: tp.search_patterns(db_path, query, limit=top_k)
             )
         except Exception as exc:  # noqa: BLE001
             return ToolResult.failure(f"patterns search failed: {exc}")
 
-        # Filter to type="pattern" only (knowledge.search returns the broader
-        # corpus) and attach effective_confidence per entry.
-        hits = []
-        for row in results:
-            if row.get("knowledge_type") != "pattern" and row.get("type") != "pattern":
-                # Some result rows expose `knowledge_type`, others `type`; both
-                # are checked. Pattern rows pass through; others (no-lift
-                # entries are also type="pattern" with a `surveyed-no-lift` tag)
-                # are filtered out unless they're patterns.
-                continue
-            tags = row.get("tags") or ""
-            # Skip no-lift entries — they're for dedup, not for recall.
-            if "surveyed-no-lift" in tags:
-                continue
-
-            entry_id = row.get("id")
-            effective = None
-            if entry_id is not None:
-                try:
-                    # default-arg trick binds the loop variable into the lambda
-                    effective = await anyio.to_thread.run_sync(
-                        lambda eid=entry_id: techne.knowledge.effective_confidence(
-                            db_path, eid, half_life_days=half_life,
-                        )
-                    )
-                except Exception:  # noqa: BLE001
-                    effective = None
-
-            hits.append({
-                "id": entry_id,
-                "content": row.get("content", ""),
-                "source_url": row.get("source"),
-                "tags": tags,
+        hits = [
+            {
+                "id": row.get("id"),
+                "name": row.get("name", ""),
+                "content": row.get("body", ""),
+                "source_url": row.get("source_url"),
                 "confidence": row.get("confidence"),
-                "effective_confidence": effective,
-                "score": row.get("rrf_score") or row.get("rank"),
-                "match_source": row.get("match_source"),
-            })
+                "score": row.get("rank"),
+            }
+            for row in results
+        ]
 
         return ToolResult.json({"query": query, "hits": hits[:top_k]})
 
     async def _record(
-        self, techne: Any, db_path: Path, payload: dict[str, Any]
+        self, tp: Any, db_path: Path, payload: dict[str, Any]
     ) -> ToolResult:
         required = ("name", "source_url", "what", "why", "where_to_apply")
         for field_name in required:
@@ -285,40 +230,44 @@ class PatternsHandler:
         body_what = payload["what"].strip()
         body_why = payload["why"].strip()
         body_where = payload["where_to_apply"].strip()
-        extra_tags = payload.get("tags") or ""
 
-        # Render body in the same H1-then-prose shape `techne import-patterns`
-        # writes, so corpus entries are interchangeable regardless of which
-        # ingest path created them.
+        # The Architect store keeps `name` as its own column; the body holds the
+        # what/why/where prose (same shape `architect ingest` parses out of a
+        # patterns-md section, minus the H2 heading which becomes `name`).
         from datetime import datetime
         today = datetime.now(UTC).strftime("%Y-%m-%d")
 
-        content = (
-            f"# {name}\n\n"
+        body = (
             f"{body_what}\n\n"
             f"**Why interesting**: {body_why}\n\n"
             f"**Where to apply**: {body_where}\n"
         )
-        tags = f"surveyed:{today}"
-        if extra_tags.strip():
-            tags = f"{extra_tags.strip()},{tags}"
+
+        def _ingest() -> tuple[str, bool]:
+            inv_id = tp.upsert_investigation(
+                db_path, url=source_url, surveyed_at=today, verdict="full-eval"
+            )
+            return tp.add_pattern(
+                db_path,
+                investigation_id=inv_id,
+                name=name,
+                source_url=source_url,
+                body=body,
+                confidence="medium",
+            )
 
         try:
-            entry_id = await anyio.to_thread.run_sync(
-                lambda: techne.knowledge.store(
-                    db_path,
-                    content=content,
-                    type="pattern",
-                    tags=tags,
-                    confidence="medium",
-                    source=source_url,
-                )
-            )
+            pattern_id, stored = await anyio.to_thread.run_sync(_ingest)
         except Exception as exc:  # noqa: BLE001
             return ToolResult.failure(f"patterns record failed: {exc}")
 
         return ToolResult.json(
-            {"entry_id": entry_id, "name": name, "source_url": source_url}
+            {
+                "pattern_id": pattern_id,
+                "stored": stored,
+                "name": name,
+                "source_url": source_url,
+            }
         )
 
 
