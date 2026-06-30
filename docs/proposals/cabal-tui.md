@@ -60,6 +60,8 @@ All five are covered in the sibling proposal; this proposal assumes they land.
 
 **Default**: `cabal` (or `cbl` — they're aliases) opens the TUI against the local daemon. If the daemon isn't running, `cabal` starts it as a subprocess. If it's already running, `cabal` connects.
 
+> **Note**: The `cabal` entry point does **not** exist yet. `pyproject.toml` currently defines only `cbl = "cabal.cli.main:app"`. PR-T1 adds `cabal = "cabal.tui.main:app"` to `[project.scripts]`.
+
 | Command | What it does |
 |---|---|
 | `cabal` / `cbl` | Open TUI against local daemon (starts daemon if not running) |
@@ -87,11 +89,20 @@ The TUI is one client of the Operator Channel. It maintains a **layout** of pane
 
 | Pane type | Subscribes to | Content |
 |---|---|---|
-| **Primus pane** | One `persona` (e.g. `rook-primus`) | Streamed `TaskStatusUpdateEvent`s rendered as conversational turns + tool calls + thoughts; input line at the bottom forwards to `send_message` |
+| **Primus pane** | One `persona` (e.g. `rook-primus`) | Streamed raw text deltas (`event: chunk`) rendered incrementally; a final `event: status-update` delivers the completed Task. No structured tool/thought events exist yet. Input line at the bottom forwards to `send_message` |
 | **Meta pane** | Meta-channel | Cross-Primus chatter; operator interjects via `send_meta` |
-| **Mailbox pane** | One mailbox (operator's or a Primus's) | List of items with unread badges, sender persona, summary; opening an item shows full content + lets operator route ("acknowledge to Rook-Primus") |
+| **Mailbox pane** | One mailbox (operator's or a Primus's) | List of items with unread badges, sender persona, summary; opening an item shows full content + lets operator route ("acknowledge to Rook-Primus"). See **"Mailbox: two systems"** note below. |
 | **Roster pane** | `personas_changed` events | Live list of all known personas with status (active / idle / retired); double-click opens a Primus pane for that persona |
 | **Status bar** | Aggregate | Connection state, token usage today, active sub-agent count, mailbox unread count |
+
+### Mailbox: two systems
+
+The word "mailbox" is overloaded in this codebase — these are two distinct things:
+
+- **(a) Archivist mailbox** — the planned tag-sliced inbox where sub-agents deposit findings for the operator (`deposit_finding` / `mailbox_list` / `mark_read` / `mark_acted`). Specified in investigation-engine.md PR-E; **not yet built**. The Archivist `EntryType` today is fact/decision/operation/error/procedure/document — no mailbox kind exists.
+- **(b) rookery mailbox** — the live standalone inter-agent MCP messaging server (`rookery-mcp` on dev02; `rookery_send` / `rookery_inbox`). Ships now and is independent of the Archivist.
+
+The TUI's **Mailbox pane** means **(a)** — the Archivist mailbox. It has nothing to render until PR-E lands.
 
 ### Default layout
 
@@ -146,9 +157,9 @@ Textual is Python-native, MIT-licensed, async-first, and ships with the primitiv
 ### Project layout
 
 ```
-cabal/tui/
+src/cabal/tui/
   __init__.py
-  app.py              # The Textual App (entry: `cabal`)
+  app.py              # The Textual App (entry: `cabal`, added in PR-T1)
   client/
     base.py           # BrokerClient Protocol
     inprocess.py      # InProcessBrokerClient — direct calls on EventBus + LLMPersona.astream_task
@@ -156,12 +167,11 @@ cabal/tui/
   panes/
     primus.py         # PrimusPane widget — subscribes to one persona's astream_task
     meta.py           # MetaPane widget — subscribes to EventBus 'meta' channel
-    mailbox.py        # MailboxPane widget — queries Archivist mailbox MCP tools
+    mailbox.py        # MailboxPane widget — queries Archivist mailbox MCP tools (DEFERRED: PR-E)
     roster.py         # RosterPane widget — reads /admin/agents + reacts to bulletin updates
   layout.py           # Layout persistence + Ctrl-L editor (~/.cbl/tui/layouts/)
   rendering/
-    cabal_event.py    # Render cabal_event metadata (tool_start, tool_end, thought)
-    markdown.py       # Streaming-Markdown wrapper (Textual v4)
+    markdown.py       # Streaming-Markdown wrapper (Textual v4) — renders event: chunk deltas
   styles.css          # Textual CSS
 ```
 
@@ -174,8 +184,8 @@ cabal/tui/
 
 ### Auth and connection
 
-- **In-process mode** (default `cabal`): the TUI runs in the daemon's process; no auth handshake — direct Python access to `EventBus` and persona handlers.
-- **Remote mode** (`cabal connect <url>`): standard `cbl login --code <CODE>` flow (already exists). JWT stored at `~/.cbl/tui/credentials.json`; refreshed on expiry. The `RemoteBrokerClient` carries it on every HTTP/SSE call.
+- **In-process mode** (default `cabal`): the TUI runs in the daemon's process, but auth is NOT skipped. `DispatchRouter._prepare` verifies a JWT on every dispatch, including local handlers. The `InProcessBrokerClient` must load the operator token from `~/.cabal/token` and mint a per-target dispatch JWT — the same flow as `_resolve_dispatch_token` in `src/cabal/core/routes/a2a_jsonrpc.py`.
+- **Remote mode** (`cabal connect <url>`): standard `cbl login --code <CODE>` flow (already exists). JWT stored at `~/.cabal/token`; refreshed on expiry. The `RemoteBrokerClient` carries it on every HTTP/SSE call.
 
 ### Performance
 
@@ -189,15 +199,15 @@ cabal/tui/
 
 Three PRs. Dependencies on investigation-engine.md noted.
 
-### PR-T1 — Textual TUI MVP (`cabal/tui/` skeleton + InProcessBrokerClient)
+### PR-T1 — Textual TUI MVP (`src/cabal/tui/` skeleton + InProcessBrokerClient) — Primus pane only
 
-- `cabal/tui/` package skeleton (`app.py`, `panes/{primus,mailbox}.py`, `client/inprocess.py`, basic CSS)
-- `cabal` CLI entry — opens the TUI against the local daemon; spawns daemon if not running
-- Two-pane default layout: one Primus pane (default subscription: `rook-primus`), one Mailbox pane (default: operator's mailbox)
+- `src/cabal/tui/` package skeleton (`app.py`, `panes/primus.py`, `client/inprocess.py`, basic CSS)
+- Adds `cabal = "cabal.tui.main:app"` to `pyproject.toml [project.scripts]` (currently only `cbl = "cabal.cli.main:app"` exists); spawns daemon if not running
+- **Single Primus-pane default layout** (default subscription: `rook-primus`) — Mailbox pane is deferred (see below)
 - Ctrl-Tab focus rotation; type → `send_message` to the focused pane's persona
-- v4 Markdown streaming for LLM output
-- Reuses existing `EventBus` (in-process) + `astream_task` (per-persona) + JWT auth
-- **Dependency**: investigation-engine.md PR-E (mailbox kind on Archivist) — otherwise the Mailbox pane has nothing to render
+- v4 Markdown streaming for LLM output: renders raw `event: chunk` text deltas incrementally; handles final `event: status-update` completed Task
+- Reuses existing `EventBus` (in-process) + `astream_task` (per-persona); loads operator token from `~/.cabal/token` and mints per-target dispatch JWT for every call
+- **Mailbox pane DEFERRED** — blocked on investigation-engine.md PR-E (Archivist mailbox-kind). Zero lines implemented today: the Archivist `EntryType` is fact/decision/operation/error/procedure/document with no mailbox kind; `deposit_finding`, `mailbox_list`, `mark_read`, and `mark_acted` do not exist yet.
 - Tests: snapshot tests on layout rendering; unit tests on `InProcessBrokerClient`; one end-to-end test with a scripted fake persona
 
 ### PR-T2 — Multi-instance Primus panes + Meta pane
@@ -258,7 +268,7 @@ Today `cbl daemon up` + `cbl login --code <CODE>` is the bootstrap sequence. For
 - Keep the explicit two-step (operator runs `cabal serve` then `cabal`)
 - Auto-bootstrap from the TUI (`cabal` launches, spawns daemon, mints token, opens panes)
 
-**Recommendation: auto-bootstrap when `cabal` is run with no daemon detected.** Check for a pidfile at `~/.cbl/cabald.pid`; if absent or stale, spawn the daemon, intercept the bootstrap code from its logs, mint a token, store it at `~/.cbl/tui/credentials.json`, then open the UI. Explicit `cabal serve` stays available for the server-mode case.
+**Recommendation: auto-bootstrap when `cabal` is run with no daemon detected.** Check for a pidfile at `~/.cbl/cabald.pid`; if absent or stale, spawn the daemon, intercept the bootstrap code from its logs, mint a token, store it at `~/.cabal/token` (the real `TokenStore` path — see `src/cabal/cli/client.py`), then open the UI. Explicit `cabal serve` stays available for the server-mode case.
 
 ### Settled (no longer open)
 
@@ -272,6 +282,11 @@ Today `cbl daemon up` + `cbl login --code <CODE>` is the bootstrap sequence. For
 ## 9. Things deliberately NOT in scope
 
 - **Forking Crush, sst/opencode, gptme, or any other existing client.** None match the multi-Primus + mailbox + meta-pane shape; adapting them would be more work than starting fresh in Textual. See the 2026-06-14 terminal-AI-client survey for the full evaluation.
+
+  **Note — the 2026-06-14 survey missed the IRC-client lineage**, which is arguably the more apt prior art for this proposal. WeeChat's **relay plugin** is a decade-old production implementation of exactly the "broker is the API; the TUI is one client" split described in §7: WeeChat runs headless and exposes a documented WebSocket/TCP relay protocol; multiple thin clients — Glowing Bear (web), weechat-android, various iOS apps — attach and detach without disrupting the running sessions. This directly validates the §7 multi-client roadmap. Three concrete patterns from that lineage are now recorded in the architect.db pattern store:
+  1. **Per-client (resource × category) sync-subscription bitmask** — a sharper spec for how the EventBus "named channels (PR-F)" work should handle per-client filtering of event categories.
+  2. **Hotlist priority tiers as an ordered attention queue** (highlight > message > private > low) — the model for the roster/unread-badge design: not a simple count but a priority-ordered queue that drives focus.
+  3. **Named observe-vs-intercept hook tiers** (MODIFIER hooks mutate data in-flight; SIGNAL hooks observe without side-effects) — directly relevant to limenal's interception pipeline design.
 - **cmux as the window manager.** Could sit *under* the TUI (GPU-accelerated pane rendering on macOS), but not load-bearing. Operator can use any terminal they want.
 - **A web UI in V1.** openwebui-style web UI is a future addition once the TUI shape is validated.
 - **Multi-operator scenarios.** Single-user platform. Per-operator JWT auth (already shipping via `cbl login`) is enough.

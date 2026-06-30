@@ -40,6 +40,7 @@ dependencies = [
 # cabal still runs — personas without an [mcp] block work fine; personas
 # with one fail at first dispatch with a clear "install cabal[mcp]" error.
 mcp = ["limenal>=0.1"]
+tui = ["textual>=1.0"]
 
 # `memory` pulls in techne for the Archivist persona + any persona that
 # binds a TechneMemoryStore. Same shape — cabal runs without it; personas
@@ -60,6 +61,7 @@ dev = [
 
 [project.scripts]
 cbl = "cabal.cli.main:app"
+cabal = "cabal.tui.main:app"
 
 # Cabal-shipped MCP handlers — limenal discovers them via this entry-point
 # group when limenal is installed alongside cabal. Each handler exposes a
