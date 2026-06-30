@@ -20,47 +20,54 @@ from limenal.protocol import Context  # noqa: E402
 from cabal.handlers.patterns import PatternsHandler  # noqa: E402
 
 
+SKIP_URL = "https://github.com/skip/this"
+
+
 @pytest.fixture
 def patterns_db(tmp_path: Path) -> Path:
-    """A fresh techne DB seeded with three patterns + one no-lift entry."""
-    from techne.core.database import init_db
-    from techne.core.knowledge import store
+    """A fresh architect.db seeded with three patterns + one no-lift investigation."""
+    from techne.core.architect import ARCHITECT_SCHEMA
+    from techne.core.patterns import add_pattern, upsert_investigation
+    from techne.core.stores import SqliteStore
 
-    db_path = tmp_path / "patterns.db"
-    init_db(db_path).close()
+    db_path = tmp_path / "architect.db"
+    SqliteStore("architect", db_path).migrate(ARCHITECT_SCHEMA)
 
-    store(
-        db_path,
-        content="# Capability probing with fallback dispatch\n\nProbe at startup; cache the verdict.",
-        type="pattern",
-        tags="surveyed:2026-06-09,domain:agent-memory",
-        confidence="high",
-        source="https://github.com/RohiRIK/OpenLtm",
+    def _add(url: str, name: str, body: str, confidence: str) -> None:
+        inv = upsert_investigation(
+            db_path, url=url, surveyed_at="2026-06-09", verdict="full-eval"
+        )
+        add_pattern(
+            db_path,
+            investigation_id=inv,
+            name=name,
+            source_url=url,
+            body=body,
+            confidence=confidence,
+        )
+
+    _add(
+        "https://github.com/RohiRIK/OpenLtm",
+        "Capability probing with fallback dispatch",
+        "Probe at startup; cache the verdict.",
+        "high",
     )
-    store(
-        db_path,
-        content="# Hybrid rank fusion via RRF\n\nFuse BM25 and vector channels with reciprocal rank.",
-        type="pattern",
-        tags="surveyed:2026-06-12,domain:agent-memory",
-        confidence="high",
-        source="https://github.com/rohitg00/agentmemory",
+    _add(
+        "https://github.com/rohitg00/agentmemory",
+        "Hybrid rank fusion via RRF",
+        "Fuse BM25 and vector channels with reciprocal rank.",
+        "high",
     )
-    store(
-        db_path,
-        content="# Bi-temporal knowledge model\n\nSeparate event_at from created_at.",
-        type="pattern",
-        tags="surveyed:2026-06-10,domain:agent-memory",
-        confidence="medium",
-        source="https://github.com/getzep/graphiti",
+    _add(
+        "https://github.com/getzep/graphiti",
+        "Bi-temporal knowledge model",
+        "Separate event_at from created_at.",
+        "medium",
     )
-    # A no-lift entry — must be filtered out of search results.
-    store(
-        db_path,
-        content="not worth lifting",
-        type="pattern",
-        tags="surveyed-no-lift,surveyed:2026-06-12",
-        confidence="low",
-        source="https://github.com/skip/this",
+    # A no-lift entry — a skip-with-flag investigation with NO pattern row, so it
+    # must never surface in search_patterns (which only reads active patterns).
+    upsert_investigation(
+        db_path, url=SKIP_URL, surveyed_at="2026-06-12", verdict="skip-with-flag"
     )
     return db_path
 
@@ -85,20 +92,20 @@ async def test_search_returns_pattern_entries(patterns_db: Path) -> None:
     payload = result.content[0]["data"]
     hits = payload["hits"]
     assert len(hits) >= 1
-    # The RRF pattern entry should match
-    found = any("Hybrid rank fusion" in h["content"] for h in hits)
+    # The RRF pattern entry should match (title lives in `name`).
+    found = any("Hybrid rank fusion" in h["name"] for h in hits)
     assert found
 
 
 @pytest.mark.asyncio
 async def test_search_filters_out_no_lift_entries(patterns_db: Path) -> None:
-    """No-lift entries are dedup signals, NOT recall targets."""
+    """No-lift entries are skip-with-flag investigations with no pattern row,
+    so they are never recall targets."""
     handler = PatternsHandler()
     result = await handler.dispatch("search", {"query": "lifting"}, _ctx(patterns_db))
     assert result.is_error is False
     hits = result.content[0]["data"]["hits"]
-    for h in hits:
-        assert "surveyed-no-lift" not in (h.get("tags") or "")
+    assert all(h.get("source_url") != SKIP_URL for h in hits)
 
 
 @pytest.mark.asyncio
@@ -114,19 +121,18 @@ async def test_search_respects_top_k(patterns_db: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_search_attaches_effective_confidence(patterns_db: Path) -> None:
-    """Each hit should include effective_confidence (decay-adjusted)."""
+async def test_search_attaches_confidence_and_score(patterns_db: Path) -> None:
+    """Each hit carries the stored confidence label and a BM25 relevance score."""
     handler = PatternsHandler()
     result = await handler.dispatch(
         "search", {"query": "rank fusion"}, _ctx(patterns_db)
     )
     assert result.is_error is False
     hits = result.content[0]["data"]["hits"]
+    assert len(hits) >= 1
     for h in hits:
-        # half_life defaults to 0 (decay disabled) — effective should equal base.
-        # 'high' confidence → 0.9
-        if h.get("confidence") == "high":
-            assert h["effective_confidence"] == pytest.approx(0.9)
+        assert h["confidence"] in {"high", "medium", "low"}
+        assert "score" in h
 
 
 @pytest.mark.asyncio
@@ -167,15 +173,16 @@ async def test_record_writes_to_corpus(patterns_db: Path) -> None:
     payload = result.content[0]["data"]
     assert payload["name"] == "Some new pattern"
     assert payload["source_url"] == "https://github.com/example/repo"
-    assert isinstance(payload["entry_id"], int)
+    assert isinstance(payload["pattern_id"], str)
+    assert payload["stored"] is True
 
-    # Round-trip — search should now find it
+    # Round-trip — search should now find it (FTS matches the body prose).
     found = await handler.dispatch(
         "search", {"query": "interesting way"}, _ctx(patterns_db)
     )
     found_payload = found.content[0]["data"]
     assert any(
-        "Some new pattern" in h["content"] for h in found_payload["hits"]
+        "Some new pattern" in h["name"] for h in found_payload["hits"]
     )
 
 
