@@ -19,7 +19,6 @@ from limenal.protocol import Context  # noqa: E402
 
 from cabal.handlers.patterns import PatternsHandler  # noqa: E402
 
-
 SKIP_URL = "https://github.com/skip/this"
 
 
