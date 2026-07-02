@@ -395,6 +395,17 @@ class DispatchRouter:
         primary path so /admin/conversations/{id} reflects the resumed
         outcome.
         """
+        # Symmetric federated guard — a sovereign peer has no local resume
+        # surface; reject before touching any handler. Mirrors the federated
+        # guard in dispatch_streaming (cabal#45).
+        async with open_session(self._sessionmaker) as session:
+            _row = await bulletin_store.get_active(session, target_agent)
+        if _row is not None and _row.kind == "federated":
+            raise DispatchError(
+                f"agent {target_agent!r} is federated; resume is not supported "
+                "for sovereign peers — only local personas can be resumed"
+            )
+
         if target_agent not in self._local:
             raise DispatchError(
                 f"agent {target_agent!r} has no in-process handler "

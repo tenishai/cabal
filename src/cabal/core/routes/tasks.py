@@ -61,9 +61,16 @@ async def _resolve_dispatch_token(
     # Determine the audience the dispatch token must carry. For a `federated`
     # target the token is forwarded to the sovereign peer, so its `aud` is the
     # sovereign service id — not the bare agent name (cabal#45).
+    #
+    # Combined session: bulletin lookup and signing-key fetch happen in one
+    # open_session block so the operator re-mint path does not open a second
+    # connection (the signing key is a cheap read and reused below when needed).
     sessionmaker = request.app.state.sessionmaker
+    master_key = request.app.state.master_key
     async with open_session(sessionmaker) as session:
         row = await bulletin_store.get_active(session, target)
+        stored = await load_active_signing_key(session, master_key=master_key)
+
     if row is not None and row.kind == "federated":
         if not row.federation_audience:
             raise HTTPException(
@@ -85,9 +92,6 @@ async def _resolve_dispatch_token(
         )
 
     # Operator → re-mint as a per-target token aimed at `audience`.
-    master_key = request.app.state.master_key
-    async with open_session(sessionmaker) as session:
-        stored = await load_active_signing_key(session, master_key=master_key)
     if stored is None:
         raise HTTPException(status_code=500, detail="no active signing key")
     return mint(
