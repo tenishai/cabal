@@ -17,5 +17,15 @@ model_list:
       model: anthropic/claude-haiku-4-5
       api_key: os.environ/ANTHROPIC_API_KEY
 
+  # Local self-hosted model (Qwen3.5-family 9B, Q4_K_M, 256K ctx, tools+thinking)
+  # running under Ollama on the LAN Mac, via its OpenAI-compatible endpoint. A
+  # non-Anthropic backend — candidate brain for a hosted/sovereign persona.
+  # Ollama ignores the api_key, but the openai provider requires one to be set.
+  - model_name: ornith
+    litellm_params:
+      model: openai/ornith:9b
+      api_base: http://192.168.10.118:11434/v1
+      api_key: "ollama-local"
+
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
