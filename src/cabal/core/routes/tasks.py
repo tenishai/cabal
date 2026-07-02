@@ -64,11 +64,15 @@ async def _resolve_dispatch_token(
     sessionmaker = request.app.state.sessionmaker
     async with open_session(sessionmaker) as session:
         row = await bulletin_store.get_active(session, target)
-    audience = (
-        row.federation_audience
-        if row is not None and row.kind == "federated" and row.federation_audience
-        else target
-    )
+    if row is not None and row.kind == "federated":
+        if not row.federation_audience:
+            raise HTTPException(
+                status_code=500,
+                detail=f"federated target {target!r} has no federation_audience",
+            )
+        audience = row.federation_audience
+    else:
+        audience = target
 
     if claims.get("aud") == audience:
         return raw_token

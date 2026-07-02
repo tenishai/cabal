@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
-from cabal.core.auth.jwt import mint
+from cabal.core.auth.jwt import mint, verify
 from cabal.core.auth.keys import create_signing_key
 from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.broker.router import DispatchError, DispatchRouter
@@ -42,11 +42,15 @@ async def sessionmaker() -> async_sessionmaker[AsyncSession]:
     return make_sessionmaker(engine)
 
 
+@pytest.fixture
+def master_key() -> bytes:
+    return Fernet.generate_key()
+
+
 @pytest_asyncio.fixture
-async def signing_key(sessionmaker):
-    master = Fernet.generate_key()
+async def signing_key(sessionmaker, master_key):
     async with sessionmaker() as s:
-        stored = await create_signing_key(s, master_key=master)
+        stored = await create_signing_key(s, master_key=master_key)
         await s.commit()
     return stored
 
@@ -715,3 +719,68 @@ async def test_federated_requires_sovereign_audience(
             task=_sample_task(),
             caller_jwt=bad,
         )
+
+
+@dataclass(slots=True)
+class FakeStreamingArchivist:
+    """Streaming-capable local handler — proves the federated guard fires even
+    when a local astream_task exists (i.e. it would otherwise stream locally)."""
+
+    name: str = "archivist"
+    streamed: bool = False
+
+    async def handle_task(self, task: Task) -> Task:
+        return Task(id=task.id, status=TaskStatus(state="completed"))
+
+    async def astream_task(self, task: Task):
+        self.streamed = True
+        yield "local-chunk"
+
+
+@pytest.mark.asyncio
+async def test_federated_streaming_refused(
+    sessionmaker, signing_key, jwks_provider, federated_archivist_row
+) -> None:
+    """A federated target must not be served by the LOCAL streaming path either
+    — the guard refuses before touching the handler (Prudence #46/Issue 1)."""
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+    )
+    handler = FakeStreamingArchivist()
+    router.register_local(handler)  # streaming-capable local handler present
+    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist@rd")
+    with pytest.raises(DispatchError, match="federated"):
+        async for _ in router.dispatch_streaming(
+            target_agent="archivist",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=token,
+        ):
+            pass
+    assert handler.streamed is False  # never streamed locally
+
+
+@pytest.mark.asyncio
+async def test_federated_token_mint_uses_sovereign_audience(
+    sessionmaker, signing_key, master_key, jwks_provider, federated_archivist_row
+) -> None:
+    """_resolve_dispatch_token re-mints an operator token to the sovereign
+    service id (federation_audience) for a federated target, not the bare name
+    (Prudence #46/Issue 2)."""
+    from types import SimpleNamespace
+
+    from cabal.core.routes.tasks import _resolve_dispatch_token
+
+    state = SimpleNamespace(
+        jwks_provider=jwks_provider, sessionmaker=sessionmaker, master_key=master_key
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+    operator_token = mint(
+        signing_key=signing_key, sub="operator", aud="cabal-core", scope=["operator"]
+    )
+    minted = await _resolve_dispatch_token(request, operator_token, "archivist")
+    claims = verify(minted, key_set=jwks_provider(), expected_audience=None)
+    assert claims["aud"] == "archivist@rd"  # sovereign id, NOT "archivist"
+    assert claims["cabal_scope"] == ["dispatch"]

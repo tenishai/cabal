@@ -233,8 +233,14 @@ class DispatchRouter:
 
         try:
             # A `federated` target is a sovereign peer — always route remote,
-            # even if a stale local handler is somehow registered for the name
-            # (defense in depth; the persona factory also skips registering it).
+            # even if a local handler is registered for the name (the persona
+            # factory registers one for every identity.toml persona; the future
+            # `cbl persona graduate` will unregister it, but this guard is the
+            # enforcement regardless). NOTE: the guard keys on the *resolved*
+            # row's kind, and `target_generation` is caller-controllable — so the
+            # mint site (routes/tasks._resolve_dispatch_token) and _prepare must
+            # resolve the SAME row for their audience/kind to agree. Both use
+            # get_active today; keep it that way if you change audience resolution.
             if ctx.target.name in self._local and ctx.target.kind != "federated":
                 response = await self._dispatch_local(self._local[ctx.target.name], task)
             else:
@@ -297,6 +303,16 @@ class DispatchRouter:
         handler or its handler doesn't implement astream_task.
         """
         ctx = await self._prepare(target_agent, target_generation, caller_jwt)
+
+        # Symmetric with dispatch()'s guard: a federated target is a sovereign
+        # peer and must never be served locally — even via streaming, even if a
+        # stale local handler is registered for the name. The sovereign peer has
+        # no streaming surface here, so this is a hard refusal, not a fallthrough.
+        if ctx.target.kind == "federated":
+            raise DispatchError(
+                f"agent {target_agent!r} is federated; streaming to a sovereign "
+                "peer is not supported — dispatch via /a2a/tasks instead"
+            )
 
         if target_agent not in self._local:
             raise DispatchError(
@@ -418,12 +434,17 @@ class DispatchRouter:
         # Invariant 2: caller-JWT verification, even for in-process. For a
         # federated target the same token is forwarded to the sovereign peer, so
         # it must carry (and we verify against) the sovereign service id, not the
-        # bare agent name.
-        expected_aud = (
-            row.federation_audience
-            if row.kind == "federated" and row.federation_audience
-            else target_agent
-        )
+        # bare agent name. A federated row without an audience is a
+        # misconfiguration — fail loudly rather than silently accept a bare-name
+        # aud we'd then forward to a peer that rejects it.
+        if row.kind == "federated":
+            if not row.federation_audience:
+                raise ConfigurationError(
+                    f"federated agent {target_agent!r} has no federation_audience"
+                )
+            expected_aud = row.federation_audience
+        else:
+            expected_aud = target_agent
         try:
             payload = verify(
                 caller_jwt,
