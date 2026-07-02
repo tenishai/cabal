@@ -7,6 +7,7 @@ properties in both modes" claim is tested, not assumed.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 
@@ -618,3 +619,99 @@ async def test_remote_dispatch_propagates_transport_error(
     async with sessionmaker() as s:
         events = (await s.execute(select(Event).order_by(Event.id))).scalars().all()
         assert [e.event_type for e in events] == ["dispatch_start", "dispatch_failure"]
+
+
+# ---- cabal#45: federated (sovereign-peer) dispatch ---------------------
+
+
+@pytest_asyncio.fixture
+async def federated_archivist_row(sessionmaker):
+    async with sessionmaker() as s:
+        s.add(Persona(name="archivist", config_json={}))
+        await s.flush()
+        row = await bulletin_store.register_federated(
+            s,
+            name="archivist",
+            persona_name="archivist",
+            endpoint="https://archivist.rd.ts.net",
+            federation_audience="archivist@rd",
+            agent_card_json={"name": "archivist"},
+            agent_card_kid="kid-fed",
+        )
+        await s.commit()
+    return row
+
+
+@pytest.mark.asyncio
+async def test_register_federated_sets_kind(sessionmaker, federated_archivist_row) -> None:
+    async with sessionmaker() as s:
+        row = await bulletin_store.get_active(s, "archivist")
+    assert row.kind == "federated"
+    assert row.federation_audience == "archivist@rd"
+    assert row.endpoint == "https://archivist.rd.ts.net"
+
+
+@pytest.mark.asyncio
+async def test_federated_routes_remote_even_with_local_handler(
+    sessionmaker, signing_key, jwks_provider, federated_archivist_row
+) -> None:
+    """A federated target routes to the sovereign peer over HTTP even when a
+    local handler is registered for the same name (the dispatch-time guard)."""
+    captured: dict = {}
+
+    def _remote_ok(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        done = Task(
+            id=body["id"],
+            status=TaskStatus(
+                state="completed",
+                message=Message(role="agent", parts=[TextPart(text="remote-done")]),
+            ),
+        )
+        return httpx.Response(200, json=done.model_dump(by_alias=True, exclude_none=True))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_remote_ok)) as client:
+        router = DispatchRouter(
+            sessionmaker=sessionmaker,
+            bookkeeper=Bookkeeper(sessionmaker),
+            jwks_provider=jwks_provider,
+            http_client=client,
+        )
+        local = FakeArchivist()
+        router.register_local(local)  # same name — guard must still go remote
+        token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist@rd")
+        resp = await router.dispatch(
+            target_agent="archivist",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=token,
+        )
+
+    assert resp.status.state == "completed"
+    assert "remote-done" in resp.status.message.parts[0].text
+    assert captured["url"].startswith("https://archivist.rd.ts.net")  # went remote
+    assert captured["auth"] == "Bearer " + token  # home JWT forwarded
+    assert len(local.captured) == 0  # local handler NOT used
+
+
+@pytest.mark.asyncio
+async def test_federated_requires_sovereign_audience(
+    sessionmaker, signing_key, jwks_provider, federated_archivist_row
+) -> None:
+    """For a federated target, a token aimed at the bare agent name is rejected
+    — it must carry the sovereign service id (the aud forwarded to the peer)."""
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+    )
+    bad = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+    with pytest.raises(DispatchError, match="caller JWT"):
+        await router.dispatch(
+            target_agent="archivist",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=bad,
+        )

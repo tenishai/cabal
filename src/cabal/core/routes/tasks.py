@@ -24,6 +24,7 @@ from cabal.core.a2a.types import Task
 from cabal.core.auth.jwt import JWTError, extract_bearer, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.broker.router import AgentNotFoundError, CallerJWTError, DispatchError
+from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 
 router = APIRouter(prefix="/a2a", tags=["a2a"])
@@ -57,7 +58,19 @@ async def _resolve_dispatch_token(
     except JWTError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    if claims.get("aud") == target:
+    # Determine the audience the dispatch token must carry. For a `federated`
+    # target the token is forwarded to the sovereign peer, so its `aud` is the
+    # sovereign service id — not the bare agent name (cabal#45).
+    sessionmaker = request.app.state.sessionmaker
+    async with open_session(sessionmaker) as session:
+        row = await bulletin_store.get_active(session, target)
+    audience = (
+        row.federation_audience
+        if row is not None and row.kind == "federated" and row.federation_audience
+        else target
+    )
+
+    if claims.get("aud") == audience:
         return raw_token
 
     scope = claims.get("cabal_scope") or []
@@ -67,8 +80,7 @@ async def _resolve_dispatch_token(
             detail=f"token aud={claims.get('aud')!r} cannot dispatch to {target!r}",
         )
 
-    # Operator → re-mint as a per-target token.
-    sessionmaker = request.app.state.sessionmaker
+    # Operator → re-mint as a per-target token aimed at `audience`.
     master_key = request.app.state.master_key
     async with open_session(sessionmaker) as session:
         stored = await load_active_signing_key(session, master_key=master_key)
@@ -77,7 +89,7 @@ async def _resolve_dispatch_token(
     return mint(
         signing_key=stored,
         sub=claims.get("sub", "operator"),
-        aud=target,
+        aud=audience,
         persona=claims.get("cabal_persona"),
         scope=["dispatch"],
     )

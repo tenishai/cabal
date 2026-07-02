@@ -232,7 +232,10 @@ class DispatchRouter:
             )
 
         try:
-            if ctx.target.name in self._local:
+            # A `federated` target is a sovereign peer — always route remote,
+            # even if a stale local handler is somehow registered for the name
+            # (defense in depth; the persona factory also skips registering it).
+            if ctx.target.name in self._local and ctx.target.kind != "federated":
                 response = await self._dispatch_local(self._local[ctx.target.name], task)
             else:
                 response = await self._dispatch_remote(ctx.target, task, caller_jwt)
@@ -412,12 +415,20 @@ class DispatchRouter:
                 + (f" generation={target_generation}" if target_generation is not None else "")
             )
 
-        # Invariant 2: caller-JWT verification, even for in-process.
+        # Invariant 2: caller-JWT verification, even for in-process. For a
+        # federated target the same token is forwarded to the sovereign peer, so
+        # it must carry (and we verify against) the sovereign service id, not the
+        # bare agent name.
+        expected_aud = (
+            row.federation_audience
+            if row.kind == "federated" and row.federation_audience
+            else target_agent
+        )
         try:
             payload = verify(
                 caller_jwt,
                 key_set=self._jwks_provider(),
-                expected_audience=target_agent,
+                expected_audience=expected_aud,
             )
         except JWTError as exc:
             raise CallerJWTError(f"caller JWT rejected: {exc}") from exc
