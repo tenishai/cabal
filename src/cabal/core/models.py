@@ -71,6 +71,11 @@ class Agent(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'active'"))
     drain_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Federation (cabal#45): "member" = an agent this cabal owns (local or its
+    # own container); "federated" = a sovereign peer this cabal is a client of.
+    # federation_audience is the sovereign service id callers mint into `aud`.
+    kind: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'member'"))
+    federation_audience: Mapped[str | None] = mapped_column(String)
 
     persona: Mapped[Persona] = relationship(back_populates="agents")
 

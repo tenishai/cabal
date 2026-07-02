@@ -35,6 +35,8 @@ class AgentRow:
     status: str
     drain_started_at: datetime | None
     last_heartbeat: datetime | None
+    kind: str = "member"
+    federation_audience: str | None = None
 
     @classmethod
     def from_orm(cls, row: Agent) -> AgentRow:
@@ -51,6 +53,8 @@ class AgentRow:
             status=row.status,
             drain_started_at=row.drain_started_at,
             last_heartbeat=row.last_heartbeat,
+            kind=row.kind,
+            federation_audience=row.federation_audience,
         )
 
 
@@ -67,6 +71,8 @@ async def register_agent(
     agent_card_kid: str,
     generation: int = 1,
     status: str = "active",
+    kind: str = "member",
+    federation_audience: str | None = None,
 ) -> AgentRow:
     row = Agent(
         name=name,
@@ -79,10 +85,50 @@ async def register_agent(
         agent_card_json=agent_card_json,
         agent_card_kid=agent_card_kid,
         status=status,
+        kind=kind,
+        federation_audience=federation_audience,
     )
     session.add(row)
     await session.flush()
     return AgentRow.from_orm(row)
+
+
+async def register_federated(
+    session: AsyncSession,
+    *,
+    name: str,
+    persona_name: str,
+    endpoint: str,
+    federation_audience: str,
+    agent_card_json: dict,
+    agent_card_kid: str,
+    capabilities: dict | None = None,
+    safety_tier: str = "approval-required",
+    generation: int = 1,
+) -> AgentRow:
+    """Register a *federated* bulletin entry — a sovereign peer persona this
+    cabal is a client of (cabal#45).
+
+    `endpoint` is the sovereign service's HTTPS URL; `federation_audience` is its
+    stable service id, which the caller mints into the dispatch token `aud` and
+    which `_prepare` verifies against. `agent_card_json`/`agent_card_kid` hold the
+    sovereign service's own signed AgentCard.
+    """
+    return await register_agent(
+        session,
+        name=name,
+        persona_name=persona_name,
+        role="singleton",
+        endpoint=endpoint,
+        capabilities=capabilities or {},
+        safety_tier=safety_tier,
+        agent_card_json=agent_card_json,
+        agent_card_kid=agent_card_kid,
+        generation=generation,
+        status="active",
+        kind="federated",
+        federation_audience=federation_audience,
+    )
 
 
 async def get_active(session: AsyncSession, name: str) -> AgentRow | None:
