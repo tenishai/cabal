@@ -165,6 +165,43 @@ def mint_service_token(
     return resp.json()
 
 
+def persona_graduate(
+    *,
+    token: str,
+    name: str,
+    endpoint: str,
+    audience: str,
+    agent_card_json: dict | None = None,
+    agent_card_kid: str = "",
+) -> dict[str, Any]:
+    """Register a persona as a federated sovereign peer (cabal#45)."""
+    body: dict[str, Any] = {
+        "endpoint": endpoint,
+        "audience": audience,
+        "agent_card_json": agent_card_json or {},
+        "agent_card_kid": agent_card_kid,
+    }
+    with make_client() as c:
+        resp = c.post(
+            f"/admin/persona/{name}/graduate",
+            json=body,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def persona_absorb(*, token: str, name: str) -> dict[str, Any]:
+    """Re-absorb a federated persona back into this cabal as a local member."""
+    with make_client() as c:
+        resp = c.post(
+            f"/admin/persona/{name}/absorb",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def secret_set(
     *,
     token: str,

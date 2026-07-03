@@ -61,33 +61,41 @@ async def _resolve_dispatch_token(
     # Determine the audience the dispatch token must carry. For a `federated`
     # target the token is forwarded to the sovereign peer, so its `aud` is the
     # sovereign service id — not the bare agent name (cabal#45).
+    #
+    # Single session: the bulletin lookup and (only on the operator re-mint
+    # branch) the signing-key fetch share one open_session block. The signing
+    # key is loaded LAZILY so the fast path (token already aimed at `audience`)
+    # and the 403 return exit without Fernet-decrypting the key on every
+    # dispatch.
     sessionmaker = request.app.state.sessionmaker
-    async with open_session(sessionmaker) as session:
-        row = await bulletin_store.get_active(session, target)
-    if row is not None and row.kind == "federated":
-        if not row.federation_audience:
-            raise HTTPException(
-                status_code=500,
-                detail=f"federated target {target!r} has no federation_audience",
-            )
-        audience = row.federation_audience
-    else:
-        audience = target
-
-    if claims.get("aud") == audience:
-        return raw_token
-
-    scope = claims.get("cabal_scope") or []
-    if "operator" not in scope:
-        raise HTTPException(
-            status_code=403,
-            detail=f"token aud={claims.get('aud')!r} cannot dispatch to {target!r}",
-        )
-
-    # Operator → re-mint as a per-target token aimed at `audience`.
     master_key = request.app.state.master_key
     async with open_session(sessionmaker) as session:
+        row = await bulletin_store.get_active(session, target)
+
+        if row is not None and row.kind == "federated":
+            if not row.federation_audience:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"federated target {target!r} has no federation_audience",
+                )
+            audience = row.federation_audience
+        else:
+            audience = target
+
+        if claims.get("aud") == audience:
+            return raw_token
+
+        scope = claims.get("cabal_scope") or []
+        if "operator" not in scope:
+            raise HTTPException(
+                status_code=403,
+                detail=f"token aud={claims.get('aud')!r} cannot dispatch to {target!r}",
+            )
+
+        # Operator → re-mint as a per-target token aimed at `audience`. Only now
+        # do we need the signing key, so load it lazily within this session.
         stored = await load_active_signing_key(session, master_key=master_key)
+
     if stored is None:
         raise HTTPException(status_code=500, detail="no active signing key")
     return mint(

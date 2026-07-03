@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cabal.core.models import Agent
@@ -141,6 +141,22 @@ async def get_active(session: AsyncSession, name: str) -> AgentRow | None:
     )
     row = result.scalar_one_or_none()
     return AgentRow.from_orm(row) if row else None
+
+
+async def next_generation(session: AsyncSession, name: str) -> int:
+    """Return the next free generation for `name`: MAX(generation) + 1.
+
+    Scans ALL statuses (active/draining/retired), not just the active row, so
+    the (name, generation) composite PK can never collide. Returns 1 when the
+    name has no rows at all. Callers deriving the next generation from
+    `get_active().generation + 1` collide after an `absorb` retires the active
+    row without a successor — use this instead (cabal#45).
+    """
+    result = await session.execute(
+        select(func.max(Agent.generation)).where(Agent.name == name)
+    )
+    current_max = result.scalar_one_or_none()
+    return (current_max + 1) if current_max is not None else 1
 
 
 async def get(

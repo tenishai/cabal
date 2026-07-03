@@ -784,3 +784,126 @@ async def test_federated_token_mint_uses_sovereign_audience(
     claims = verify(minted, key_set=jwks_provider(), expected_audience=None)
     assert claims["aud"] == "archivist@rd"  # sovereign id, NOT "archivist"
     assert claims["cabal_scope"] == ["dispatch"]
+
+
+# ---- resume_local federated guard (cabal#45) ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_resume_local_raises_for_federated_target(
+    sessionmaker, signing_key, jwks_provider, federated_archivist_row
+) -> None:
+    """resume_local must raise DispatchError when the target is a federated
+    sovereign peer — it has no local resume surface. Symmetric with the guard
+    in dispatch_streaming."""
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+    )
+    # Register a local handler — the guard must reject BEFORE checking _local.
+    router.register_local(FakeArchivist())
+
+    with pytest.raises(DispatchError, match="federated"):
+        await router.resume_local(
+            target_agent="archivist",
+            task=_sample_task(),
+            resume_from=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_resume_local_raises_for_federated_even_without_local_handler(
+    sessionmaker, signing_key, jwks_provider, federated_archivist_row
+) -> None:
+    """resume_local's federated guard fires regardless of whether a local
+    handler is registered. The error message must mention 'federated'."""
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+    )
+    # No local handler registered — federated guard should still fire first.
+    with pytest.raises(DispatchError, match="federated"):
+        await router.resume_local(
+            target_agent="archivist",
+            task=_sample_task(),
+            resume_from=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_resume_local_succeeds_for_member_target(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """Sanity-check: resume_local still works for a local (member) agent."""
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+    )
+
+    @dataclass(slots=True)
+    class ResumableHandler:
+        name: str = "archivist"
+
+        async def handle_task(self, task: Task, resume_from=None) -> Task:
+            return Task(id=task.id, status=TaskStatus(state="completed"), metadata=task.metadata)
+
+    router.register_local(ResumableHandler())
+    response = await router.resume_local(
+        target_agent="archivist",
+        task=_sample_task(),
+        resume_from=None,
+    )
+    assert response.status.state == "completed"
+
+
+# ---- combined-session re-mint path still works -------------------------
+
+
+@pytest.mark.asyncio
+async def test_combined_session_operator_mint_member_target(
+    sessionmaker, signing_key, master_key, jwks_provider, archivist_row
+) -> None:
+    """_resolve_dispatch_token combined-session path: operator re-mint for a
+    regular member target produces a token aimed at the bare agent name."""
+    from types import SimpleNamespace
+
+    from cabal.core.routes.tasks import _resolve_dispatch_token
+
+    state = SimpleNamespace(
+        jwks_provider=jwks_provider, sessionmaker=sessionmaker, master_key=master_key
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+    operator_token = mint(
+        signing_key=signing_key, sub="operator", aud="cabal-core", scope=["operator"]
+    )
+    minted = await _resolve_dispatch_token(request, operator_token, "archivist")
+    claims = verify(minted, key_set=jwks_provider(), expected_audience=None)
+    # For a member target the aud is the bare agent name.
+    assert claims["aud"] == "archivist"
+    assert claims["cabal_scope"] == ["dispatch"]
+
+
+@pytest.mark.asyncio
+async def test_combined_session_passthrough_for_correctly_aimed_token(
+    sessionmaker, signing_key, master_key, jwks_provider, archivist_row
+) -> None:
+    """_resolve_dispatch_token returns the raw token unchanged when it is
+    already aimed at the correct audience (combined session must not break
+    this fast-path)."""
+    from types import SimpleNamespace
+
+    from cabal.core.routes.tasks import _resolve_dispatch_token
+
+    state = SimpleNamespace(
+        jwks_provider=jwks_provider, sessionmaker=sessionmaker, master_key=master_key
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+    aimed_token = mint(
+        signing_key=signing_key, sub="rook-primus:1", aud="archivist", scope=["dispatch"]
+    )
+    returned = await _resolve_dispatch_token(request, aimed_token, "archivist")
+    # Must be the SAME token object, not a re-minted one.
+    assert returned == aimed_token
