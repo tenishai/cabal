@@ -200,7 +200,10 @@ async def persona_graduate(
         existing = await bulletin_store.get_active(session, name)
         if existing is not None:
             await bulletin_store.mark_retired(session, name, existing.generation)
-        next_gen = (existing.generation + 1) if existing is not None else 1
+        # Derive from MAX(generation) across ALL statuses — not the active row —
+        # so a prior graduate→absorb (which retires without a successor) can't
+        # collide on the (name, generation) PK (cabal#45).
+        next_gen = await bulletin_store.next_generation(session, name)
 
         # `agents.persona_name` FKs to `personas.name` (PRAGMA foreign_keys=ON),
         # so the persona row must exist before register_federated inserts. A

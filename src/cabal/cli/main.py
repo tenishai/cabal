@@ -559,8 +559,6 @@ def persona_graduate(
     typer.echo(f"graduated {body['agent']} → {body['endpoint']} (aud: {body['audience']})")
     if body.get("previous_generation_retired") is not None:
         typer.echo(f"  retired local gen {body['previous_generation_retired']}, new federated gen {body['generation']}")
-    if body.get("note"):
-        typer.echo(f"  note: {body['note']}")
 
 
 @persona_app.command("absorb")

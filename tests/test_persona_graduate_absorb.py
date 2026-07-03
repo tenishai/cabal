@@ -342,3 +342,73 @@ async def test_graduate_then_absorb_round_trip(app: FastAPI, client: AsyncClient
     async with app.state.sessionmaker() as s:
         row = await bulletin_store.get_active(s, "archivist")
     assert row is None
+
+
+@pytest.mark.asyncio
+async def test_graduate_absorb_graduate_no_generation_collision(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """graduate → absorb → graduate must not collide on the (name, gen) PK.
+
+    absorb retires the active row without a successor, so a second graduate
+    sees get_active() → None. Deriving next_gen from the active row would
+    recompute gen 1 and collide with the retired gen-1 member row. next_gen
+    must come from MAX(generation) across all statuses, yielding a strictly
+    increasing generation (cabal#45).
+    """
+    await _seed_archivist_local(app)  # member gen 1
+    token = await _bootstrap_token(app, client)
+
+    # First graduate → federated gen 2.
+    r1 = await client.post(
+        "/admin/persona/archivist/graduate",
+        json={"endpoint": "https://archivist.rd.ts.net", "audience": "archivist@rd"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r1.status_code == 200, r1.text
+    gen1 = r1.json()["generation"]
+
+    # Absorb → retires the federated row, no successor.
+    r_absorb = await client.post(
+        "/admin/persona/archivist/absorb",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r_absorb.status_code == 200, r_absorb.text
+
+    # Second graduate → must NOT 500 on a PK collision; generation strictly up.
+    r2 = await client.post(
+        "/admin/persona/archivist/graduate",
+        json={"endpoint": "https://archivist.rd.ts.net", "audience": "archivist@rd"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r2.status_code == 200, r2.text
+    gen2 = r2.json()["generation"]
+    assert gen2 > gen1, f"expected monotonic generation, got {gen1} then {gen2}"
+
+    async with app.state.sessionmaker() as s:
+        row = await bulletin_store.get_active(s, "archivist")
+    assert row is not None and row.kind == "federated" and row.generation == gen2
+
+
+@pytest.mark.asyncio
+async def test_graduate_does_not_clobber_existing_persona(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """The persona-upsert guard must not overwrite an existing Persona's config."""
+    async with app.state.sessionmaker() as s:
+        s.add(Persona(name="archivist", config_json={"foo": "bar"}))
+        await s.commit()
+
+    token = await _bootstrap_token(app, client)
+    r = await client.post(
+        "/admin/persona/archivist/graduate",
+        json={"endpoint": "https://archivist.rd.ts.net", "audience": "archivist@rd"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+
+    # The `session.get(...) is None` guard must leave the populated config intact.
+    async with app.state.sessionmaker() as s:
+        persona = await s.get(Persona, "archivist")
+    assert persona is not None
+    assert persona.config_json == {"foo": "bar"}

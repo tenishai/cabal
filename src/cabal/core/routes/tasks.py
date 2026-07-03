@@ -64,8 +64,9 @@ async def _resolve_dispatch_token(
     #
     # Single session: the bulletin lookup and (only on the operator re-mint
     # branch) the signing-key fetch share one open_session block. The signing
-    # key is loaded LAZILY — the fast path (token already aimed at `audience`)
-    # and the 403 return without Fernet-decrypting the key on every dispatch.
+    # key is loaded LAZILY so the fast path (token already aimed at `audience`)
+    # and the 403 return exit without Fernet-decrypting the key on every
+    # dispatch.
     sessionmaker = request.app.state.sessionmaker
     master_key = request.app.state.master_key
     async with open_session(sessionmaker) as session:
