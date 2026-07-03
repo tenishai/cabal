@@ -173,6 +173,34 @@ async def test_graduate_works_without_existing_row(app: FastAPI, client: AsyncCl
 
 
 @pytest.mark.asyncio
+async def test_graduate_without_persona_or_row(app: FastAPI, client: AsyncClient) -> None:
+    """Client-cabal case: graduate a name with NO Persona and NO bulletin row.
+
+    `agents.persona_name` FKs to `personas.name`, so register_federated would
+    FK-fail unless the endpoint upserts the Persona first. Regression guard for
+    the opaque-500 the raw insert produced (federated-bulletin-and-router §3).
+    """
+    token = await _bootstrap_token(app, client)
+    r = await client.post(
+        "/admin/persona/scribe/graduate",
+        json={"endpoint": "https://scribe.rd.ts.net", "audience": "scribe@rd"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["generation"] == 1
+    assert body["previous_generation_retired"] is None
+
+    # The federated row must be persisted with kind=federated, and the Persona
+    # placeholder must now exist to satisfy the FK.
+    async with app.state.sessionmaker() as s:
+        row = await bulletin_store.get_active(s, "scribe")
+        assert row is not None
+        assert row.kind == "federated"
+        assert await s.get(Persona, "scribe") is not None
+
+
+@pytest.mark.asyncio
 async def test_graduate_400_on_missing_fields(app: FastAPI, client: AsyncClient) -> None:
     """Graduate with empty endpoint/audience returns 400."""
     await _seed_archivist_local(app)

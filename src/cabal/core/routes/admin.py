@@ -27,7 +27,7 @@ from cabal.core.auth.jwt import JWTError, extract_bearer, verify
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
-from cabal.core.models import Agent, Conversation, Event, TaskCheckpoint
+from cabal.core.models import Agent, Conversation, Event, Persona, TaskCheckpoint
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -202,11 +202,21 @@ async def persona_graduate(
             await bulletin_store.mark_retired(session, name, existing.generation)
         next_gen = (existing.generation + 1) if existing is not None else 1
 
+        # `agents.persona_name` FKs to `personas.name` (PRAGMA foreign_keys=ON),
+        # so the persona row must exist before register_federated inserts. A
+        # client (non-parent) cabal graduating a name it never owned locally has
+        # no Persona row — upsert an empty one in this same transaction so the
+        # federated insert doesn't FK-fail (federated-bulletin-and-router §3).
+        persona_name = existing.persona_name if existing is not None else name
+        if await session.get(Persona, persona_name) is None:
+            session.add(Persona(name=persona_name, config_json={}))
+            await session.flush()
+
         # Register the federated row.
         federated_row = await bulletin_store.register_federated(
             session,
             name=name,
-            persona_name=existing.persona_name if existing is not None else name,
+            persona_name=persona_name,
             endpoint=req.endpoint,
             federation_audience=req.audience,
             agent_card_json=req.agent_card_json,
