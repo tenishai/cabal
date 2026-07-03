@@ -516,6 +516,78 @@ def primus_rotate(
         typer.echo(f"  note: {body['note']}")
 
 
+persona_app = typer.Typer(help="Persona lifecycle — graduate and absorb sovereign peers.")
+app.add_typer(persona_app, name="persona")
+
+
+@persona_app.command("graduate")
+def persona_graduate(
+    name: str = typer.Argument(..., help="Persona name (e.g. 'archivist')."),
+    endpoint: str = typer.Option(
+        ..., "--endpoint", help="Sovereign service HTTPS URL (e.g. 'https://archivist.rd.ts.net')."
+    ),
+    audience: str = typer.Option(
+        ...,
+        "--audience",
+        help=(
+            "Sovereign service stable id — callers mint this into dispatch token "
+            "`aud` (e.g. 'archivist@rd')."
+        ),
+    ),
+) -> None:
+    """Graduate a persona to a federated sovereign peer (cabal#45).
+
+    Retires the local member row, registers a federated row pointing at
+    the sovereign service, and drops the in-process local handler so all
+    dispatch routes to the remote endpoint.
+    """
+    token = _require_token()
+    try:
+        body = api.persona_graduate(
+            token=token, name=name, endpoint=endpoint, audience=audience
+        )
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get("detail", exc.response.text)
+        except Exception:  # noqa: BLE001
+            detail = exc.response.text
+        typer.echo(f"graduate failed: {detail}", err=True)
+        raise typer.Exit(code=1) from exc
+    except httpx.RequestError as exc:
+        typer.echo(f"could not reach daemon at {api.base_url()}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"graduated {body['agent']} → {body['endpoint']} (aud: {body['audience']})")
+    if body.get("previous_generation_retired") is not None:
+        typer.echo(f"  retired local gen {body['previous_generation_retired']}, new federated gen {body['generation']}")
+
+
+@persona_app.command("absorb")
+def persona_absorb(
+    name: str = typer.Argument(..., help="Persona name to re-absorb (e.g. 'archivist')."),
+) -> None:
+    """Re-absorb a federated persona back as a local member (cabal#45).
+
+    Retires the active federated row. Run `cbl reload identity` afterwards
+    to restore the local handler and member bulletin row.
+    """
+    token = _require_token()
+    try:
+        body = api.persona_absorb(token=token, name=name)
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get("detail", exc.response.text)
+        except Exception:  # noqa: BLE001
+            detail = exc.response.text
+        typer.echo(f"absorb failed: {detail}", err=True)
+        raise typer.Exit(code=1) from exc
+    except httpx.RequestError as exc:
+        typer.echo(f"could not reach daemon at {api.base_url()}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"absorbed {body['agent']} (retired federated gen {body['retired_generation']})")
+    if body.get("note"):
+        typer.echo(f"  → {body['note']}")
+
+
 secret_app = typer.Typer(help="Persisted, encrypted secrets for credentialed handlers.")
 app.add_typer(secret_app, name="secret")
 

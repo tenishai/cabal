@@ -27,7 +27,7 @@ from cabal.core.auth.jwt import JWTError, extract_bearer, verify
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
-from cabal.core.models import Agent, Conversation, Event, TaskCheckpoint
+from cabal.core.models import Agent, Conversation, Event, Persona, TaskCheckpoint
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -154,6 +154,135 @@ async def primus_rotate(
         "new_generation": new_generation,
         "operator": claims.get("sub"),
         "note": "in-process LocalHandler unchanged in Phase L v1",
+    }
+
+
+# ---- Persona lifecycle: graduate + absorb (cabal#45) ------------------
+
+
+class PersonaGraduateRequest(BaseModel):
+    endpoint: str
+    audience: str
+    agent_card_json: dict = {}
+    agent_card_kid: str = ""
+
+
+@router.post("/persona/{name}/graduate")
+async def persona_graduate(
+    name: str,
+    req: PersonaGraduateRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Graduate a local persona to a federated sovereign peer (cabal#45).
+
+    Retires the existing active row for `name` (if any), registers a
+    `kind="federated"` row pointing at the sovereign service's endpoint, and
+    unregisters the in-process local handler so subsequent dispatches route
+    remotely.
+
+    The caller supplies the sovereign service's stable service id as
+    `audience` — this is what callers must mint into their dispatch token
+    `aud`. `agent_card_json`/`agent_card_kid` are the sovereign service's
+    own signed AgentCard; pass empty values if the service has not yet issued
+    one (they can be updated via a future operation).
+    """
+    _require_operator_claims(request, extract_bearer(authorization))
+
+    if not req.endpoint or not req.audience:
+        raise HTTPException(400, detail="endpoint and audience must be non-empty")
+
+    dispatch_router = request.app.state.dispatch_router
+    sessionmaker = request.app.state.sessionmaker
+
+    async with open_session(sessionmaker) as session:
+        # Retire any existing active row for this name.
+        existing = await bulletin_store.get_active(session, name)
+        if existing is not None:
+            await bulletin_store.mark_retired(session, name, existing.generation)
+        # Derive from MAX(generation) across ALL statuses — not the active row —
+        # so a prior graduate→absorb (which retires without a successor) can't
+        # collide on the (name, generation) PK (cabal#45).
+        next_gen = await bulletin_store.next_generation(session, name)
+
+        # `agents.persona_name` FKs to `personas.name` (PRAGMA foreign_keys=ON),
+        # so the persona row must exist before register_federated inserts. A
+        # client (non-parent) cabal graduating a name it never owned locally has
+        # no Persona row — upsert an empty one in this same transaction so the
+        # federated insert doesn't FK-fail (federated-bulletin-and-router §3).
+        persona_name = existing.persona_name if existing is not None else name
+        if await session.get(Persona, persona_name) is None:
+            session.add(Persona(name=persona_name, config_json={}))
+            await session.flush()
+
+        # Register the federated row.
+        federated_row = await bulletin_store.register_federated(
+            session,
+            name=name,
+            persona_name=persona_name,
+            endpoint=req.endpoint,
+            federation_audience=req.audience,
+            agent_card_json=req.agent_card_json,
+            agent_card_kid=req.agent_card_kid,
+            generation=next_gen,
+        )
+
+    # Drop the local handler so dispatch routes remote (belt + suspenders;
+    # the dispatch-time federated guard is the primary enforcement).
+    dispatch_router.unregister_local(name)
+
+    return {
+        "graduated": True,
+        "agent": name,
+        "generation": federated_row.generation,
+        "endpoint": req.endpoint,
+        "audience": req.audience,
+        "previous_generation_retired": existing.generation if existing is not None else None,
+    }
+
+
+@router.post("/persona/{name}/absorb")
+async def persona_absorb(
+    name: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Re-absorb a federated persona back into this cabal as a local member.
+
+    Retires the active `kind="federated"` row for `name`. The local handler
+    and `member` bulletin row are restored on the next identity reload
+    (`cbl reload identity`), since only the persona factory knows the correct
+    endpoint/card for the local instance.
+
+    Raises 404 if `name` has no active federated row.
+    Raises 409 if the active row is not federated (already local; no-op
+    needed).
+    """
+    _require_operator_claims(request, extract_bearer(authorization))
+
+    sessionmaker = request.app.state.sessionmaker
+    async with open_session(sessionmaker) as session:
+        row = await bulletin_store.get_active(session, name)
+        if row is None:
+            raise HTTPException(404, detail=f"no active row for agent {name!r}")
+        if row.kind != "federated":
+            raise HTTPException(
+                409,
+                detail=(
+                    f"agent {name!r} is not federated (kind={row.kind!r}); "
+                    "absorb is only meaningful for federated personas"
+                ),
+            )
+        await bulletin_store.mark_retired(session, name, row.generation)
+
+    return {
+        "absorbed": True,
+        "agent": name,
+        "retired_generation": row.generation,
+        "note": (
+            "run `cbl reload identity` to restore the local handler "
+            "and member bulletin row"
+        ),
     }
 
 
