@@ -101,14 +101,17 @@ class GuardrailContext:
     ``task_id``      — A2A task id; None if unavailable (e.g., early router
                        rejection before a Task is resolved).
     ``phase``        — where in the lifecycle the check runs:
-                       "input"  — before the LLM sees input messages
-                       "output" — after the LLM emits its final text
-                       "router" — at the dispatch router before the A2A hop
+                       "input"       — before the LLM sees input messages
+                       "output"      — after the LLM emits its final text
+                       "router"      — at the dispatch router before the A2A hop
+                       "tool_call"   — before mcp_proxy.call_tool (#52)
+                       "tool_result" — after call_tool, before the result is
+                                       appended to the conversation (#52)
     """
 
     persona_name: str
     task_id: str | None
-    phase: str  # "input" | "output" | "router"
+    phase: str  # "input" | "output" | "router" | "tool_call" | "tool_result"
 
 
 @runtime_checkable
