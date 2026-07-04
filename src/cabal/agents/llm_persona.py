@@ -12,6 +12,7 @@ each persona its own model from identity.toml.
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -25,6 +26,7 @@ from cabal.core.a2a.codes import (
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import AbortCoordinator, TaskAborted
 from cabal.core.checkpoint import Checkpoint, CheckpointStore, NoOpCheckpointStore
+from cabal.core.hooks.registry import HookName
 from cabal.core.llm.litellm_client import (
     CabalLLMError,
     LiteLLMClient,
@@ -257,12 +259,27 @@ class LLMPersona:
                 self.abort_coordinator.raise_if_aborted(task.id)
                 messages = _extend_with_tool_calls(messages, response, tool_calls)
                 for call in tool_calls:
+                    _t0 = time.monotonic()
                     outcome = await self.tool_proxy.call_tool(call["name"], call["arguments"])
+                    _latency_ms = round((time.monotonic() - _t0) * 1000)
+                    _result_content = _outcome_to_chat_content(outcome)
+                    await self.llm_client.hook_registry.fire(
+                        HookName.TOOL_USE,
+                        {
+                            "task_id": task.id,
+                            "tool_call_id": call["id"],
+                            "tool_name": call["name"],
+                            "arguments": call["arguments"],
+                            "result_summary": _result_content[:2000],
+                            "is_error": getattr(outcome, "is_error", False),
+                            "latency_ms": _latency_ms,
+                        },
+                    )
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": call["id"],
-                            "content": _outcome_to_chat_content(outcome),
+                            "content": _result_content,
                         }
                     )
                 steps_remaining -= 1
