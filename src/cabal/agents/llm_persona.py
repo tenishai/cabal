@@ -26,6 +26,7 @@ from cabal.core.a2a.codes import (
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import AbortCoordinator, TaskAborted
 from cabal.core.checkpoint import Checkpoint, CheckpointStore, NoOpCheckpointStore
+from cabal.core.guardrails import Guardrail, GuardrailContext, VerdictType, run_guardrails
 from cabal.core.hooks.registry import HookName
 from cabal.core.llm.litellm_client import (
     CabalLLMError,
@@ -88,6 +89,21 @@ class LLMPersona:
     # persona_factory swaps in the router's shared coordinator at
     # registration, at which point abort() actually reaches this loop.
     abort_coordinator: AbortCoordinator = field(default_factory=AbortCoordinator)
+    # cabal#39 — composable guardrails. Empty defaults = zero behavior change
+    # for existing personas. Two phase-specific lists so each guardrail's
+    # target type is unambiguous (no ctx.phase branching needed):
+    #   input_guardrails  target = list[dict] chat messages, before the LLM call
+    #   output_guardrails target = str final text, after the LLM emits it
+    # On BLOCK the Task is returned as failed/policy-violation; on REWRITE the
+    # value is replaced inline. See cabal.core.guardrails for the full contract.
+    #
+    # NOTE: input guardrails run once at first dispatch (resume_from is None) —
+    # NOT on resume — so a non-idempotent rewrite can't compound across resumes;
+    # the guarded messages are what gets checkpointed. Input-phase covers the
+    # first LLM call only; tool-loop turns are #52's scope. astream_task does
+    # NOT apply guardrails (streaming path deferred).
+    input_guardrails: list[Guardrail] = field(default_factory=list)
+    output_guardrails: list[Guardrail] = field(default_factory=list)
 
     def _recall_for_task(self, task: Task) -> str:
         """Return a formatted memory-hits block, or empty string."""
@@ -160,6 +176,44 @@ class LLMPersona:
             self.session_tracker.end(session_id=session_id, summary="[canceled] aborted")
             raise
 
+    async def _apply_guardrails(
+        self,
+        guardrails: list[Guardrail],
+        target: Any,
+        phase: str,
+        task: Task,
+    ) -> tuple[Any, Task | None]:
+        """Run ``guardrails`` for ``phase`` against ``target``.
+
+        Returns ``(possibly-rewritten target, None)`` on PASS/REWRITE.
+        Returns ``(original target, blocked_task)`` on BLOCK — the caller
+        must return ``blocked_task`` immediately.
+
+        The caller is responsible for ending the session (session_tracker.end)
+        and dropping the checkpoint (checkpoint_store.drop) on BLOCK, to
+        mirror the existing error-handling pattern in _run_dispatch.
+        """
+        if not guardrails:
+            return target, None
+        ctx = GuardrailContext(
+            persona_name=self.name,
+            task_id=task.id,
+            phase=phase,
+        )
+        verdict = await run_guardrails(guardrails, target, ctx)
+        if verdict.type == VerdictType.BLOCK:
+            blocked = annotate(
+                task,
+                CabalReason(
+                    code=CODE_POLICY_VIOLATION,
+                    message=f"guardrail blocked ({phase}): {verdict.reason}",
+                ),
+            )
+            return target, blocked
+        if verdict.rewritten is not None:
+            return verdict.rewritten, None
+        return target, None
+
     async def _run_dispatch(
         self, task: Task, *, session_id: str, resume_from: Checkpoint | None
     ) -> Task:
@@ -170,6 +224,21 @@ class LLMPersona:
         else:
             messages = list(resume_from.messages)
             step_index = resume_from.step_index
+
+        # cabal#39 — input guardrail check before checkpoint/LLM call. Runs only
+        # at first dispatch (not on resume): the checkpointed messages already
+        # passed the guardrail, and re-running would double-apply a
+        # non-idempotent rewrite once per resume.
+        if resume_from is None:
+            messages, blocked = await self._apply_guardrails(
+                self.input_guardrails, messages, "input", task
+            )
+            if blocked is not None:
+                self.session_tracker.end(
+                    session_id=session_id,
+                    summary=f"[blocked:input] {blocked.metadata.get('cabal_reason_message', '')}",
+                )
+                return blocked
 
         # If a tool proxy is wired, fetch the tool surface and pass it to
         # the LLM. Returned tool_calls drive a recursive call loop capped
@@ -337,6 +406,19 @@ class LLMPersona:
                     )
 
         text = self.parse_response(response)
+
+        # cabal#39 — output guardrail check before committing the result.
+        text, blocked = await self._apply_guardrails(
+            self.output_guardrails, text, "output", task
+        )
+        if blocked is not None:
+            self.session_tracker.end(
+                session_id=session_id,
+                summary=f"[blocked:output] {blocked.metadata.get('cabal_reason_message', '')}",
+            )
+            await self.checkpoint_store.drop(task.id)
+            return blocked
+
         self.session_tracker.end(session_id=session_id, summary=text)
         self._commit_qa_to_memory(task, text)
         # Successful completion — drop the checkpoint so resume doesn't
