@@ -208,7 +208,16 @@ class ValidateBeforeRecord:
         arguments: dict[str, Any] = ctx.tool_arguments or {}
         result_str = target if isinstance(target, str) else str(target)
 
-        error = self._validate(tool_name, arguments, result_str)
+        try:
+            error = self._validate(tool_name, arguments, result_str)
+        except Exception as exc:  # noqa: BLE001
+            # A buggy validator must not crash the whole dispatch (cf. #57's
+            # malformed-rewrite fix). Fail CLOSED: a mutation we could not
+            # validate is blocked with the cause surfaced, rather than silently
+            # recorded as if it passed.
+            return Verdict.block(
+                f"validator for {tool_name} raised {type(exc).__name__}: {exc}"
+            )
         if error is not None:
             return Verdict.block(f"validation failed for {tool_name}: {error}")
         return Verdict.pass_()

@@ -392,3 +392,25 @@ async def test_predicate_form_matches_correctly() -> None:
 
     assert v_mutating.type.value == "block"
     assert v_non_mutating.type.value == "pass"
+
+
+@pytest.mark.asyncio
+async def test_validator_exception_blocks_instead_of_crashing() -> None:
+    """A validator that raises must NOT crash the dispatch — check() catches it
+    and fails closed with a BLOCK carrying the cause (cf. #57's crash-path fix)."""
+
+    def _boom(tool_name: str, arguments: dict[str, Any], result: str) -> str | None:
+        raise RuntimeError("linter exploded")
+
+    guardrail = ValidateBeforeRecord(mutating_tools={"code_edit"}, validate=_boom)
+    ctx = GuardrailContext(
+        persona_name="p",
+        task_id="t",
+        phase="tool_result",
+        tool_name="code_edit",
+        tool_arguments={"path": "x.py"},
+    )
+    verdict = await guardrail.check("some result", ctx)
+    assert verdict.type.value == "block"
+    assert "raised" in verdict.reason
+    assert "linter exploded" in verdict.reason
