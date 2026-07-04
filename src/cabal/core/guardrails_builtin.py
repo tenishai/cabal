@@ -30,19 +30,29 @@ class DoomLoopGuardrail:
     ``task.id`` when ``context_id`` is absent. Grouping only works when a
     *stable, shared, non-None* key recurs across the delegations.
 
-    SCOPE / EFFICACY (honest limitation — cabal#59): the counter only trips
-    when the same session key recurs. Today that holds for a client re-sending
-    a byte-identical message under a shared ``context_id`` (e.g. ``cbl chat``,
-    which reuses one context id per session). It does **not** yet hold for the
-    autonomous multi-persona loop that motivated #42: the rook fan-out calls
-    ``subord.handle_task`` directly (bypassing the router, so router
-    ``input_guardrails`` never run) with a fresh sub-task id and no
-    ``context_id``; and the A2A inbound routes mint a fresh uuid per hop and
-    drop ``context_id`` — so each re-delegation looks like a new session and
-    the counter resets. Closing that gap (propagating a stable ``context_id``
-    across hops, or running this guardrail at the subordinate/``handle_task``
-    boundary) is tracked in #59. This class is a correct building block; wiring
-    it to catch autonomous loops depends on #59.
+    SCOPE / EFFICACY (cabal#59, now closed): the counter trips when the same
+    session key recurs. Two loop paths are now covered:
+
+    1. **Rook fan-out** (cabal#59): ``RookPrimusPersona`` holds a shared
+       ``DoomLoopGuardrail`` instance (default-on) and runs ``check()`` at
+       the subordinate boundary in ``_dispatch_subordinate`` before calling
+       ``subord.handle_task``. Sub-tasks inherit the parent's ``context_id``
+       so repeated identical delegations within a session share a stable
+       session key and accumulate toward the threshold.
+
+    2. **A2A inbound** (cabal#59): ``MessageSendParams`` now accepts a
+       ``contextId`` field; both ``message/send`` and ``message/stream``
+       routes propagate it onto the inbound ``Task``. When a client (or
+       peer agent) supplies a stable ``contextId`` across hops, the router's
+       ``input_guardrails`` can group those hops and detect the loop. Without
+       a caller-supplied ``contextId`` each hop still falls back to its
+       fresh task uuid, so cross-hop detection requires the client to thread
+       the id (``cbl chat`` streaming does this as of cabal#59).
+
+    Original scope (still accurate for standalone use): a client re-sending
+    a byte-identical message under a shared ``context_id`` (e.g. ``cbl chat``
+    non-streaming, which reuses one context id per session) is caught by the
+    router's ``input_guardrails``.
 
     **Delegation key** — ``SHA-256(target_agent_name || NUL || payload)``
     where:

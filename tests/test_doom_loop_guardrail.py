@@ -440,6 +440,30 @@ async def test_distinct_task_ids_without_context_id_never_block() -> None:
 
 
 @pytest.mark.asyncio
+async def test_message_send_params_accepts_context_id() -> None:
+    """MessageSendParams.context_id round-trips through model_validate (cabal#59).
+
+    When a caller supplies contextId in A2A params, the route threads it onto
+    the inbound Task so the DoomLoopGuardrail has a stable session key.
+    """
+    from cabal.core.a2a.jsonrpc import MessageSendParams
+
+    raw = {
+        "message": {"role": "user", "parts": [{"kind": "text", "text": "hi"}]},
+        "contextId": "sess-from-wire",
+    }
+    params = MessageSendParams.model_validate(raw)
+    assert params.context_id == "sess-from-wire"
+
+    # Without contextId — defaults to None.
+    raw_no_ctx = {
+        "message": {"role": "user", "parts": [{"kind": "text", "text": "hi"}]},
+    }
+    params_no_ctx = MessageSendParams.model_validate(raw_no_ctx)
+    assert params_no_ctx.context_id is None
+
+
+@pytest.mark.asyncio
 async def test_non_serialisable_data_part_does_not_crash() -> None:
     """A DataPart whose payload isn't JSON-serialisable must not raise out of
     check() and crash the dispatch — it falls back to repr() (Prudence nit)."""

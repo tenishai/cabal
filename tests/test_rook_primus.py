@@ -8,7 +8,9 @@ import pytest
 
 from cabal.agents.personas.rook import RookPrimusPersona
 from cabal.agents.subordinate import Subordinate
+from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, reason_code
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
+from cabal.core.guardrails_builtin import DoomLoopGuardrail
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
@@ -264,3 +266,197 @@ async def test_plan_text_passed_to_aggregate_prompt() -> None:
     final_user = aggregate_messages[-1]["content"]
     assert "the plan is to do X carefully" in final_user
     assert "did the X thing" in final_user
+
+
+# ---- cabal#59: doom-loop + context_id threading tests ----------------------
+
+
+def _task_with_ctx(text: str = "do the thing", context_id: str = "ctx-1") -> Task:
+    """Build a Task with a stable context_id, mirroring a real chat session."""
+    return Task(
+        **{
+            "id": f"t-ctx-{text[:8]}",
+            "contextId": context_id,
+            "status": TaskStatus(
+                state="submitted",
+                message=Message(role="user", parts=[TextPart(text=text)]),
+            ),
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_rook_doom_loop_blocks_repeated_identical_subordinate_dispatch() -> None:
+    """THE key test for cabal#59: the autonomous loop shape is now caught.
+
+    With a stable context_id and identical plan text (simulating an agent
+    stuck in a loop), the Nth subordinate dispatch is blocked at the
+    subordinate boundary — returning a policy-violation Task to the caller.
+
+    This tests the shape documented as NOT caught in
+    test_doom_loop_guardrail.py::test_distinct_task_ids_without_context_id_never_block:
+    fresh task ids, same payload. Now that _dispatch_subordinate threads
+    context_id and runs the doom-loop check before calling handle_task,
+    the loop IS caught when the parent supplies a stable context_id.
+    """
+    doom_loop = DoomLoopGuardrail(threshold=2)
+
+    # Both handle_task calls produce the same plan text (same stub response)
+    # so the delegation key is identical → counter accumulates.
+    primus_client, _ = _client(
+        ["identical plan text", "summary", "identical plan text"]
+    )
+    sub_client, sub_calls = _client(["impl output"])
+
+    rook = RookPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=doom_loop,
+    )
+
+    # First dispatch: context_id stable, doom-loop count=1 → PASS.
+    task1 = Task(
+        **{
+            "id": "t-doom-1",
+            "contextId": "loop-session",
+            "status": TaskStatus(
+                state="submitted",
+                message=Message(role="user", parts=[TextPart(text="implement X")]),
+            ),
+        }
+    )
+    r1 = await rook.handle_task(task1)
+    assert r1.status.state == "completed"
+    assert len(sub_calls) == 1  # implementer was called once
+
+    # Second dispatch: same context_id + same plan → count=2 >= threshold=2 → BLOCK.
+    task2 = Task(
+        **{
+            "id": "t-doom-2",
+            "contextId": "loop-session",
+            "status": TaskStatus(
+                state="submitted",
+                message=Message(role="user", parts=[TextPart(text="implement X")]),
+            ),
+        }
+    )
+    r2 = await rook.handle_task(task2)
+    assert r2.status.state == "failed"
+    assert reason_code(r2) == CODE_POLICY_VIOLATION
+    reason_msg = r2.metadata.get("cabal_reason_message") or ""
+    assert "rook guardrail blocked" in reason_msg
+    assert "identical delegations" in reason_msg
+    # Implementer was NOT called a second time — the block happened before dispatch.
+    assert len(sub_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_rook_doom_loop_different_instructions_do_not_block() -> None:
+    """Different plan texts reset the doom-loop counter — no false block.
+
+    Even with threshold=2 and a shared context_id, genuinely different
+    delegation instructions never trip the guard.
+    """
+    doom_loop = DoomLoopGuardrail(threshold=2)
+
+    primus_client, _ = _client(["plan A", "summary A", "plan B", "summary B"])
+    sub_client, sub_calls = _client(["impl A", "impl B"])
+
+    rook = RookPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=doom_loop,
+    )
+
+    for i in range(2):
+        task = Task(
+            **{
+                "id": f"t-diff-{i}",
+                "contextId": "shared-session",
+                "status": TaskStatus(
+                    state="submitted",
+                    message=Message(role="user", parts=[TextPart(text=f"task {i}")]),
+                ),
+            }
+        )
+        r = await rook.handle_task(task)
+        assert r.status.state == "completed", f"dispatch {i} unexpectedly blocked"
+
+    assert len(sub_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_context_id_threads_to_sub_task() -> None:
+    """Parent task's context_id is inherited by the sub-task (cabal#59).
+
+    This is the mechanism that lets DoomLoopGuardrail group re-delegations:
+    without context_id threading every sub-task has a fresh id (session key)
+    and the counter never accumulates.
+    """
+    captured: dict[str, Any] = {}
+
+    class CaptureSub(Subordinate):
+        async def handle_task(self, task: Task) -> Task:
+            captured["context_id"] = task.context_id
+            return await super().handle_task(task)
+
+    primus_client, _ = _client(["plan", "summary"])
+    sub_client, _ = _client(["impl reply"])
+    cap = CaptureSub(
+        role="implementer", llm_client=sub_client, model="anthropic/claude-sonnet-4-6"
+    )
+
+    # doom_loop=None so we don't accidentally trip the guard in a single call.
+    rook = RookPrimusPersona(
+        primus_client, subordinates={"implementer": cap}, doom_loop=None
+    )
+
+    parent_task = Task(
+        **{
+            "id": "t-inherit-1",
+            "contextId": "inherited-ctx",
+            "status": TaskStatus(
+                state="submitted",
+                message=Message(role="user", parts=[TextPart(text="work")]),
+            ),
+        }
+    )
+    await rook.handle_task(parent_task)
+
+    assert captured["context_id"] == "inherited-ctx"
+
+
+@pytest.mark.asyncio
+async def test_doom_loop_disabled_by_none() -> None:
+    """Passing doom_loop=None disables the guard entirely.
+
+    Useful for tests or integrations that intentionally dispatch the same
+    instruction multiple times and must not be blocked.
+    """
+    primus_client, _ = _client(
+        ["same plan", "summary", "same plan", "summary", "same plan", "summary"]
+    )
+    sub_client, sub_calls = _client(["out", "out", "out"])
+
+    rook = RookPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+    )
+
+    context_id = "no-guard-session"
+    for i in range(3):
+        task = Task(
+            **{
+                "id": f"t-nodoom-{i}",
+                "contextId": context_id,
+                "status": TaskStatus(
+                    state="submitted",
+                    message=Message(role="user", parts=[TextPart(text="do it")]),
+                ),
+            }
+        )
+        r = await rook.handle_task(task)
+        assert r.status.state == "completed", f"call {i} unexpectedly blocked"
+
+    assert len(sub_calls) == 3
