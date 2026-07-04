@@ -182,7 +182,10 @@ class ValidateBeforeRecord:
         validate: ``(tool_name, arguments, result) -> str | None``.  Return
             an error string on validation failure, or ``None`` on pass.  The
             callable must be synchronous; wrap async validators in
-            ``asyncio.run`` or restructure the guardrail.
+            ``asyncio.run`` or restructure the guardrail.  WARNING: it runs
+            inline in the async dispatch — a blocking validator (e.g. a linter
+            subprocess) stalls the event loop for its whole duration; offload
+            anything heavyweight with ``loop.run_in_executor``.
     """
 
     name = "validate_before_record"
