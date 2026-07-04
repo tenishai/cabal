@@ -21,10 +21,13 @@ from cabal.core.guardrails import GuardrailContext, Verdict
 class DoomLoopGuardrail:
     """Detect and block repeated identical delegations within a session.
 
-    Implements opencode's doom-loop detector (cabal#42): count consecutive
-    *identical* delegations to the same target within a conversation session;
-    at ``threshold`` (default 3) return a BLOCK verdict with a
-    CorrectedError-shaped reason message so the caller can change approach.
+    Implements opencode's doom-loop detector (cabal#42): count *identical*
+    delegations to the same target within a conversation session; at
+    ``threshold`` (default 3) return a BLOCK verdict with a CorrectedError-shaped
+    reason message so the caller can change approach. Counting is per-delegation-
+    key *cumulative* within a session (not merely consecutive) — see Counter
+    lifecycle — so interleaved multi-role loops (impl, rev, impl, rev, …) are
+    caught, not just back-to-back repeats.
 
     **Session key** — ``task.context_id`` when present; falls back to
     ``task.id`` when ``context_id`` is absent. Grouping only works when a
@@ -49,6 +52,12 @@ class DoomLoopGuardrail:
        fresh task uuid, so cross-hop detection requires the client to thread
        the id (``cbl chat`` streaming does this as of cabal#59).
 
+       CAVEAT: this A2A path is only active when a ``DoomLoopGuardrail`` is
+       actually wired as a router ``input_guardrail``. The production router
+       (``app.py``) currently constructs with none, so the inbound ``contextId``
+       feeds nothing until a deployment opts in. The **Rook** path above needs
+       no such opt-in — it is default-on.
+
     Original scope (still accurate for standalone use): a client re-sending
     a byte-identical message under a shared ``context_id`` (e.g. ``cbl chat``
     non-streaming, which reuses one context id per session) is caught by the
@@ -65,19 +74,23 @@ class DoomLoopGuardrail:
       excluded: the doom loop is about the *current delegation*, not the
       accumulated conversation.
 
-    **Counter lifecycle** — on an *identical* delegation the counter
-    increments; on a *different* delegation (new target or new payload) the
-    counter resets to 1 and the new key is recorded.  Once blocked (count >=
-    threshold) subsequent identical calls keep returning BLOCK; a genuinely
-    different delegation resets the counter and returns PASS.
+    **Counter lifecycle** — each session holds a map of ``delegation_key ->
+    cumulative_count``. Every delegation increments its own key's count; a
+    *different* delegation increments a *different* key (it does not reset the
+    others), so an interleaved ``impl, rev, impl, rev, …`` loop still drives
+    ``impl``'s count to the threshold. Once a key hits ``threshold`` its
+    identical repeats keep returning BLOCK; distinct delegations (distinct keys)
+    return PASS on their own counts. Trade-off vs. a consecutive-only counter:
+    this will also flag the same ``(target, payload)`` recurring ``threshold``
+    times spread across a session — which for a byte-identical delegation is
+    itself a strong doom-loop signal.
 
-    **Dict growth** — the state dict is capped at ``maxsize`` entries (default
-    10 000).  When the cap is reached the oldest entry is evicted (Python
-    dict insertion-order → FIFO).  Each session has at most one entry
-    (one tuple), so memory is O(min(sessions, maxsize)).  There is no TTL;
-    long-running daemons with many short-lived sessions will asymptotically
-    reach ``maxsize`` and then stay there.  A TTL-based eviction policy is a
-    follow-on improvement.
+    **Dict growth** — the outer session dict is capped at ``maxsize`` entries
+    (default 10 000), oldest-evicted-first (insertion-order FIFO). Each
+    session's inner map holds one small int per *distinct* delegation key seen
+    in that session (typically a handful). There is no TTL; a long-running
+    daemon asymptotically reaches ``maxsize`` sessions and stays there. A
+    TTL-based eviction policy is a follow-on improvement.
 
     **No hard-halt** — BLOCK becomes a policy-violation Task in the router
     (via ``annotate``).  The reason message is surfaced back into the calling
@@ -101,11 +114,18 @@ class DoomLoopGuardrail:
             raise ValueError(f"threshold must be >= 1, got {threshold}")
         self._threshold = threshold
         self._maxsize = maxsize
-        # {session_key: (last_delegation_key, consecutive_count)}
-        self._state: dict[str, tuple[str, int]] = {}
+        # {session_key: {delegation_key: cumulative_count}}
+        # Per-key *cumulative* counts within a session — NOT a single
+        # consecutive slot. Consecutive-only counting misses the interleaved
+        # multi-role loop (e.g. Rook's implementer/reviewer fan-out produces
+        # impl, rev, impl, rev, … so no two identical keys are ever adjacent);
+        # cumulative per-key counting catches the repeated `impl(X)` regardless
+        # of what runs between the repeats.
+        self._state: dict[str, dict[str, int]] = {}
 
     async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
-        """Return PASS while consecutive count < threshold; BLOCK at threshold."""
+        """Return PASS until a delegation key recurs `threshold` times in the
+        session; BLOCK at the threshold-th occurrence."""
         if not isinstance(target, Task):
             # Non-Task targets (input/output phase) are not doom-loop candidates.
             return Verdict.pass_()
@@ -120,19 +140,13 @@ class DoomLoopGuardrail:
         payload = _canonical_payload(task)
         delegation_key = _delegation_hash(target_name, payload)
 
-        last_key, count = self._state.get(session_key, ("", 0))
-
-        if delegation_key == last_key:
-            count += 1
-        else:
-            # Different delegation — reset counter.
-            count = 1
-
-        # Evict oldest to keep dict bounded before inserting a new session.
+        # Evict oldest session to keep the outer dict bounded before inserting.
         if session_key not in self._state and len(self._state) >= self._maxsize:
             self._state.pop(next(iter(self._state)))
 
-        self._state[session_key] = (delegation_key, count)
+        counts = self._state.setdefault(session_key, {})
+        count = counts.get(delegation_key, 0) + 1
+        counts[delegation_key] = count
 
         if count >= self._threshold:
             label = target_name or "unknown"

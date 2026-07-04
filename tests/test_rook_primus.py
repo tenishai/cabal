@@ -351,6 +351,59 @@ async def test_rook_doom_loop_blocks_repeated_identical_subordinate_dispatch() -
 
 
 @pytest.mark.asyncio
+async def test_rook_doom_loop_blocks_in_two_role_pipeline() -> None:
+    """cabal#59 (Prudence): the PRODUCTION-DEFAULT two-role pipeline.
+
+    With both implementer and reviewer, each handle_task fans out
+    impl, rev — so a loop is the interleaved sequence impl, rev, impl, rev, …
+    A consecutive-only counter would reset on every dispatch and NEVER block;
+    per-key cumulative counting drives impl(planX) to the threshold across
+    handle_task calls and blocks the 3rd. This is the shape the earlier
+    implementer-only test did NOT cover.
+    """
+    doom_loop = DoomLoopGuardrail(threshold=3)
+    # Plans are identical across the three runs (a stuck loop); aggregates vary.
+    primus_client, _ = _client(
+        ["planX", "agg-1", "planX", "agg-2", "planX"]
+    )
+    impl_client, impl_calls = _client(["impl output", "impl output"])
+    review_client, review_calls = _client(["critique", "critique"])
+
+    rook = RookPrimusPersona(
+        primus_client,
+        subordinates={
+            "implementer": _subordinate(impl_client, role="implementer"),
+            "reviewer": _subordinate(review_client, role="reviewer"),
+        },
+        doom_loop=doom_loop,
+    )
+
+    def _task(i: int) -> Task:
+        return Task(
+            **{
+                "id": f"t-2role-{i}",
+                "contextId": "loop-session-2role",
+                "status": TaskStatus(
+                    state="submitted",
+                    message=Message(role="user", parts=[TextPart(text="do X")]),
+                ),
+            }
+        )
+
+    # Runs 1 and 2 complete (impl count 1, 2 — interleaved with reviewer).
+    assert (await rook.handle_task(_task(1))).status.state == "completed"
+    assert (await rook.handle_task(_task(2))).status.state == "completed"
+    # Run 3: impl(planX) reaches count=3 → BLOCK before the implementer dispatch.
+    r3 = await rook.handle_task(_task(3))
+    assert r3.status.state == "failed"
+    assert reason_code(r3) == CODE_POLICY_VIOLATION
+    assert "rook guardrail blocked" in (r3.metadata.get("cabal_reason_message") or "")
+    # Implementer ran on runs 1+2 only; reviewer never reached on run 3.
+    assert len(impl_calls) == 2
+    assert len(review_calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_rook_doom_loop_different_instructions_do_not_block() -> None:
     """Different plan texts reset the doom-loop counter — no false block.
 

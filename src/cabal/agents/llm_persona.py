@@ -545,7 +545,10 @@ class LLMPersona:
             history.append(task.status.message)
         return Task(
             id=task.id,
-            context_id=task.context_id,
+            # cabal#59: use the `contextId` alias — Task has populate_by_name=False,
+            # so `context_id=` silently drops to an ignored extra attr (the field
+            # stays None). Every completed LLMPersona task dropped context_id before.
+            contextId=task.context_id,
             status=TaskStatus(state="completed", message=agent_msg),
             history=history,
             metadata=task.metadata,

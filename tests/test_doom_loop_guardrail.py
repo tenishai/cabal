@@ -152,29 +152,24 @@ async def test_two_session_keys_keep_independent_counters() -> None:
 
 
 @pytest.mark.asyncio
-async def test_non_identical_delegation_resets_count() -> None:
-    """A different delegation resets the counter; resuming identical afterwards
-    re-starts from 1, not from the pre-reset count."""
+async def test_interleaved_identical_delegations_still_block() -> None:
+    """Per-key cumulative counting (cabal#59): a DIFFERENT delegation between
+    repeats does NOT reset the original key's count. An interleaved
+    A, B, A, B, A loop — the shape Rook's implementer/reviewer fan-out
+    produces — still drives A to the threshold and blocks."""
     g = DoomLoopGuardrail(threshold=3)
     ctx = _ctx()
 
-    # Two identical — counter at 2.
-    for _ in range(2):
-        v = await g.check(_task("msg-A", context_id="sess-reset"), ctx)
-        assert v.type == VerdictType.PASS
-
-    # Different message — resets counter to 1 (PASS).
-    v = await g.check(_task("msg-B", context_id="sess-reset"), ctx)
-    assert v.type == VerdictType.PASS
-
-    # Back to msg-A: counter starts fresh at 1; two more are safe.
-    for _ in range(2):
-        v = await g.check(_task("msg-A", context_id="sess-reset"), ctx)
-        assert v.type == VerdictType.PASS
-
-    # Now at count=3 → BLOCK.
-    v = await g.check(_task("msg-A", context_id="sess-reset"), ctx)
-    assert v.type == VerdictType.BLOCK
+    # A (count 1, PASS)
+    assert (await g.check(_task("msg-A", context_id="sess-il"), ctx)).type == VerdictType.PASS
+    # B — a different key, its own count 1 (PASS); does NOT reset A.
+    assert (await g.check(_task("msg-B", context_id="sess-il"), ctx)).type == VerdictType.PASS
+    # A again (count 2, PASS)
+    assert (await g.check(_task("msg-A", context_id="sess-il"), ctx)).type == VerdictType.PASS
+    # B again (count 2, PASS)
+    assert (await g.check(_task("msg-B", context_id="sess-il"), ctx)).type == VerdictType.PASS
+    # A third time → count 3 → BLOCK, despite never being consecutive.
+    assert (await g.check(_task("msg-A", context_id="sess-il"), ctx)).type == VerdictType.BLOCK
 
 
 @pytest.mark.asyncio
@@ -204,28 +199,30 @@ async def test_non_task_target_always_passes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_block_persists_then_resets_on_different_delegation() -> None:
-    """After blocking, subsequent identical calls keep blocking; a different
-    delegation resets and the next identical sequence starts fresh."""
+async def test_block_persists_and_distinct_delegation_has_own_count() -> None:
+    """After a key blocks, its identical repeats keep blocking (cumulative
+    count only grows). A DIFFERENT delegation has its own independent count and
+    passes — but it does NOT reset or rescue the blocked key."""
     g = DoomLoopGuardrail(threshold=2)
     ctx = _ctx()
 
-    # Trip the block.
+    # Trip the block on "msg".
     await g.check(_task("msg", context_id="sess-persist"), ctx)
     v_block = await g.check(_task("msg", context_id="sess-persist"), ctx)
     assert v_block.type == VerdictType.BLOCK
 
-    # Still identical — block continues.
+    # Still identical — block continues (count keeps growing).
     v_still = await g.check(_task("msg", context_id="sess-persist"), ctx)
     assert v_still.type == VerdictType.BLOCK
 
-    # Different delegation — resets.
-    v_reset = await g.check(_task("other", context_id="sess-persist"), ctx)
-    assert v_reset.type == VerdictType.PASS
+    # A DIFFERENT delegation has its own count=1 → PASS.
+    v_other = await g.check(_task("other", context_id="sess-persist"), ctx)
+    assert v_other.type == VerdictType.PASS
 
-    # Identical again from count=1 — safe.
-    v_safe = await g.check(_task("msg", context_id="sess-persist"), ctx)
-    assert v_safe.type == VerdictType.PASS
+    # "msg" is NOT rescued by the intervening different delegation — its
+    # cumulative count is unchanged, so it still BLOCKs.
+    v_msg_again = await g.check(_task("msg", context_id="sess-persist"), ctx)
+    assert v_msg_again.type == VerdictType.BLOCK
 
 
 def test_threshold_zero_or_negative_raises() -> None:
