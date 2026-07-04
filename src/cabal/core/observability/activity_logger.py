@@ -189,7 +189,10 @@ class ActivityLogger:
             if tokens is None:
                 scalar = payload.get("tokens_used")
                 if scalar is not None:
-                    tokens = {"total": int(scalar)}
+                    try:
+                        tokens = {"total": int(scalar)}
+                    except (TypeError, ValueError):
+                        tokens = None  # never let a bad scalar drop the row
             cost = _extract_cost(response)
 
             async with open_session(self.sessionmaker) as session:
