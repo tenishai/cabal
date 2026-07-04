@@ -7,16 +7,25 @@ these rows are NEVER dropped on task success — that's the whole point.
 Design decisions
 ----------------
 * **Two rows per tool call** (``tool_call`` + ``tool_result``) rather than
-  one combined row.  The split lets future consumers query "which calls
-  never produced a result" (crash-during-tool-execution gap) and clearly
-  separates the intent (arguments) from the outcome (result, latency,
-  error flag).  Both rows are written atomically in a single session
-  commit from the single TOOL_USE event, so there is no partial-write risk.
+  one combined row.  Rationale is *schema cleanliness*: each row stays
+  single-purpose — ``tool_call`` records intent (name + arguments),
+  ``tool_result`` records outcome (result, latency, error flag) — which
+  keeps per-type queries clean ("all invocations", "all errors", "p95
+  latency") and gives #51's token/cost a clean home on ``llm_call``.
+  NOTE: the rows are written *atomically together* from a single
+  post-``call_tool`` ``TOOL_USE`` fire, so this split does **not** by
+  itself detect a "call present, result absent" crash gap — earning that
+  requires a genuine *pre*-``call_tool`` fire point, which is issue #52's
+  job (the pre-tool veto/patch hook).
 
-* **Sync mode** — the handlers write to SQLite which is already async, but
-  the await is cheap and we want durability before the dispatch loop
-  continues.  If write latency becomes a concern the mode can be flipped to
-  ``"async"`` without changing the handler logic.
+* **Sync mode is deliberate, not a default to revisit.** This is an audit
+  log; durability is the whole point.  In this registry ``async`` mode is
+  true fire-and-forget (``asyncio.create_task``, see registry.py) — a write
+  could be lost if the loop tears down before the task runs, which is
+  exactly the failure an audit log must not have.  ``sync`` awaits the write
+  to completion before the dispatch proceeds.  The cost is inline latency;
+  concurrent writers to the shared SQLite file are serialised by WAL +
+  ``busy_timeout`` (proven by ``test_concurrent_writes_all_land``).
 
 * **Tokens / cost** are explicitly absent — that is scope #B4 / issue #51.
   Do not add them here.
@@ -86,6 +95,7 @@ class ActivityLogger:
                         payload_json={
                             "tool_name": tool_name,
                             "result_summary": payload.get("result_summary"),
+                            "result_truncated": payload.get("result_truncated", False),
                             "is_error": payload.get("is_error", False),
                             "latency_ms": payload.get("latency_ms"),
                             "tool_call_id": payload.get("tool_call_id"),
@@ -96,7 +106,13 @@ class ActivityLogger:
             log.warning("activity.tool_use_write_failed", task_id=task_id, error=str(exc))
 
     async def _on_litellm_post(self, payload: dict[str, Any]) -> None:
-        """Write an ``llm_call`` row."""
+        """Write an ``llm_call`` row.
+
+        NOTE: ``LITELLM_POST`` fires on the budget-exhausted and circuit-open
+        branches *before* the provider is called (litellm_client.py), so an
+        ``llm_call`` row does not always mean a provider round-trip happened.
+        Consult ``outcome`` before counting rows as provider invocations.
+        """
         task_id = payload.get("task_id")
         try:
             async with open_session(self.sessionmaker) as session:

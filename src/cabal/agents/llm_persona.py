@@ -37,6 +37,11 @@ from cabal.core.llm.litellm_client import (
 from cabal.core.memory.session_tracker import NoOpSessionTracker, SessionTracker
 from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 
+# Hard cap on the tool-result summary stored in the activity log's tool_result
+# row. The full result still flows to the LLM as the tool message; only the
+# audit-log copy is bounded. `result_truncated` records whether this bit.
+_RESULT_SUMMARY_MAX = 2000
+
 
 @dataclass
 class LLMPersona:
@@ -259,10 +264,11 @@ class LLMPersona:
                 self.abort_coordinator.raise_if_aborted(task.id)
                 messages = _extend_with_tool_calls(messages, response, tool_calls)
                 for call in tool_calls:
-                    _t0 = time.monotonic()
+                    t0 = time.monotonic()
                     outcome = await self.tool_proxy.call_tool(call["name"], call["arguments"])
-                    _latency_ms = round((time.monotonic() - _t0) * 1000)
-                    _result_content = _outcome_to_chat_content(outcome)
+                    latency_ms = round((time.monotonic() - t0) * 1000)
+                    result_content = _outcome_to_chat_content(outcome)
+                    result_truncated = len(result_content) > _RESULT_SUMMARY_MAX
                     await self.llm_client.hook_registry.fire(
                         HookName.TOOL_USE,
                         {
@@ -270,16 +276,17 @@ class LLMPersona:
                             "tool_call_id": call["id"],
                             "tool_name": call["name"],
                             "arguments": call["arguments"],
-                            "result_summary": _result_content[:2000],
+                            "result_summary": result_content[:_RESULT_SUMMARY_MAX],
+                            "result_truncated": result_truncated,
                             "is_error": getattr(outcome, "is_error", False),
-                            "latency_ms": _latency_ms,
+                            "latency_ms": latency_ms,
                         },
                     )
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": call["id"],
-                            "content": _result_content,
+                            "content": result_content,
                         }
                     )
                 steps_remaining -= 1

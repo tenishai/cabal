@@ -224,14 +224,16 @@ async def test_persona_dispatch_writes_all_three_row_types(app: FastAPI) -> None
             )
         ).scalars().all()
 
-    event_types = [r.event_type for r in rows]
-    assert "tool_call" in event_types, f"expected tool_call in {event_types}"
-    assert "tool_result" in event_types, f"expected tool_result in {event_types}"
-    assert "llm_call" in event_types, f"expected llm_call in {event_types}"
-
     by_type = {}
     for r in rows:
         by_type.setdefault(r.event_type, []).append(r.payload_json)
+
+    # Cardinality is pinned, not just membership: one tool call yields exactly
+    # one tool_call + one tool_result, and TWO llm_call rows (the initial
+    # completion that emitted the tool call, plus the post-tool completion).
+    assert len(by_type.get("tool_call", [])) == 1, by_type
+    assert len(by_type.get("tool_result", [])) == 1, by_type
+    assert len(by_type.get("llm_call", [])) == 2, by_type
 
     # tool_call row must record the tool name and arguments.
     tc = by_type["tool_call"][0]
@@ -243,6 +245,7 @@ async def test_persona_dispatch_writes_all_three_row_types(app: FastAPI) -> None
     assert tr["tool_name"] == "calculator__add"
     assert tr["result_summary"] == "3"
     assert tr["is_error"] is False
+    assert tr["result_truncated"] is False
     assert isinstance(tr["latency_ms"], int)
 
     # llm_call row must record model + outcome.
@@ -336,3 +339,88 @@ async def test_error_outcome_is_recorded(app: FastAPI) -> None:
     assert len(rows) == 1
     assert rows[0].payload_json["is_error"] is True
     assert "tool error: boom" in rows[0].payload_json["result_summary"]
+
+
+@pytest.mark.asyncio
+async def test_result_summary_truncation_is_marked(app: FastAPI) -> None:
+    """An over-long tool result is capped at 2000 chars and flagged truncated;
+    a short one is stored whole with result_truncated=False."""
+    from cabal.agents.llm_persona import _RESULT_SUMMARY_MAX, LLMPersona
+
+    sessionmaker = app.state.sessionmaker
+    task_id = "t-trunc"
+
+    registry = HookRegistry()
+    ActivityLogger(sessionmaker=sessionmaker, mode="sync").register(registry)
+
+    huge = "x" * (_RESULT_SUMMARY_MAX + 500)
+    persona = LLMPersona(
+        name="verbose",
+        model="test/model",
+        llm_client=LiteLLMClient(
+            acompletion_fn=_tool_call_stub("done"), hook_registry=registry
+        ),
+        system_prompt="verbose.",
+        tool_proxy=_FakeToolProxy(huge),
+    )
+
+    result = await persona.handle_task(_user_task(task_id=task_id))
+    assert result.status.state == "completed"
+
+    async with sessionmaker() as session:
+        rows = (
+            await session.execute(
+                select(Event)
+                .where(Event.task_id == task_id)
+                .where(Event.event_type == "tool_result")
+            )
+        ).scalars().all()
+
+    assert len(rows) == 1
+    payload = rows[0].payload_json
+    assert len(payload["result_summary"]) == _RESULT_SUMMARY_MAX
+    assert payload["result_truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_writes_all_land(app: FastAPI) -> None:
+    """Issue #2 guard: many concurrent TOOL_USE writers against the shared
+    SQLite file must ALL land — no dropped rows under WAL/busy_timeout
+    contention. Proves the sync-mode durability claim rather than assuming it.
+    """
+    import asyncio
+
+    sessionmaker = app.state.sessionmaker
+    registry = HookRegistry()
+    ActivityLogger(sessionmaker=sessionmaker, mode="sync").register(registry)
+
+    n = 40
+
+    async def _fire(i: int) -> None:
+        await registry.fire(
+            HookName.TOOL_USE,
+            {
+                "task_id": f"t-conc-{i}",
+                "tool_call_id": f"c-{i}",
+                "tool_name": "concurrent_tool",
+                "arguments": {"i": i},
+                "result_summary": f"result-{i}",
+                "is_error": False,
+                "latency_ms": i,
+            },
+        )
+
+    await asyncio.gather(*(_fire(i) for i in range(n)))
+
+    async with sessionmaker() as session:
+        rows = (
+            await session.execute(
+                select(Event).where(Event.event_type.in_(("tool_call", "tool_result")))
+            )
+        ).scalars().all()
+
+    conc = [r for r in rows if str(r.task_id).startswith("t-conc-")]
+    # Each of n fires writes exactly 2 rows (tool_call + tool_result).
+    assert len(conc) == 2 * n, f"expected {2 * n} rows, got {len(conc)}"
+    task_ids = {r.task_id for r in conc}
+    assert len(task_ids) == n, "every concurrent writer must have landed"
