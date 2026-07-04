@@ -78,7 +78,17 @@ class Verdict:
 
     @classmethod
     def rewrite(cls, value: Any, reason: str = "") -> Verdict:
-        """Replace the target with ``value`` and continue."""
+        """Replace the target with ``value`` and continue.
+
+        ``value`` must not be ``None``: run_guardrails uses ``rewritten is
+        None`` as the "no rewrite" sentinel, so a rewrite-to-None would be
+        silently swallowed. None of the real targets (messages list / output
+        str / Task) is meaningfully None, so we reject it loudly instead.
+        """
+        if value is None:
+            raise ValueError(
+                "Verdict.rewrite(None) is unsupported — None is the no-rewrite sentinel"
+            )
         return cls(type=VerdictType.REWRITE, rewritten=value, reason=reason)
 
 

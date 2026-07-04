@@ -286,7 +286,7 @@ async def test_persona_input_block_fails_task_without_llm_call() -> None:
         name="strict",
         model="m",
         llm_client=client,
-        guardrails=[_BlockIfContains("forbidden")],
+        input_guardrails=[_BlockIfContains("forbidden")],
     )
     result = await persona.handle_task(_user_task("this is forbidden text"))
     assert result.status.state == "failed"
@@ -321,7 +321,7 @@ async def test_persona_input_rewrite_changes_what_llm_sees() -> None:
         name="rewriter",
         model="m",
         llm_client=client,
-        guardrails=[_InjectUserMessage()],
+        input_guardrails=[_InjectUserMessage()],
     )
     result = await persona.handle_task(_user_task("original text"))
     assert result.status.state == "completed"
@@ -337,13 +337,6 @@ async def test_persona_output_block_fails_task_after_llm() -> None:
     client = LiteLLMClient(
         acompletion_fn=_stub("top secret result"), hook_registry=HookRegistry()
     )
-    persona = LLMPersona(
-        name="censor",
-        model="m",
-        llm_client=client,
-        guardrails=[_BlockIfContains("secret")],
-    )
-
     class _OutputBlock:
         name = "output_blocker"
 
@@ -356,7 +349,7 @@ async def test_persona_output_block_fails_task_after_llm() -> None:
         name="censor",
         model="m",
         llm_client=client,
-        guardrails=[_OutputBlock()],
+        output_guardrails=[_OutputBlock()],
     )
     result = await persona.handle_task(_user_task("tell me something"))
     assert result.status.state == "failed"
@@ -383,7 +376,7 @@ async def test_persona_output_rewrite_replaces_response() -> None:
         name="shouter",
         model="m",
         llm_client=client,
-        guardrails=[_OutputRewrite()],
+        output_guardrails=[_OutputRewrite()],
     )
     result = await persona.handle_task(_user_task("say something"))
     assert result.status.state == "completed"
@@ -392,29 +385,89 @@ async def test_persona_output_rewrite_replaces_response() -> None:
 
 
 @pytest.mark.asyncio
-async def test_persona_input_guardrail_does_not_run_on_output() -> None:
-    """A guardrail that only checks phase='input' leaves the output unchanged."""
+async def test_input_and_output_guardrails_are_isolated() -> None:
+    """The split lists apply to their own phase only: an input guardrail
+    rewrites what the LLM sees but never the output, and an output guardrail
+    rewrites the result but never the input."""
+    seen_messages: list[list[dict]] = []
     client = LiteLLMClient(
-        acompletion_fn=_stub("clean output"), hook_registry=HookRegistry()
+        acompletion_fn=_capturing_stub(seen_messages),
+        hook_registry=HookRegistry(),
     )
 
-    class _InputOnlyBlock:
-        name = "input_only_block"
+    class _InputRewrite:
+        name = "input_rewrite"
 
         async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
-            # Only block during the output phase — this should NOT run for input
-            # (here it always passes for input, and we're not calling it for output
-            # because the phase check is done by the persona, not by this guardrail)
-            return Verdict.pass_()
+            rewritten = [
+                {**m, "content": "REWRITTEN_INPUT"} if m.get("role") == "user" else m
+                for m in target
+            ]
+            return Verdict.rewrite(rewritten)
+
+    class _OutputUpper:
+        name = "output_upper"
+
+        async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+            return Verdict.rewrite(target.upper())
 
     persona = LLMPersona(
-        name="p",
+        name="split",
         model="m",
         llm_client=client,
-        guardrails=[_InputOnlyBlock()],
+        input_guardrails=[_InputRewrite()],
+        output_guardrails=[_OutputUpper()],
     )
-    result = await persona.handle_task(_user_task("hi"))
+    result = await persona.handle_task(_user_task("original text"))
     assert result.status.state == "completed"
+
+    # Input guardrail reached the LLM input...
+    assert seen_messages, "LLM was not called"
+    user_msgs = [m for m in seen_messages[0] if m.get("role") == "user"]
+    assert user_msgs[0]["content"] == "REWRITTEN_INPUT"
+    # ...but did NOT uppercase (that's the output guardrail's job, applied only
+    # to the result); the output guardrail uppercased the reply ("ok" → "OK"),
+    # proving each list is scoped to its own phase.
+    assert result.status.message is not None
+    assert result.status.message.parts[0].text == "OK"
+
+
+@pytest.mark.asyncio
+async def test_input_guardrail_skipped_on_resume() -> None:
+    """Input guardrails run once at first dispatch, NOT on resume — otherwise a
+    non-idempotent rewrite would compound once per resume. A block-all input
+    guardrail must be skipped on resume, so the resumed task completes."""
+    from cabal.core.checkpoint import Checkpoint
+
+    client = LiteLLMClient(
+        acompletion_fn=_stub("resumed reply"), hook_registry=HookRegistry()
+    )
+
+    class _BlockAll:
+        name = "block_all"
+
+        async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+            return Verdict.block("should not run on resume")
+
+    persona = LLMPersona(
+        name="resumer", model="m", llm_client=client, input_guardrails=[_BlockAll()]
+    )
+    task = _user_task("hi")
+    ckpt = Checkpoint(
+        task_id=task.id,
+        step_index=0,
+        messages=[{"role": "user", "content": "resumed context"}],
+    )
+    result = await persona.handle_task(task, resume_from=ckpt)
+    # Block-all input guardrail SKIPPED on resume → completes, not blocked.
+    assert result.status.state == "completed", result.status
+
+
+def test_verdict_rewrite_none_is_rejected() -> None:
+    """Verdict.rewrite(None) is rejected loudly — None is the no-rewrite
+    sentinel and would otherwise be silently swallowed by run_guardrails."""
+    with pytest.raises(ValueError, match="no-rewrite sentinel"):
+        Verdict.rewrite(None)
 
 
 # ---------------------------------------------------------------------------
