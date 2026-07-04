@@ -249,6 +249,10 @@ class DispatchRouter:
                     task_id=task.id,
                     phase="router",
                 )
+                # cabal#42 — expose the target agent name to router-level
+                # guardrails (e.g. DoomLoopGuardrail) via task metadata.
+                # Consistent with cabal_trace_id / cabal_span_id convention.
+                task.metadata["cabal_target_agent"] = target_agent
                 verdict = await run_guardrails(self._input_guardrails, task, guard_ctx)
                 if verdict.type == VerdictType.BLOCK:
                     response = annotate(
