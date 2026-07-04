@@ -424,3 +424,256 @@ async def test_concurrent_writes_all_land(app: FastAPI) -> None:
     assert len(conc) == 2 * n, f"expected {2 * n} rows, got {len(conc)}"
     task_ids = {r.task_id for r in conc}
     assert len(task_ids) == n, "every concurrent writer must have landed"
+
+
+# ---------------------------------------------------------------------------
+# #50 — entry_id / parent_id tree-shape tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_every_row_carries_entry_id_and_parent_id(app) -> None:
+    """Every emitted event row has an entry_id and a parent_id in payload_json."""
+    sessionmaker = app.state.sessionmaker
+    registry = HookRegistry()
+    ActivityLogger(sessionmaker=sessionmaker, mode="sync").register(registry)
+
+    task_id = "t-tree-fields"
+
+    # Fire LITELLM_POST — one llm_call row.
+    await registry.fire(
+        HookName.LITELLM_POST,
+        {"task_id": task_id, "model": "test/m", "outcome": "success"},
+    )
+    # Fire TOOL_USE — two rows (tool_call + tool_result).
+    await registry.fire(
+        HookName.TOOL_USE,
+        {
+            "task_id": task_id,
+            "tool_call_id": "c-1",
+            "tool_name": "my_tool",
+            "arguments": {"x": 1},
+            "result_summary": "ok",
+            "is_error": False,
+            "latency_ms": 5,
+        },
+    )
+
+    async with sessionmaker() as session:
+        rows = (
+            await session.execute(select(Event).where(Event.task_id == task_id))
+        ).scalars().all()
+
+    assert len(rows) == 3
+    for row in rows:
+        payload = row.payload_json or {}
+        assert "entry_id" in payload, f"missing entry_id on {row.event_type}"
+        assert "parent_id" in payload, f"missing parent_id on {row.event_type}"
+        assert isinstance(payload["entry_id"], str)
+        assert len(payload["entry_id"]) == 12
+
+
+@pytest.mark.asyncio
+async def test_first_row_in_dispatch_has_null_parent(app) -> None:
+    """The very first row written for a task has parent_id=None."""
+    sessionmaker = app.state.sessionmaker
+    registry = HookRegistry()
+    ActivityLogger(sessionmaker=sessionmaker, mode="sync").register(registry)
+
+    task_id = "t-first-parent"
+
+    await registry.fire(
+        HookName.LITELLM_POST,
+        {"task_id": task_id, "model": "test/m", "outcome": "success"},
+    )
+
+    async with sessionmaker() as session:
+        rows = (
+            await session.execute(select(Event).where(Event.task_id == task_id))
+        ).scalars().all()
+
+    assert len(rows) == 1
+    assert rows[0].payload_json["parent_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_path_to_root_single_tool_call_dispatch(app) -> None:
+    """path_to_root returns the correct root→leaf chain for a full dispatch.
+
+    Emission order for a single-tool-call dispatch is:
+      llm_call_1 (initial completion, parent=None)
+      → tool_call  (parent=llm_call_1)
+      → tool_result (parent=tool_call)
+      → llm_call_2 (post-tool completion, parent=tool_result)
+
+    path_to_root(events, llm_call_2.entry_id) must return that chain in
+    root→leaf order: [llm_call_1, tool_call, tool_result, llm_call_2].
+    """
+    from cabal.agents.llm_persona import LLMPersona
+    from cabal.core.observability.activity_logger import path_to_root
+
+    sessionmaker = app.state.sessionmaker
+    task_id = "t-path-to-root"
+
+    registry = HookRegistry()
+    ActivityLogger(sessionmaker=sessionmaker, mode="sync").register(registry)
+
+    llm_client = LiteLLMClient(
+        acompletion_fn=_tool_call_stub("done"),
+        hook_registry=registry,
+    )
+    persona = LLMPersona(
+        name="path-tester",
+        model="test/model",
+        llm_client=llm_client,
+        system_prompt="test",
+        tool_proxy=_FakeToolProxy("result"),
+    )
+
+    result = await persona.handle_task(_user_task(task_id=task_id))
+    assert result.status.state == "completed"
+
+    async with sessionmaker() as session:
+        events = (
+            await session.execute(select(Event).where(Event.task_id == task_id))
+        ).scalars().all()
+
+    # Expect 4 rows: llm_call_1, tool_call, tool_result, llm_call_2.
+    assert len(events) == 4
+
+    # Find the last llm_call row (highest DB id since they're append-only).
+    llm_calls = [e for e in events if e.event_type == "llm_call"]
+    assert len(llm_calls) == 2
+    last_llm_call = max(llm_calls, key=lambda e: e.id)
+
+    chain = path_to_root(events, last_llm_call.payload_json["entry_id"])
+
+    # Must be 4 events, root→leaf.
+    assert len(chain) == 4, f"expected 4 events in chain, got {len(chain)}: {[e.event_type for e in chain]}"
+    assert chain[0].event_type == "llm_call"   # root: initial completion
+    assert chain[1].event_type == "tool_call"
+    assert chain[2].event_type == "tool_result"
+    assert chain[3].event_type == "llm_call"   # leaf: post-tool completion
+
+    # Verify parent linkage is consistent.
+    for i in range(1, len(chain)):
+        parent_id = chain[i].payload_json["parent_id"]
+        expected_parent_entry_id = chain[i - 1].payload_json["entry_id"]
+        assert parent_id == expected_parent_entry_id, (
+            f"chain[{i}].parent_id={parent_id!r} does not match "
+            f"chain[{i-1}].entry_id={expected_parent_entry_id!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_tasks_have_independent_parent_chains(app) -> None:
+    """Two concurrent tasks must not bleed parent_ids into each other's chains."""
+    import asyncio
+
+    from cabal.agents.llm_persona import LLMPersona
+    from cabal.core.observability.activity_logger import path_to_root
+
+    sessionmaker = app.state.sessionmaker
+
+    # Single ActivityLogger instance shared across both tasks (realistic case).
+    registry = HookRegistry()
+    logger = ActivityLogger(sessionmaker=sessionmaker, mode="sync")
+    logger.register(registry)
+
+    async def _run_task(task_id: str) -> None:
+        llm_client = LiteLLMClient(
+            acompletion_fn=_tool_call_stub(f"done-{task_id}"),
+            hook_registry=registry,
+        )
+        persona = LLMPersona(
+            name="concurrent-tester",
+            model="test/model",
+            llm_client=llm_client,
+            system_prompt="test",
+            tool_proxy=_FakeToolProxy("ok"),
+        )
+        result = await persona.handle_task(_user_task(task_id=task_id))
+        assert result.status.state == "completed", f"task {task_id} failed"
+
+    task_ids = ["t-conc-chain-A", "t-conc-chain-B"]
+    await asyncio.gather(*(_run_task(tid) for tid in task_ids))
+
+    for tid in task_ids:
+        async with sessionmaker() as session:
+            events = (
+                await session.execute(select(Event).where(Event.task_id == tid))
+            ).scalars().all()
+
+        assert len(events) == 4, f"task {tid}: expected 4 events, got {len(events)}"
+
+        # Each task's chain must be internally consistent (no cross-task leakage).
+        llm_calls = [e for e in events if e.event_type == "llm_call"]
+        last_llm = max(llm_calls, key=lambda e: e.id)
+        chain = path_to_root(events, last_llm.payload_json["entry_id"])
+        assert len(chain) == 4, f"task {tid}: path_to_root returned {len(chain)} events"
+
+        # All events in the chain must belong to this task.
+        for evt in chain:
+            assert evt.task_id == tid, f"cross-task bleed: {evt.task_id!r} in chain for {tid!r}"
+
+
+@pytest.mark.asyncio
+async def test_session_end_clears_last_entry_map(app) -> None:
+    """SESSION_END removes the task from the last-entry-id map."""
+    sessionmaker = app.state.sessionmaker
+    registry = HookRegistry()
+    logger = ActivityLogger(sessionmaker=sessionmaker, mode="sync")
+    logger.register(registry)
+
+    task_id = "t-ses-end-cleanup"
+
+    # Write one row to populate the map.
+    await registry.fire(
+        HookName.LITELLM_POST,
+        {"task_id": task_id, "model": "test/m", "outcome": "success"},
+    )
+    assert task_id in logger._last_entry_ids
+
+    # Fire SESSION_END.
+    await registry.fire(HookName.SESSION_END, {"task_id": task_id, "state": "completed"})
+    assert task_id not in logger._last_entry_ids
+
+
+@pytest.mark.asyncio
+async def test_session_end_missing_task_id_does_not_error(app) -> None:
+    """SESSION_END with no task_id must not raise."""
+    sessionmaker = app.state.sessionmaker
+    registry = HookRegistry()
+    ActivityLogger(sessionmaker=sessionmaker, mode="sync").register(registry)
+
+    # Must not raise even though no task_id is in the map.
+    await registry.fire(HookName.SESSION_END, {"state": "completed"})
+
+
+@pytest.mark.asyncio
+async def test_path_to_root_no_tool_calls(app) -> None:
+    """path_to_root for a dispatch with zero tool calls returns just the llm_call."""
+    from cabal.core.observability.activity_logger import path_to_root
+
+    sessionmaker = app.state.sessionmaker
+    registry = HookRegistry()
+    ActivityLogger(sessionmaker=sessionmaker, mode="sync").register(registry)
+
+    task_id = "t-no-tools"
+
+    # One LITELLM_POST, no TOOL_USE (simulates a no-tool-call dispatch).
+    await registry.fire(
+        HookName.LITELLM_POST,
+        {"task_id": task_id, "model": "test/m", "outcome": "success"},
+    )
+
+    async with sessionmaker() as session:
+        events = (
+            await session.execute(select(Event).where(Event.task_id == task_id))
+        ).scalars().all()
+
+    assert len(events) == 1
+    leaf_entry_id = events[0].payload_json["entry_id"]
+    chain = path_to_root(events, leaf_entry_id)
+    assert len(chain) == 1
+    assert chain[0].event_type == "llm_call"
