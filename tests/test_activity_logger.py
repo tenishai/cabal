@@ -382,6 +382,231 @@ async def test_result_summary_truncation_is_marked(app: FastAPI) -> None:
     assert payload["result_truncated"] is True
 
 
+# ---------------------------------------------------------------------------
+# Token + cost tests (issue #51 / B4)
+# ---------------------------------------------------------------------------
+
+
+class _FakeUsage:
+    """Minimal duck-typed litellm Usage object."""
+
+    def __init__(self, *, prompt_tokens: int, completion_tokens: int, total_tokens: int) -> None:
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
+
+
+class _FakeLiteLLMResponse:
+    """Minimal duck-typed litellm ModelResponse with usage + _hidden_params."""
+
+    def __init__(
+        self,
+        *,
+        prompt_tokens: int = 10,
+        completion_tokens: int = 20,
+        total_tokens: int = 30,
+        response_cost: float | None = 0.001,
+    ) -> None:
+        self.usage = _FakeUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
+        self._hidden_params: dict[str, Any] = {}
+        if response_cost is not None:
+            self._hidden_params["response_cost"] = response_cost
+
+
+@pytest.mark.asyncio
+async def test_llm_call_row_records_token_counts(app: FastAPI) -> None:
+    """LITELLM_POST with a stub response that has a usage block records token breakdown."""
+    sessionmaker = app.state.sessionmaker
+    registry = HookRegistry()
+    ActivityLogger(sessionmaker=sessionmaker, mode="sync").register(registry)
+
+    fake_response = _FakeLiteLLMResponse(
+        prompt_tokens=15, completion_tokens=25, total_tokens=40, response_cost=None
+    )
+    await registry.fire(
+        HookName.LITELLM_POST,
+        {
+            "task_id": "tok-task-1",
+            "model": "test/model",
+            "outcome": "success",
+            "span_id": "sp-tok",
+            "response": fake_response,
+            "tokens_used": 40,
+        },
+    )
+
+    async with sessionmaker() as session:
+        rows = (
+            await session.execute(
+                select(Event).where(Event.task_id == "tok-task-1")
+            )
+        ).scalars().all()
+
+    assert len(rows) == 1
+    payload = rows[0].payload_json
+    assert payload["tokens"] is not None, "tokens must not be null when usage is available"
+    assert payload["tokens"]["input"] == 15
+    assert payload["tokens"]["output"] == 25
+    assert payload["tokens"]["total"] == 40
+
+
+@pytest.mark.asyncio
+async def test_llm_call_row_records_cost_when_available(app: FastAPI) -> None:
+    """LITELLM_POST with a response carrying _hidden_params[response_cost] stores it."""
+    sessionmaker = app.state.sessionmaker
+    registry = HookRegistry()
+    ActivityLogger(sessionmaker=sessionmaker, mode="sync").register(registry)
+
+    fake_response = _FakeLiteLLMResponse(
+        prompt_tokens=10, completion_tokens=20, total_tokens=30, response_cost=0.00042
+    )
+    await registry.fire(
+        HookName.LITELLM_POST,
+        {
+            "task_id": "cost-task-1",
+            "model": "test/model",
+            "outcome": "success",
+            "span_id": None,
+            "response": fake_response,
+            "tokens_used": 30,
+        },
+    )
+
+    async with sessionmaker() as session:
+        rows = (
+            await session.execute(
+                select(Event).where(Event.task_id == "cost-task-1")
+            )
+        ).scalars().all()
+
+    assert len(rows) == 1
+    payload = rows[0].payload_json
+    assert payload["cost"] == pytest.approx(0.00042)
+
+
+@pytest.mark.asyncio
+async def test_llm_call_row_null_cost_when_unavailable(app: FastAPI) -> None:
+    """When the response has no cost info, cost is null — the row must still be written."""
+    sessionmaker = app.state.sessionmaker
+    registry = HookRegistry()
+    ActivityLogger(sessionmaker=sessionmaker, mode="sync").register(registry)
+
+    fake_response = _FakeLiteLLMResponse(
+        prompt_tokens=5, completion_tokens=10, total_tokens=15, response_cost=None
+    )
+    await registry.fire(
+        HookName.LITELLM_POST,
+        {
+            "task_id": "nocost-task-1",
+            "model": "test/model",
+            "outcome": "success",
+            "span_id": None,
+            "response": fake_response,
+            "tokens_used": 15,
+        },
+    )
+
+    async with sessionmaker() as session:
+        rows = (
+            await session.execute(
+                select(Event).where(Event.task_id == "nocost-task-1")
+            )
+        ).scalars().all()
+
+    # Row must exist even though cost is absent.
+    assert len(rows) == 1
+    payload = rows[0].payload_json
+    assert payload["cost"] is None
+    # Tokens must still be recorded.
+    assert payload["tokens"] is not None
+    assert payload["tokens"]["total"] == 15
+
+
+@pytest.mark.asyncio
+async def test_scalar_tokens_fallback_is_normalised_to_dict(app: FastAPI) -> None:
+    """With no response object, the scalar tokens_used fallback is normalised
+    to {"total": N} so consumers can always rely on tokens["total"]."""
+    sessionmaker = app.state.sessionmaker
+    registry = HookRegistry()
+    ActivityLogger(sessionmaker=sessionmaker, mode="sync").register(registry)
+
+    await registry.fire(
+        HookName.LITELLM_POST,
+        {
+            "task_id": "scalar-task-1",
+            "model": "test/model",
+            "outcome": "success",
+            "span_id": None,
+            # no "response" key → _extract_usage returns None → scalar fallback
+            "tokens_used": 77,
+        },
+    )
+
+    async with sessionmaker() as session:
+        rows = (
+            await session.execute(
+                select(Event).where(Event.task_id == "scalar-task-1")
+            )
+        ).scalars().all()
+
+    assert len(rows) == 1
+    payload = rows[0].payload_json
+    assert payload["tokens"] == {"total": 77}, payload["tokens"]
+    assert payload["cost"] is None
+
+
+@pytest.mark.asyncio
+async def test_token_sum_per_task_id(app: FastAPI) -> None:
+    """A SELECT can sum tokens per task_id across multiple llm_call rows."""
+    sessionmaker = app.state.sessionmaker
+    registry = HookRegistry()
+    ActivityLogger(sessionmaker=sessionmaker, mode="sync").register(registry)
+
+    task_id = "sum-task-1"
+
+    # Fire two llm_call events for the same task_id with known token totals.
+    for i, (prompt, completion, total, cost) in enumerate(
+        [(10, 20, 30, 0.001), (5, 15, 20, 0.0005)]
+    ):
+        fake_response = _FakeLiteLLMResponse(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=total,
+            response_cost=cost,
+        )
+        await registry.fire(
+            HookName.LITELLM_POST,
+            {
+                "task_id": task_id,
+                "model": "test/model",
+                "outcome": "success",
+                "span_id": f"sp-{i}",
+                "response": fake_response,
+                "tokens_used": total,
+            },
+        )
+
+    # Pull all llm_call rows for the task and sum tokens["total"] in Python
+    # (SQLite JSON path queries are dialect-specific; summing in Python is
+    # simpler and proves the data was stored correctly).
+    async with sessionmaker() as session:
+        rows = (
+            await session.execute(
+                select(Event)
+                .where(Event.task_id == task_id)
+                .where(Event.event_type == "llm_call")
+            )
+        ).scalars().all()
+
+    assert len(rows) == 2
+    token_totals = [r.payload_json["tokens"]["total"] for r in rows]
+    assert sum(token_totals) == 50, f"expected 50 total tokens, got {sum(token_totals)}"
+
+
 @pytest.mark.asyncio
 async def test_concurrent_writes_all_land(app: FastAPI) -> None:
     """Issue #2 guard: many concurrent TOOL_USE writers against the shared

@@ -27,8 +27,13 @@ Design decisions
   concurrent writers to the shared SQLite file are serialised by WAL +
   ``busy_timeout`` (proven by ``test_concurrent_writes_all_land``).
 
-* **Tokens / cost** are explicitly absent — that is scope #B4 / issue #51.
-  Do not add them here.
+* **Tokens / cost** (#51 / B4): the ``LITELLM_POST`` success payload carries
+  both ``tokens_used`` (scalar int total, from ``_tokens_used()``) and
+  ``response`` (the raw LiteLLM ModelResponse).  ``_on_litellm_post`` reads
+  the prompt/completion breakdown from ``response.usage`` when available and
+  falls back to the scalar total; cost comes from
+  ``response._hidden_params["response_cost"]``.  Both are stored as ``null``
+  when unavailable — a missing-cost or missing-usage must never drop the row.
 """
 
 from __future__ import annotations
@@ -44,6 +49,62 @@ from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.models import Event
 
 log = structlog.get_logger(__name__)
+
+
+def _extract_usage(response: Any) -> dict[str, int] | None:
+    """Extract token usage breakdown from a LiteLLM/OpenAI response object.
+
+    Returns ``{"input": N, "output": N, "total": N}`` when the usage block is
+    present, or ``None`` when it is absent / malformed.  Never raises.
+    """
+    try:
+        if response is None:
+            return None
+        usage = response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None)
+        if usage is None:
+            return None
+        if isinstance(usage, dict):
+            prompt = usage.get("prompt_tokens")
+            completion = usage.get("completion_tokens")
+            total = usage.get("total_tokens")
+        else:
+            prompt = getattr(usage, "prompt_tokens", None)
+            completion = getattr(usage, "completion_tokens", None)
+            total = getattr(usage, "total_tokens", None)
+        if prompt is None and completion is None and total is None:
+            return None
+        result: dict[str, int] = {}
+        if prompt is not None:
+            result["input"] = int(prompt)
+        if completion is not None:
+            result["output"] = int(completion)
+        if total is not None:
+            result["total"] = int(total)
+        elif "input" in result and "output" in result:
+            result["total"] = result["input"] + result["output"]
+        return result or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _extract_cost(response: Any) -> float | None:
+    """Extract response cost from LiteLLM's hidden params.
+
+    LiteLLM stores the computed cost on ``response._hidden_params["response_cost"]``
+    after a successful provider call.  Returns ``None`` when unavailable.
+    Never raises.
+    """
+    if response is None:
+        return None
+    try:
+        hidden = getattr(response, "_hidden_params", None)
+        if isinstance(hidden, dict):
+            cost = hidden.get("response_cost")
+            if cost is not None:
+                return float(cost)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 @dataclass
@@ -112,9 +173,28 @@ class ActivityLogger:
         branches *before* the provider is called (litellm_client.py), so an
         ``llm_call`` row does not always mean a provider round-trip happened.
         Consult ``outcome`` before counting rows as provider invocations.
+
+        Token usage is sourced from ``payload["response"].usage`` (breakdown)
+        with ``payload["tokens_used"]`` (scalar total) as a fallback.  Cost
+        comes from ``response._hidden_params["response_cost"]``.  Both are
+        stored as ``null`` when unavailable — never raises.
         """
         task_id = payload.get("task_id")
         try:
+            response = payload.get("response")
+            # `tokens` is always a dict-or-None so consumers can rely on
+            # tokens["total"]: prefer the response.usage breakdown, else
+            # normalise the scalar tokens_used fallback into {"total": N}.
+            tokens = _extract_usage(response)
+            if tokens is None:
+                scalar = payload.get("tokens_used")
+                if scalar is not None:
+                    try:
+                        tokens = {"total": int(scalar)}
+                    except (TypeError, ValueError):
+                        tokens = None  # never let a bad scalar drop the row
+            cost = _extract_cost(response)
+
             async with open_session(self.sessionmaker) as session:
                 session.add(
                     Event(
@@ -124,6 +204,8 @@ class ActivityLogger:
                             "model": payload.get("model"),
                             "outcome": payload.get("outcome", "success"),
                             "span_id": payload.get("span_id"),
+                            "tokens": tokens,
+                            "cost": cost,
                         },
                     )
                 )
