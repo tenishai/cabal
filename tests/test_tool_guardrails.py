@@ -21,7 +21,7 @@ import pytest
 from cabal.agents.llm_persona import LLMPersona
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.guardrails import GuardrailContext, Verdict
-from cabal.core.hooks.registry import HookRegistry
+from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
 # ---------------------------------------------------------------------------
@@ -477,3 +477,111 @@ async def test_tool_guardrail_context_phase_values() -> None:
 
     assert pre_phases == ["tool_call"]
     assert post_phases == ["tool_result"]
+
+
+# ---------------------------------------------------------------------------
+# 6. Audit-trail fidelity when a guardrail acts (Prudence #57: #1/#2/#3)
+# ---------------------------------------------------------------------------
+
+
+def _capture_tool_use() -> tuple[HookRegistry, list[dict[str, Any]]]:
+    """A HookRegistry with a TOOL_USE handler that records every payload."""
+    registry = HookRegistry()
+    captured: list[dict[str, Any]] = []
+
+    async def _capture(payload: dict[str, Any]) -> None:
+        captured.append(payload)
+
+    registry.register(HookName.TOOL_USE, _capture, label="capture")
+    return registry, captured
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_block_records_error_row() -> None:
+    """A pre-tool BLOCK fires exactly one TOOL_USE row with is_error=True and the
+    block reason as the result — a policy denial is visible in the audit log
+    (Prudence #57 Important #1/#2)."""
+    registry, captured = _capture_tool_use()
+    llm_client = LiteLLMClient(
+        acompletion_fn=_tool_call_stub(final_reply="ok"), hook_registry=registry
+    )
+    proxy = _FakeToolProxy(result_text="never")
+    persona = LLMPersona(
+        name="t",
+        model="m",
+        llm_client=llm_client,
+        tool_proxy=proxy,
+        tool_call_guardrails=[_BlockNamedTool("calculator__add", reason="nope")],
+    )
+    result = await persona.handle_task(_user_task("t-audit-block"))
+    assert result.status.state == "completed"
+    assert proxy.calls == []  # never dispatched
+
+    assert len(captured) == 1, captured
+    row = captured[0]
+    assert row["is_error"] is True
+    assert "blocked by policy" in row["result_summary"]
+    assert "nope" in row["result_summary"]
+    assert row["latency_ms"] == 0
+
+
+@pytest.mark.asyncio
+async def test_post_tool_block_records_error_row() -> None:
+    """A post-tool BLOCK marks the TOOL_USE row is_error=True even though the
+    tool itself ran cleanly (Prudence #57 Important #2)."""
+    registry, captured = _capture_tool_use()
+    llm_client = LiteLLMClient(
+        acompletion_fn=_tool_call_stub(final_reply="ok"), hook_registry=registry
+    )
+    proxy = _FakeToolProxy(result_text="clean result")  # not an error
+    persona = LLMPersona(
+        name="t",
+        model="m",
+        llm_client=llm_client,
+        tool_proxy=proxy,
+        tool_result_guardrails=[_BlockResult(reason="policy")],
+    )
+    result = await persona.handle_task(_user_task("t-audit-postblock"))
+    assert result.status.state == "completed"
+    assert len(proxy.calls) == 1  # the tool DID run
+
+    assert len(captured) == 1, captured
+    row = captured[0]
+    assert row["is_error"] is True  # forced True by the block, not stale False
+    assert "blocked by policy" in row["result_summary"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_rewrite_blocks_without_crashing() -> None:
+    """A guardrail returning a REWRITE dict missing 'arguments' must not KeyError
+    and crash the Task — it degrades to a blocked call (Prudence #57 Important
+    #3)."""
+    registry, captured = _capture_tool_use()
+
+    class _MalformedRewrite:
+        name = "malformed_rewrite"
+
+        async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+            if isinstance(target, dict):
+                return Verdict.rewrite({"name": "calculator__add"})  # no 'arguments'
+            return Verdict.pass_()
+
+    llm_client = LiteLLMClient(
+        acompletion_fn=_tool_call_stub(final_reply="ok"), hook_registry=registry
+    )
+    proxy = _FakeToolProxy(result_text="never")
+    persona = LLMPersona(
+        name="t",
+        model="m",
+        llm_client=llm_client,
+        tool_proxy=proxy,
+        tool_call_guardrails=[_MalformedRewrite()],
+    )
+    result = await persona.handle_task(_user_task("t-malformed"))
+    # Task completes (not crashed), the tool is NOT dispatched, and the row
+    # records the malformed rewrite as an error.
+    assert result.status.state == "completed"
+    assert proxy.calls == []
+    assert len(captured) == 1, captured
+    assert captured[0]["is_error"] is True
+    assert "malformed" in captured[0]["result_summary"]

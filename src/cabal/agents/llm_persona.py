@@ -378,12 +378,20 @@ class LLMPersona:
                 for call in tool_calls:
                     call_name = call["name"]
                     call_args = call["arguments"]
+                    # Unified per-call recording: every call — dispatched,
+                    # rewritten, or blocked — fires exactly one TOOL_USE row with a
+                    # coherent (result_content, is_error, latency_ms), so a policy
+                    # denial is as visible in the audit log as a real call.
+                    result_content: str
+                    is_error = False
+                    latency_ms = 0
+                    dispatched = True
 
-                    # cabal#52 — pre-tool guardrails. BLOCK skips call_tool and
-                    # injects an error tool message so the LLM sees the refusal
-                    # and can react. REWRITE patches name/arguments before dispatch.
-                    # NOTE: emit tool_call row before call_tool for crash-gap
-                    # detection is deferred (out of scope for #52 per spec).
+                    # cabal#52 — pre-tool guardrails. BLOCK skips call_tool (the
+                    # call is recorded as an error result the LLM sees and reacts
+                    # to; the Task is NOT failed). REWRITE patches name/arguments.
+                    # NOTE: emitting the tool_call row *before* call_tool for
+                    # crash-gap detection is deferred (out of scope for #52).
                     if self.tool_call_guardrails:
                         tc_target = {
                             "name": call_name,
@@ -394,35 +402,55 @@ class LLMPersona:
                             self.tool_call_guardrails, tc_target, "tool_call", task
                         )
                         if block_reason is not None:
-                            # BLOCK: skip dispatch; inject error tool message.
-                            # Task is NOT failed — only this call is blocked.
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": call["id"],
-                                    "content": f"tool call blocked by policy: {block_reason}",
-                                }
+                            result_content = f"tool call blocked by policy: {block_reason}"
+                            is_error = True
+                            dispatched = False
+                        elif not (
+                            isinstance(patched, dict)
+                            and "name" in patched
+                            and "arguments" in patched
+                        ):
+                            # A malformed REWRITE must not crash the whole Task
+                            # (issue #52's thesis is "block one call, not the
+                            # dispatch"). Treat it as a blocked call with a clear
+                            # reason instead of letting a KeyError escape.
+                            result_content = (
+                                "tool call blocked: guardrail returned a malformed "
+                                "rewrite (expected a dict with 'name' and 'arguments')"
                             )
-                            continue
-                        # REWRITE: use patched name/arguments; tool_call_id unchanged.
-                        call_name = patched["name"]
-                        call_args = patched["arguments"]
-
-                    t0 = time.monotonic()
-                    outcome = await self.tool_proxy.call_tool(call_name, call_args)
-                    latency_ms = round((time.monotonic() - t0) * 1000)
-                    result_content = _outcome_to_chat_content(outcome)
-
-                    # cabal#52 — post-tool guardrails. REWRITE replaces the result
-                    # the LLM sees; BLOCK injects a policy-error string instead.
-                    if self.tool_result_guardrails:
-                        patched_result, block_reason = await self._apply_tool_guardrails(
-                            self.tool_result_guardrails, result_content, "tool_result", task
-                        )
-                        if block_reason is not None:
-                            result_content = f"tool result blocked by policy: {block_reason}"
+                            is_error = True
+                            dispatched = False
                         else:
-                            result_content = patched_result
+                            # REWRITE: patched name/arguments; tool_call_id is pinned
+                            # to call["id"] (it must match the assistant message) —
+                            # a rewrite that changes it is intentionally ignored.
+                            call_name = patched["name"]
+                            call_args = patched["arguments"]
+
+                    if dispatched:
+                        t0 = time.monotonic()
+                        outcome = await self.tool_proxy.call_tool(call_name, call_args)
+                        latency_ms = round((time.monotonic() - t0) * 1000)
+                        result_content = _outcome_to_chat_content(outcome)
+                        is_error = getattr(outcome, "is_error", False)
+
+                        # cabal#52 — post-tool guardrails. REWRITE replaces the
+                        # result the LLM sees; BLOCK injects a policy-error string
+                        # and marks the row is_error (the recorded content is an
+                        # error). A REWRITE leaves is_error tracking the tool's
+                        # actual outcome, not the rewritten content.
+                        if self.tool_result_guardrails:
+                            patched_result, block_reason = await self._apply_tool_guardrails(
+                                self.tool_result_guardrails,
+                                result_content,
+                                "tool_result",
+                                task,
+                            )
+                            if block_reason is not None:
+                                result_content = f"tool result blocked by policy: {block_reason}"
+                                is_error = True
+                            else:
+                                result_content = patched_result
 
                     result_truncated = len(result_content) > _RESULT_SUMMARY_MAX
                     await self.llm_client.hook_registry.fire(
@@ -434,7 +462,7 @@ class LLMPersona:
                             "arguments": call_args,
                             "result_summary": result_content[:_RESULT_SUMMARY_MAX],
                             "result_truncated": result_truncated,
-                            "is_error": getattr(outcome, "is_error", False),
+                            "is_error": is_error,
                             "latency_ms": latency_ms,
                         },
                     )
