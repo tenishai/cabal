@@ -58,6 +58,7 @@ from cabal.core.memory.session_tracker import (
 from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 from cabal.core.memory.techne_store import TechneMemoryStore
 from cabal.core.models import Persona
+from cabal.core.observability.activity_logger import ActivityLogger
 from cabal.core.observability.event_bus import EventBus
 from cabal.core.observability.langfuse_client import LangfuseTraceClient
 from cabal.core.observability.trace_exporter import TraceExporter
@@ -206,6 +207,11 @@ def create_app(
                 TraceExporter(client=trace_client, mode="async").register(hook_registry)
                 _app.state.trace_client = trace_client
                 log.info("trace.langfuse_enabled", host=identity.langfuse.host)
+
+        # Activity logger — always on; writes tool_call, tool_result, and
+        # llm_call rows to the events table.  Not gated on Langfuse config.
+        ActivityLogger(sessionmaker=sessionmaker).register(hook_registry)
+        log.info("activity_logger.registered")
 
         event_bus = EventBus()
         _app.state.event_bus = event_bus

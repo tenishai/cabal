@@ -12,6 +12,7 @@ each persona its own model from identity.toml.
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -25,6 +26,7 @@ from cabal.core.a2a.codes import (
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import AbortCoordinator, TaskAborted
 from cabal.core.checkpoint import Checkpoint, CheckpointStore, NoOpCheckpointStore
+from cabal.core.hooks.registry import HookName
 from cabal.core.llm.litellm_client import (
     CabalLLMError,
     LiteLLMClient,
@@ -34,6 +36,11 @@ from cabal.core.llm.litellm_client import (
 )
 from cabal.core.memory.session_tracker import NoOpSessionTracker, SessionTracker
 from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
+
+# Hard cap on the tool-result summary stored in the activity log's tool_result
+# row. The full result still flows to the LLM as the tool message; only the
+# audit-log copy is bounded. `result_truncated` records whether this bit.
+_RESULT_SUMMARY_MAX = 2000
 
 
 @dataclass
@@ -257,12 +264,29 @@ class LLMPersona:
                 self.abort_coordinator.raise_if_aborted(task.id)
                 messages = _extend_with_tool_calls(messages, response, tool_calls)
                 for call in tool_calls:
+                    t0 = time.monotonic()
                     outcome = await self.tool_proxy.call_tool(call["name"], call["arguments"])
+                    latency_ms = round((time.monotonic() - t0) * 1000)
+                    result_content = _outcome_to_chat_content(outcome)
+                    result_truncated = len(result_content) > _RESULT_SUMMARY_MAX
+                    await self.llm_client.hook_registry.fire(
+                        HookName.TOOL_USE,
+                        {
+                            "task_id": task.id,
+                            "tool_call_id": call["id"],
+                            "tool_name": call["name"],
+                            "arguments": call["arguments"],
+                            "result_summary": result_content[:_RESULT_SUMMARY_MAX],
+                            "result_truncated": result_truncated,
+                            "is_error": getattr(outcome, "is_error", False),
+                            "latency_ms": latency_ms,
+                        },
+                    )
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": call["id"],
-                            "content": _outcome_to_chat_content(outcome),
+                            "content": result_content,
                         }
                     )
                 steps_remaining -= 1
