@@ -421,3 +421,42 @@ async def test_router_doom_loop_different_payload_does_not_block(
         assert r.status.state == "completed", f"dispatch {i} unexpectedly blocked"
 
     assert len(handler.dispatched) == 4
+
+
+@pytest.mark.asyncio
+async def test_distinct_task_ids_without_context_id_never_block() -> None:
+    """Documents the known limitation (cabal#59): without a stable shared
+    session key, the detector cannot group re-delegations. Fresh task ids and
+    NO context_id — the production shape of the rook fan-out and A2A inbound
+    paths — means every check is a new session, so the counter never trips."""
+    g = DoomLoopGuardrail(threshold=3)
+    ctx = _ctx()
+    # Byte-identical delegation, but each hop is a fresh task id with no
+    # context_id — exactly what bypasses the counter today.
+    for i in range(6):
+        task = _task("identical payload", context_id=None, task_id=f"fresh-{i}")
+        v = await g.check(task, ctx)
+        assert v.type == VerdictType.PASS, f"iteration {i} unexpectedly blocked"
+
+
+@pytest.mark.asyncio
+async def test_non_serialisable_data_part_does_not_crash() -> None:
+    """A DataPart whose payload isn't JSON-serialisable must not raise out of
+    check() and crash the dispatch — it falls back to repr() (Prudence nit)."""
+    g = DoomLoopGuardrail(threshold=2)
+    ctx = _ctx()
+
+    class _Weird:
+        def __repr__(self) -> str:
+            return "weird"
+
+    task = _task("x")
+    # Force a non-serialisable data part onto the message.
+    from cabal.core.a2a.types import DataPart
+
+    task.status.message.parts = [DataPart(data={"obj": _Weird()})]
+    # Must return a Verdict (not raise); two identical → block at threshold=2.
+    v1 = await g.check(task, ctx)
+    assert v1.type == VerdictType.PASS
+    v2 = await g.check(task, ctx)
+    assert v2.type == VerdictType.BLOCK

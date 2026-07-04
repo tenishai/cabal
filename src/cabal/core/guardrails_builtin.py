@@ -27,12 +27,22 @@ class DoomLoopGuardrail:
     CorrectedError-shaped reason message so the caller can change approach.
 
     **Session key** — ``task.context_id`` when present; falls back to
-    ``task.id`` when ``context_id`` is absent (e.g., isolated single-hop
-    calls).  ``context_id`` is the A2A-level conversation identifier that
-    groups multiple dispatches in the same chain and is stable across hops,
-    making it the natural session scope.  ``task.id`` is unique per dispatch
-    and therefore only groups repeated dispatches of the *exact same* Task
-    object — useful for unit-testing but not the production case.
+    ``task.id`` when ``context_id`` is absent. Grouping only works when a
+    *stable, shared, non-None* key recurs across the delegations.
+
+    SCOPE / EFFICACY (honest limitation — cabal#59): the counter only trips
+    when the same session key recurs. Today that holds for a client re-sending
+    a byte-identical message under a shared ``context_id`` (e.g. ``cbl chat``,
+    which reuses one context id per session). It does **not** yet hold for the
+    autonomous multi-persona loop that motivated #42: the rook fan-out calls
+    ``subord.handle_task`` directly (bypassing the router, so router
+    ``input_guardrails`` never run) with a fresh sub-task id and no
+    ``context_id``; and the A2A inbound routes mint a fresh uuid per hop and
+    drop ``context_id`` — so each re-delegation looks like a new session and
+    the counter resets. Closing that gap (propagating a stable ``context_id``
+    across hops, or running this guardrail at the subordinate/``handle_task``
+    boundary) is tracked in #59. This class is a correct building block; wiring
+    it to catch autonomous loops depends on #59.
 
     **Delegation key** — ``SHA-256(target_agent_name || NUL || payload)``
     where:
@@ -139,12 +149,23 @@ def _canonical_payload(task: Task) -> str:
     if msg is None:
         return ""
     parts: list[tuple[str, str]] = []
-    for part in msg.parts:
+    for i, part in enumerate(msg.parts):
         if hasattr(part, "text"):
             parts.append(("text", part.text))
         elif hasattr(part, "data"):
             # Sort keys for a deterministic representation of structured data.
-            parts.append(("data", json.dumps(part.data, sort_keys=True)))
+            # A non-JSON-serialisable data part must NOT crash the dispatch this
+            # guardrail is meant to protect — fall back to repr() on failure.
+            try:
+                encoded = json.dumps(part.data, sort_keys=True)
+            except (TypeError, ValueError):
+                encoded = repr(part.data)
+            parts.append(("data", encoded))
+        else:
+            # Neither text nor data (e.g. a FilePart): include a positional
+            # discriminator so two *different* non-text/data delegations don't
+            # both hash the empty payload and false-positive as identical.
+            parts.append(("part", f"{i}:{type(part).__name__}"))
     return json.dumps(parts)
 
 
