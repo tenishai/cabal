@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from typing import Any
 
 from cabal.core.a2a.types import Task
@@ -130,6 +131,86 @@ class DoomLoopGuardrail:
                 f"{count} identical delegations to {label!r} without progress"
                 f" — pausing; change approach"
             )
+        return Verdict.pass_()
+
+
+# ---------------------------------------------------------------------------
+# ValidateBeforeRecord — cabal#43
+# ---------------------------------------------------------------------------
+
+
+class ValidateBeforeRecord:
+    """Validate a mutating-tool result before it is appended to the conversation.
+
+    Applied as a ``tool_result_guardrail`` on an LLMPersona.  For tools
+    identified as *mutating*, the pluggable ``validate`` callable is run; on
+    failure (a non-None error string), a BLOCK verdict is returned so the
+    structured error reaches the persona *before* the observation is recorded.
+    The existing #52 tool_result BLOCK path injects the error as the tool
+    message and sets is_error=True — no extra wiring needed.
+
+    For non-mutating tools (or when tool identity is absent from the context)
+    the guardrail is a no-op pass.
+
+    Note: the str_replace-vs-line-number edit-format preference mentioned in
+    issue #43 relates to the edit tool itself, not this guardrail — that is a
+    separate concern tracked outside this implementation.
+
+    Wiring example::
+
+        from cabal.core.guardrails_builtin import ValidateBeforeRecord
+
+        def _run_lint(tool_name: str, arguments: dict, result: str) -> str | None:
+            # Return an error string on failure, None on pass.
+            ...
+
+        persona = LLMPersona(
+            ...,
+            tool_result_guardrails=[
+                ValidateBeforeRecord(
+                    mutating_tools={"code_edit", "write_file"},
+                    validate=_run_lint,
+                )
+            ],
+        )
+
+    Args:
+        mutating_tools: Either a ``set[str]`` of tool names that are
+            considered mutating, or a ``Callable[[str], bool]`` predicate
+            that returns True for mutating tool names.  Any tool NOT in this
+            set (or for which the predicate returns False) passes unconditionally.
+        validate: ``(tool_name, arguments, result) -> str | None``.  Return
+            an error string on validation failure, or ``None`` on pass.  The
+            callable must be synchronous; wrap async validators in
+            ``asyncio.run`` or restructure the guardrail.
+    """
+
+    name = "validate_before_record"
+
+    def __init__(
+        self,
+        mutating_tools: set[str] | Callable[[str], bool],
+        validate: Callable[[str, dict[str, Any], str], str | None],
+    ) -> None:
+        if callable(mutating_tools):
+            self._is_mutating: Callable[[str], bool] = mutating_tools
+        else:
+            _frozen = frozenset(mutating_tools)
+            self._is_mutating = lambda n, _s=_frozen: n in _s
+        self._validate = validate
+
+    async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+        """Return BLOCK when the validator fails for a mutating tool; PASS otherwise."""
+        tool_name = ctx.tool_name
+        if tool_name is None or not self._is_mutating(tool_name):
+            return Verdict.pass_()
+
+        arguments: dict[str, Any] = ctx.tool_arguments or {}
+        result_str = target if isinstance(target, str) else str(target)
+
+        error = self._validate(tool_name, arguments, result_str)
+        if error is not None:
+            return Verdict.block(f"validation failed for {tool_name}: {error}")
         return Verdict.pass_()
 
 

@@ -232,6 +232,9 @@ class LLMPersona:
         target: Any,
         phase: str,
         task: Task,
+        *,
+        tool_name: str | None = None,
+        tool_arguments: dict[str, Any] | None = None,
     ) -> tuple[Any, str | None]:
         """Run tool-boundary guardrails against ``target``.
 
@@ -239,6 +242,11 @@ class LLMPersona:
         Task — the caller injects an error tool message and skips
         ``call_tool`` (or replaces the result string). This is pi's model for
         per-call policy: block one call, not the whole dispatch.
+
+        ``tool_name`` and ``tool_arguments`` are threaded into the
+        GuardrailContext so guardrails can identify which tool produced the
+        target (cabal#43: ValidateBeforeRecord needs this to gate on mutating
+        tools only).
 
         Returns ``(possibly-rewritten target, None)`` on PASS/REWRITE.
         Returns ``(original target, block_reason)`` on BLOCK.
@@ -249,6 +257,8 @@ class LLMPersona:
             persona_name=self.name,
             task_id=task.id,
             phase=phase,
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
         )
         verdict = await run_guardrails(guardrails, target, ctx)
         if verdict.type == VerdictType.BLOCK:
@@ -399,7 +409,12 @@ class LLMPersona:
                             "tool_call_id": call["id"],
                         }
                         patched, block_reason = await self._apply_tool_guardrails(
-                            self.tool_call_guardrails, tc_target, "tool_call", task
+                            self.tool_call_guardrails,
+                            tc_target,
+                            "tool_call",
+                            task,
+                            tool_name=call_name,
+                            tool_arguments=call_args,
                         )
                         if block_reason is not None:
                             result_content = f"tool call blocked by policy: {block_reason}"
@@ -445,6 +460,8 @@ class LLMPersona:
                                 result_content,
                                 "tool_result",
                                 task,
+                                tool_name=call_name,
+                                tool_arguments=call_args,
                             )
                             if block_reason is not None:
                                 result_content = f"tool result blocked by policy: {block_reason}"
