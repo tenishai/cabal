@@ -162,9 +162,12 @@ def _canonical_payload(task: Task) -> str:
                 encoded = repr(part.data)
             parts.append(("data", encoded))
         else:
-            # Neither text nor data (e.g. a FilePart): include a positional
-            # discriminator so two *different* non-text/data delegations don't
-            # both hash the empty payload and false-positive as identical.
+            # Neither text nor data (e.g. a FilePart): include a position+type
+            # discriminator. This is only a partial identity — it distinguishes
+            # parts by slot and class, NOT by content — so two *different*
+            # single FileParts still hash identically ("0:FilePart"). It's
+            # strictly better than the old all-empty-payload collision; precise
+            # file-content hashing is out of scope until such parts are used.
             parts.append(("part", f"{i}:{type(part).__name__}"))
     return json.dumps(parts)
 
