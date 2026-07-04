@@ -1,8 +1,9 @@
 """ActivityLogger — durable per-activity rows in the events table.
 
-Registers hook handlers for TOOL_USE and LITELLM_POST and writes rows
-to the existing ``events`` table (models.Event). Unlike checkpoints,
-these rows are NEVER dropped on task success — that's the whole point.
+Registers hook handlers for TOOL_USE, LITELLM_POST, and SESSION_END and
+writes rows to the existing ``events`` table (models.Event). Unlike
+checkpoints, these rows are NEVER dropped on task success — that's the
+whole point.
 
 Design decisions
 ----------------
@@ -27,6 +28,21 @@ Design decisions
   concurrent writers to the shared SQLite file are serialised by WAL +
   ``busy_timeout`` (proven by ``test_concurrent_writes_all_land``).
 
+* **entry_id / parent_id tree shape** (#50): every row carries an
+  ``entry_id`` (12-char hex, stable per row) and a ``parent_id`` (the
+  previous entry in the same task's emission sequence, or ``None`` for the
+  first).  Both live inside ``payload_json`` — no new DB columns, no
+  migration.  The per-task last-entry map (``_last_entry_ids``) is keyed by
+  ``task_id`` and cleaned up on ``SESSION_END``.
+
+  Emission order within one full tool-call dispatch:
+    1. LITELLM_POST (initial completion)  → ``llm_call``  parent=None
+    2. TOOL_USE (per-call pair)           → ``tool_call`` parent=llm_call.entry_id
+                                          → ``tool_result`` parent=tool_call.entry_id
+    3. LITELLM_POST (post-tool completion) → ``llm_call`` parent=tool_result.entry_id
+
+  Concurrent *different* tasks are isolated by the task_id key.
+
 * **Tokens / cost** (#51 / B4): the ``LITELLM_POST`` success payload carries
   both ``tokens_used`` (scalar int total, from ``_tokens_used()``) and
   ``response`` (the raw LiteLLM ModelResponse).  ``_on_litellm_post`` reads
@@ -38,8 +54,9 @@ Design decisions
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -49,6 +66,46 @@ from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.models import Event
 
 log = structlog.get_logger(__name__)
+
+
+def _new_entry_id() -> str:
+    """Generate a short stable id for a single activity row (12-char hex)."""
+    return uuid4().hex[:12]
+
+
+def path_to_root(events: list[Any], leaf_entry_id: str) -> list[Any]:
+    """Walk the parent_id chain from ``leaf_entry_id`` back to the root.
+
+    Builds an in-memory ``{entry_id: event}`` map from ``events`` (a list of
+    ``models.Event`` rows for a single task) and walks ``parent_id`` from the
+    leaf back to root.  Returns the chain in **root→leaf** order so index 0
+    is the dispatch origin.
+
+    Handles missing/None ``parent_id`` cleanly (stops the walk); a cycle
+    guard prevents infinite loops in corrupt data.
+    """
+    by_entry_id: dict[str, Any] = {}
+    for event in events:
+        payload = event.payload_json or {}
+        eid = payload.get("entry_id")
+        if eid is not None:
+            by_entry_id[eid] = event
+
+    chain: list[Any] = []
+    current_id: str | None = leaf_entry_id
+    seen: set[str] = set()
+    while current_id is not None:
+        if current_id in seen:
+            break  # cycle guard
+        seen.add(current_id)
+        event = by_entry_id.get(current_id)
+        if event is None:
+            break
+        chain.append(event)
+        current_id = (event.payload_json or {}).get("parent_id")
+
+    chain.reverse()  # root → leaf
+    return chain
 
 
 def _extract_usage(response: Any) -> dict[str, int] | None:
@@ -109,14 +166,19 @@ def _extract_cost(response: Any) -> float | None:
 
 @dataclass
 class ActivityLogger:
-    """Wire the TOOL_USE and LITELLM_POST hooks to durable event rows.
+    """Wire the TOOL_USE, LITELLM_POST, and SESSION_END hooks to durable event rows.
 
     Pass ``sessionmaker`` — the same one wired to the rest of the app —
     so writes land in the same SQLite file as all other events.
+
+    ``_last_entry_ids`` is a per-task map of the most-recently-written
+    ``entry_id``, used to chain ``parent_id`` across hook firings within the
+    same task.  It is pruned on ``SESSION_END`` so it doesn't grow unbounded.
     """
 
     sessionmaker: async_sessionmaker[AsyncSession]
     mode: str = "sync"
+    _last_entry_ids: dict[str, str] = field(default_factory=dict, init=False)
 
     def register(self, registry: HookRegistry) -> None:
         registry.register(
@@ -131,11 +193,31 @@ class ActivityLogger:
             mode=self.mode,
             label="activity.litellm_post",
         )
+        registry.register(
+            HookName.SESSION_END,
+            self._on_session_end,
+            mode=self.mode,
+            label="activity.session_end",
+        )
 
     async def _on_tool_use(self, payload: dict[str, Any]) -> None:
-        """Write a ``tool_call`` row and a ``tool_result`` row."""
+        """Write a ``tool_call`` row and a ``tool_result`` row.
+
+        Both rows are written in a single DB transaction.  The ``tool_call``
+        row's ``parent_id`` points at the previous entry for this task (e.g.
+        the initial ``llm_call``); the ``tool_result`` row's ``parent_id``
+        points at the ``tool_call`` row.  The map is updated to the
+        ``tool_result``'s ``entry_id`` so the next row (usually another
+        ``llm_call``) chains correctly.
+        """
         task_id = payload.get("task_id")
         tool_name = payload.get("tool_name", "")
+
+        # Generate stable ids for both rows before the write.
+        tc_entry_id = _new_entry_id()
+        tr_entry_id = _new_entry_id()
+        prior_entry_id = self._last_entry_ids.get(task_id) if task_id else None
+
         try:
             async with open_session(self.sessionmaker) as session:
                 session.add(
@@ -143,6 +225,8 @@ class ActivityLogger:
                         task_id=task_id,
                         event_type="tool_call",
                         payload_json={
+                            "entry_id": tc_entry_id,
+                            "parent_id": prior_entry_id,
                             "tool_name": tool_name,
                             "arguments": payload.get("arguments"),
                             "tool_call_id": payload.get("tool_call_id"),
@@ -154,6 +238,8 @@ class ActivityLogger:
                         task_id=task_id,
                         event_type="tool_result",
                         payload_json={
+                            "entry_id": tr_entry_id,
+                            "parent_id": tc_entry_id,
                             "tool_name": tool_name,
                             "result_summary": payload.get("result_summary"),
                             "result_truncated": payload.get("result_truncated", False),
@@ -163,6 +249,11 @@ class ActivityLogger:
                         },
                     )
                 )
+            # Advance the chain only after a successful commit: a dropped write
+            # then leaves the map at the prior entry, so the next row reconnects
+            # to it (skipping the lost node) rather than orphaning the whole tail.
+            if task_id is not None:
+                self._last_entry_ids[task_id] = tr_entry_id
         except Exception as exc:  # noqa: BLE001
             log.warning("activity.tool_use_write_failed", task_id=task_id, error=str(exc))
 
@@ -180,6 +271,10 @@ class ActivityLogger:
         stored as ``null`` when unavailable — never raises.
         """
         task_id = payload.get("task_id")
+
+        lc_entry_id = _new_entry_id()
+        prior_entry_id = self._last_entry_ids.get(task_id) if task_id else None
+
         try:
             response = payload.get("response")
             # `tokens` is always a dict-or-None so consumers can rely on
@@ -201,6 +296,8 @@ class ActivityLogger:
                         task_id=task_id,
                         event_type="llm_call",
                         payload_json={
+                            "entry_id": lc_entry_id,
+                            "parent_id": prior_entry_id,
                             "model": payload.get("model"),
                             "outcome": payload.get("outcome", "success"),
                             "span_id": payload.get("span_id"),
@@ -209,5 +306,26 @@ class ActivityLogger:
                         },
                     )
                 )
+            # Advance the chain only after a successful commit (see _on_tool_use).
+            if task_id is not None:
+                self._last_entry_ids[task_id] = lc_entry_id
         except Exception as exc:  # noqa: BLE001
             log.warning("activity.llm_call_write_failed", task_id=task_id, error=str(exc))
+
+    async def _on_session_end(self, payload: dict[str, Any]) -> None:
+        """Remove the task's last-entry-id from the map when the session ends.
+
+        Keeps ``_last_entry_ids`` from growing unbounded across many tasks.
+        Silently tolerates a missing or already-absent ``task_id``.
+
+        NOTE: cleanup is *coupled* to SESSION_END firing with the same
+        ``task_id`` the activity hooks used — true for the normal dispatch
+        path (router fires SESSION_END on the session-root ``task.id``), but
+        the map's real bound is "tasks that fire an activity hook but never a
+        SESSION_END" (e.g. some resume paths). Blast radius is tiny — one
+        ``str -> 12-char str`` (~60 bytes) per orphaned task, cleared on
+        process restart — so this is acceptable for a best-effort audit log.
+        """
+        task_id = payload.get("task_id")
+        if task_id is not None:
+            self._last_entry_ids.pop(task_id, None)
