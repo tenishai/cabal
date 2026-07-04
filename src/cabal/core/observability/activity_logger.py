@@ -182,7 +182,14 @@ class ActivityLogger:
         task_id = payload.get("task_id")
         try:
             response = payload.get("response")
-            tokens = _extract_usage(response) or payload.get("tokens_used") or None
+            # `tokens` is always a dict-or-None so consumers can rely on
+            # tokens["total"]: prefer the response.usage breakdown, else
+            # normalise the scalar tokens_used fallback into {"total": N}.
+            tokens = _extract_usage(response)
+            if tokens is None:
+                scalar = payload.get("tokens_used")
+                if scalar is not None:
+                    tokens = {"total": int(scalar)}
             cost = _extract_cost(response)
 
             async with open_session(self.sessionmaker) as session:

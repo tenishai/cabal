@@ -527,6 +527,39 @@ async def test_llm_call_row_null_cost_when_unavailable(app: FastAPI) -> None:
 
 
 @pytest.mark.asyncio
+async def test_scalar_tokens_fallback_is_normalised_to_dict(app: FastAPI) -> None:
+    """With no response object, the scalar tokens_used fallback is normalised
+    to {"total": N} so consumers can always rely on tokens["total"]."""
+    sessionmaker = app.state.sessionmaker
+    registry = HookRegistry()
+    ActivityLogger(sessionmaker=sessionmaker, mode="sync").register(registry)
+
+    await registry.fire(
+        HookName.LITELLM_POST,
+        {
+            "task_id": "scalar-task-1",
+            "model": "test/model",
+            "outcome": "success",
+            "span_id": None,
+            # no "response" key → _extract_usage returns None → scalar fallback
+            "tokens_used": 77,
+        },
+    )
+
+    async with sessionmaker() as session:
+        rows = (
+            await session.execute(
+                select(Event).where(Event.task_id == "scalar-task-1")
+            )
+        ).scalars().all()
+
+    assert len(rows) == 1
+    payload = rows[0].payload_json
+    assert payload["tokens"] == {"total": 77}, payload["tokens"]
+    assert payload["cost"] is None
+
+
+@pytest.mark.asyncio
 async def test_token_sum_per_task_id(app: FastAPI) -> None:
     """A SELECT can sum tokens per task_id across multiple llm_call rows."""
     sessionmaker = app.state.sessionmaker
