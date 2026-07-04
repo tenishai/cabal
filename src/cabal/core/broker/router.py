@@ -25,6 +25,7 @@ from joserfc.jwk import KeySet
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from cabal.agents.base import LocalHandler
+from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, CabalReason, annotate
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import KIND_DISPATCH, AbortCoordinator, TaskAborted
 from cabal.core.auth.jwt import JWTError, verify
@@ -32,6 +33,7 @@ from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.bulletin.store import AgentRow
 from cabal.core.db import open_session
+from cabal.core.guardrails import Guardrail, GuardrailContext, VerdictType, run_guardrails
 from cabal.core.hooks.registry import HookName, HookRegistry
 
 log = structlog.get_logger(__name__)
@@ -117,6 +119,7 @@ class DispatchRouter:
         a2a_path: str = "/a2a/tasks",
         hook_registry: HookRegistry | None = None,
         abort_coordinator: AbortCoordinator | None = None,
+        input_guardrails: list[Guardrail] | None = None,
     ) -> None:
         self._sessionmaker = sessionmaker
         self._bookkeeper = bookkeeper
@@ -131,6 +134,9 @@ class DispatchRouter:
         self._capabilities: dict[str, set[str]] = {}
         self._a2a_path = a2a_path
         self._hooks = hook_registry or HookRegistry()
+        # cabal#39 — router-level input guardrails applied before the A2A hop.
+        # None/empty = no-op (default); adding guardrails is opt-in per deployment.
+        self._input_guardrails: list[Guardrail] = input_guardrails or []
 
     @property
     def abort_coordinator(self) -> AbortCoordinator:
@@ -232,19 +238,43 @@ class DispatchRouter:
             )
 
         try:
-            # A `federated` target is a sovereign peer — always route remote,
-            # even if a local handler is registered for the name (the persona
-            # factory registers one for every identity.toml persona; the future
-            # `cbl persona graduate` will unregister it, but this guard is the
-            # enforcement regardless). NOTE: the guard keys on the *resolved*
-            # row's kind, and `target_generation` is caller-controllable — so the
-            # mint site (routes/tasks._resolve_dispatch_token) and _prepare must
-            # resolve the SAME row for their audience/kind to agree. Both use
-            # get_active today; keep it that way if you change audience resolution.
-            if ctx.target.name in self._local and ctx.target.kind != "federated":
-                response = await self._dispatch_local(self._local[ctx.target.name], task)
-            else:
-                response = await self._dispatch_remote(ctx.target, task, caller_jwt)
+            # cabal#39 — router-level input guardrail check before the A2A hop.
+            # A BLOCK here prevents dispatch entirely and surfaces a
+            # policy-violation Task; a REWRITE replaces the Task envelope
+            # before it reaches the handler.
+            response: Task | None = None
+            if self._input_guardrails:
+                guard_ctx = GuardrailContext(
+                    persona_name=ctx.caller_persona or ctx.caller_agent or "",
+                    task_id=task.id,
+                    phase="router",
+                )
+                verdict = await run_guardrails(self._input_guardrails, task, guard_ctx)
+                if verdict.type == VerdictType.BLOCK:
+                    response = annotate(
+                        task,
+                        CabalReason(
+                            code=CODE_POLICY_VIOLATION,
+                            message=f"router guardrail blocked: {verdict.reason}",
+                        ),
+                    )
+                elif verdict.rewritten is not None:
+                    task = verdict.rewritten  # use the guardrail-rewritten Task
+
+            if response is None:
+                # A `federated` target is a sovereign peer — always route remote,
+                # even if a local handler is registered for the name (the persona
+                # factory registers one for every identity.toml persona; the future
+                # `cbl persona graduate` will unregister it, but this guard is the
+                # enforcement regardless). NOTE: the guard keys on the *resolved*
+                # row's kind, and `target_generation` is caller-controllable — so the
+                # mint site (routes/tasks._resolve_dispatch_token) and _prepare must
+                # resolve the SAME row for their audience/kind to agree. Both use
+                # get_active today; keep it that way if you change audience resolution.
+                if ctx.target.name in self._local and ctx.target.kind != "federated":
+                    response = await self._dispatch_local(self._local[ctx.target.name], task)
+                else:
+                    response = await self._dispatch_remote(ctx.target, task, caller_jwt)
         except TaskAborted as exc:
             # Cooperative cancellation reached the dispatch boundary — surface
             # a clean canceled Task rather than a 500. A checkpoint was written
