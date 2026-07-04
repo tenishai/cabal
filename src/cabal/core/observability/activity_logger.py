@@ -157,11 +157,6 @@ class ActivityLogger:
         tr_entry_id = _new_entry_id()
         prior_entry_id = self._last_entry_ids.get(task_id) if task_id else None
 
-        # Update the map: after this handler the last entry for this task is
-        # the tool_result row.
-        if task_id is not None:
-            self._last_entry_ids[task_id] = tr_entry_id
-
         try:
             async with open_session(self.sessionmaker) as session:
                 session.add(
@@ -193,6 +188,11 @@ class ActivityLogger:
                         },
                     )
                 )
+            # Advance the chain only after a successful commit: a dropped write
+            # then leaves the map at the prior entry, so the next row reconnects
+            # to it (skipping the lost node) rather than orphaning the whole tail.
+            if task_id is not None:
+                self._last_entry_ids[task_id] = tr_entry_id
         except Exception as exc:  # noqa: BLE001
             log.warning("activity.tool_use_write_failed", task_id=task_id, error=str(exc))
 
@@ -209,9 +209,6 @@ class ActivityLogger:
         lc_entry_id = _new_entry_id()
         prior_entry_id = self._last_entry_ids.get(task_id) if task_id else None
 
-        if task_id is not None:
-            self._last_entry_ids[task_id] = lc_entry_id
-
         try:
             async with open_session(self.sessionmaker) as session:
                 session.add(
@@ -227,6 +224,9 @@ class ActivityLogger:
                         },
                     )
                 )
+            # Advance the chain only after a successful commit (see _on_tool_use).
+            if task_id is not None:
+                self._last_entry_ids[task_id] = lc_entry_id
         except Exception as exc:  # noqa: BLE001
             log.warning("activity.llm_call_write_failed", task_id=task_id, error=str(exc))
 
@@ -235,6 +235,14 @@ class ActivityLogger:
 
         Keeps ``_last_entry_ids`` from growing unbounded across many tasks.
         Silently tolerates a missing or already-absent ``task_id``.
+
+        NOTE: cleanup is *coupled* to SESSION_END firing with the same
+        ``task_id`` the activity hooks used — true for the normal dispatch
+        path (router fires SESSION_END on the session-root ``task.id``), but
+        the map's real bound is "tasks that fire an activity hook but never a
+        SESSION_END" (e.g. some resume paths). Blast radius is tiny — one
+        ``str -> 12-char str`` (~60 bytes) per orphaned task, cleared on
+        process restart — so this is acceptable for a best-effort audit log.
         """
         task_id = payload.get("task_id")
         if task_id is not None:

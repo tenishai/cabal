@@ -677,3 +677,59 @@ async def test_path_to_root_no_tool_calls(app) -> None:
     chain = path_to_root(events, leaf_entry_id)
     assert len(chain) == 1
     assert chain[0].event_type == "llm_call"
+
+
+@pytest.mark.asyncio
+async def test_dropped_write_does_not_orphan_the_chain(app) -> None:
+    """A dropped write must NOT advance the parent chain: the next successful
+    row reconnects to the last *committed* entry, skipping only the lost node
+    rather than orphaning the whole tail from root (Prudence #55, Important)."""
+    from cabal.core.observability.activity_logger import path_to_root
+
+    sessionmaker = app.state.sessionmaker
+    registry = HookRegistry()
+    logger = ActivityLogger(sessionmaker=sessionmaker, mode="sync")
+    logger.register(registry)
+
+    task_id = "t-orphan"
+
+    # 1) A successful llm_call → map now holds entry A.
+    await registry.fire(
+        HookName.LITELLM_POST,
+        {"task_id": task_id, "model": "test/m", "outcome": "success"},
+    )
+    entry_a = logger._last_entry_ids[task_id]
+
+    # 2) Force the next write to fail by swapping in a sessionmaker that raises
+    #    when called (open_session does `async with sessionmaker() as session`).
+    class _BoomSessionmaker:
+        def __call__(self, *a, **k):
+            raise RuntimeError("boom")
+
+    logger.sessionmaker = _BoomSessionmaker()
+    await registry.fire(
+        HookName.LITELLM_POST,
+        {"task_id": task_id, "model": "test/m", "outcome": "success"},
+    )
+    # The failed write must NOT have advanced the chain.
+    assert logger._last_entry_ids[task_id] == entry_a
+
+    # 3) Restore and fire again — this row must parent to A (reconnected).
+    logger.sessionmaker = sessionmaker
+    await registry.fire(
+        HookName.LITELLM_POST,
+        {"task_id": task_id, "model": "test/m", "outcome": "success"},
+    )
+
+    async with sessionmaker() as session:
+        events = (
+            await session.execute(select(Event).where(Event.task_id == task_id))
+        ).scalars().all()
+
+    # Only the two successful rows were written; the dropped one left no row.
+    assert len(events) == 2
+    latest = max(events, key=lambda e: e.id)
+    assert latest.payload_json["parent_id"] == entry_a
+    # The chain from the leaf still reaches root cleanly (no orphan gap).
+    chain = path_to_root(events, latest.payload_json["entry_id"])
+    assert len(chain) == 2
