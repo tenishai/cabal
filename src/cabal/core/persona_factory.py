@@ -17,7 +17,7 @@ import httpx
 import structlog
 
 from cabal.agents.personas import PERSONA_REGISTRY
-from cabal.agents.personas.rook import RookPrimusPersona
+from cabal.agents.primus import PrimusPersona
 from cabal.agents.subordinate import Subordinate
 from cabal.config.identity import IdentityConfig
 from cabal.core.auth.keys import StoredKey
@@ -57,7 +57,24 @@ def register_personas_from_identity(
             )
             continue
 
-        if persona_name == "rook":
+        if persona_cfg.role == "primus":
+            # A role="primus" persona must map to a PrimusPersona subclass (the
+            # primus constructor signature). A mis-declared singleton (free-form
+            # role field) would otherwise crash daemon startup with a bare
+            # TypeError on the subordinates/hook_registry kwargs — skip loudly
+            # instead, mirroring the missing-implementer handling below.
+            primus_cls = factory  # resolved + non-None checked above
+            if not (isinstance(primus_cls, type) and issubclass(primus_cls, PrimusPersona)):
+                log.warning(
+                    "personas.primus_class_mismatch",
+                    persona=persona_name,
+                    msg=(
+                        f"{persona_name!r} declared role='primus' but its registry "
+                        f"class {primus_cls.__name__} is not a PrimusPersona; "
+                        "skipping handler"
+                    ),
+                )
+                continue
             sub_instances: dict[str, Subordinate] = {}
             for role, sub_cfg in persona_cfg.subordinates.items():
                 sub = Subordinate(
@@ -74,11 +91,15 @@ def register_personas_from_identity(
                 sub_instances[role] = sub
             if "implementer" not in sub_instances:
                 log.warning(
-                    "personas.rook_missing_implementer",
-                    msg="rook requires personas.rook.subordinates.implementer; skipping handler",
+                    "personas.primus_missing_implementer",
+                    persona=persona_name,
+                    msg=(
+                        f"{persona_name!r} primus requires "
+                        "personas.<name>.subordinates.implementer; skipping handler"
+                    ),
                 )
                 continue
-            handler: Any = RookPrimusPersona(
+            handler: Any = primus_cls(
                 litellm_client,
                 subordinates=sub_instances,
                 hook_registry=hook_registry,
@@ -122,23 +143,23 @@ def register_personas_from_identity(
             )
 
         # cabal#2 — swap the LLMPersona's no-op CheckpointStore for the
-        # real one when the persona opts in. RookPrimusPersona is excluded
-        # for now (multi-stage pipeline checkpointing is a follow-up;
+        # real one when the persona opts in. PrimusPersona subclasses are
+        # excluded for now (multi-stage pipeline checkpointing is a follow-up;
         # see cabal/core/checkpoint.py module docstring).
         if (
             persona_cfg.checkpointing.enabled
             and checkpoint_store is not None
-            and persona_name != "rook"
+            and persona_cfg.role != "primus"
         ):
             handler.checkpoint_store = checkpoint_store
             log.info("personas.checkpointing_enabled", persona=persona_name)
-        elif persona_cfg.checkpointing.enabled and persona_name == "rook":
+        elif persona_cfg.checkpointing.enabled and persona_cfg.role == "primus":
             log.warning(
                 "personas.checkpointing_unsupported",
                 persona=persona_name,
                 msg=(
-                    "RookPrimusPersona checkpointing is not yet implemented; "
-                    "the [personas.rook.checkpointing] enabled flag is ignored."
+                    "PrimusPersona checkpointing is not yet implemented; "
+                    "the [personas.<name>.checkpointing] enabled flag is ignored."
                 ),
             )
 

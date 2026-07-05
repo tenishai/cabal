@@ -131,3 +131,23 @@ max_tokens = 16384
 [personas.rook.subordinates.reviewer]
 model = "anthropic/claude-opus-4-7"
 max_tokens = 8192
+
+# ----- Jackdaw primus -----
+# Jackdaw is the general-engineering primus. Its bulletin row registers as
+# 'jackdaw-primus' / generation=1 and the LocalHandler is wired automatically.
+# Pipeline per dispatch: PLAN (primus) → IMPLEMENT (implementer subordinate)
+# → REVIEW (reviewer subordinate, if declared) → AGGREGATE (primus).
+# Comment out [personas.jackdaw.subordinates.reviewer] to skip the review step.
+
+[personas.jackdaw]
+description = "Senior software engineer — general-engineering primus"
+role = "primus"
+safety_tier = "strict"
+
+[personas.jackdaw.subordinates.implementer]
+model = "anthropic/claude-sonnet-5"
+max_tokens = 16384
+
+# [personas.jackdaw.subordinates.reviewer]
+# model = "anthropic/claude-sonnet-5"
+# max_tokens = 8192
