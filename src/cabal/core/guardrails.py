@@ -148,6 +148,10 @@ async def run_guardrails(
     Semantics (documented at the module level):
     - First BLOCK short-circuits — remaining guardrails are skipped.
     - A REWRITE threads its value into the next guardrail's target.
+    - A guardrail whose ``check()`` RAISES is treated as a **fail-closed
+      BLOCK** naming the guardrail — an unexpected error in a safety check
+      must never crash the dispatch it protects (which would leak the
+      session). It short-circuits like any other block.
     - All pass → ``Verdict(PASS, rewritten=<final>)`` if any rewrites
       occurred; ``Verdict(PASS)`` (rewritten=None) if the target was never
       rewritten.
@@ -160,7 +164,18 @@ async def run_guardrails(
     any_rewrite = False
 
     for guardrail in guardrails:
-        v = await guardrail.check(current, ctx)
+        try:
+            v = await guardrail.check(current, ctx)
+        except Exception as exc:  # noqa: BLE001
+            # Fail closed: convert any unexpected raise into a BLOCK naming the
+            # guardrail, rather than letting it propagate out of the persona /
+            # router call site and crash the whole Task. Retires the crash class
+            # that #57 (malformed rewrite) and #43 (raising validator) each had
+            # to defend against per-guardrail (cabal#62).
+            name = getattr(guardrail, "name", type(guardrail).__name__)
+            return Verdict.block(
+                f"guardrail {name!r} raised {type(exc).__name__}: {exc}"
+            )
         if v.type == VerdictType.BLOCK:
             return v
         if v.type == VerdictType.REWRITE:
