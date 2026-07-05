@@ -41,6 +41,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
+from cabal.core.abort import TaskAborted
+
 
 class VerdictType(StrEnum):
     PASS = "pass"
@@ -166,6 +168,12 @@ async def run_guardrails(
     for guardrail in guardrails:
         try:
             v = await guardrail.check(current, ctx)
+        except TaskAborted:
+            # Cooperative cancellation is a first-class propagating signal —
+            # the router turns it into a resumable *canceled* Task. Never mask
+            # it into a policy BLOCK. (asyncio.CancelledError is BaseException,
+            # so the broad except below already lets it through.)
+            raise
         except Exception as exc:  # noqa: BLE001
             # Fail closed: convert any unexpected raise into a BLOCK naming the
             # guardrail, rather than letting it propagate out of the persona /

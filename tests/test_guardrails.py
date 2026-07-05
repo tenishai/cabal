@@ -668,3 +668,20 @@ async def test_persona_raising_guardrail_fails_task_not_crash() -> None:
     assert result.status.state == "failed"
     assert reason_code(result) == CODE_POLICY_VIOLATION
     assert "boom_guard" in (result.metadata.get("cabal_reason_message") or "")
+
+
+@pytest.mark.asyncio
+async def test_run_guardrails_taskaborted_propagates() -> None:
+    """TaskAborted is a first-class cancellation signal — the fail-closed
+    wrapper must let it propagate, not mask it into a policy BLOCK (Prudence
+    #64)."""
+    from cabal.core.abort import TaskAborted
+
+    class _Aborter:
+        name = "aborter"
+
+        async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+            raise TaskAborted(node_id="t-1", reason="canceled mid-check")
+
+    with pytest.raises(TaskAborted):
+        await run_guardrails([_Aborter()], "x", _ctx())
