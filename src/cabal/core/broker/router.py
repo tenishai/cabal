@@ -89,7 +89,8 @@ def _canceled(task: Task, reason: str) -> Task:
     metadata["cabal_reason_message"] = reason
     return Task(
         id=task.id,
-        context_id=task.context_id,
+        # cabal#59: `contextId` alias — `context_id=` silently drops (see llm_persona).
+        contextId=task.context_id,
         status=TaskStatus(
             state="canceled",
             message=Message(role="agent", parts=[TextPart(text=f"canceled: {reason}")]),

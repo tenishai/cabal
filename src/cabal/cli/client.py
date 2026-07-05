@@ -259,6 +259,7 @@ def stream_dispatch(
     token: str,
     target: str,
     message_text: str,
+    context_id: str | None = None,
 ):
     """Open an SSE stream against /agents/{target}/stream.
 
@@ -266,20 +267,29 @@ def stream_dispatch(
     in result.status is the terminal frame.
 
     Synchronous — runs httpx.Client.stream() and parses SSE inline.
+
+    ``context_id`` is forwarded as ``contextId`` in the A2A params when
+    provided; the server threads it onto the inbound Task so the
+    DoomLoopGuardrail can group chat-session hops by stable session key
+    (cabal#59).
     """
     import json
     import uuid
+
+    params: dict = {
+        "message": {
+            "role": "user",
+            "parts": [{"kind": "text", "text": message_text}],
+        },
+    }
+    if context_id is not None:
+        params["contextId"] = context_id
 
     body = {
         "jsonrpc": "2.0",
         "id": f"req-{uuid.uuid4().hex[:8]}",
         "method": "message/stream",
-        "params": {
-            "message": {
-                "role": "user",
-                "parts": [{"kind": "text", "text": message_text}],
-            }
-        },
+        "params": params,
     }
     with make_client() as c:
         with c.stream(

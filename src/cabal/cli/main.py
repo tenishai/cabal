@@ -195,7 +195,9 @@ def chat(
             return
 
         if stream:
-            agent_text = _stream_chat_turn(target, token, user_text, buffered=buffer_stream)
+            agent_text = _stream_chat_turn(
+                target, token, user_text, buffered=buffer_stream, context_id=context_id
+            )
             if agent_text is None:
                 continue  # error already printed
         else:
@@ -285,13 +287,22 @@ def _render_search_replace_turn(agent_text: str, *, root: Path, no_apply: bool) 
 
 
 def _stream_chat_turn(
-    target: str, token: str, user_text: str, *, buffered: bool = False
+    target: str,
+    token: str,
+    user_text: str,
+    *,
+    buffered: bool = False,
+    context_id: str | None = None,
 ) -> str | None:
     """Run one streaming turn. When `buffered=False` (default), prints
     deltas as they arrive. When `buffered=True`, accumulates silently —
     the caller renders the assembled text (used for edit-format
     parsing, which can't run mid-stream). Returns the full assembled
-    agent text or None on error."""
+    agent text or None on error.
+
+    ``context_id`` is forwarded to the stream endpoint so the server can
+    thread it onto the Task for doom-loop detection (cabal#59).
+    """
     import sys
 
     if not buffered:
@@ -300,7 +311,7 @@ def _stream_chat_turn(
     full_text = ""
     try:
         for event_name, payload in api.stream_dispatch(
-            token=token, target=target, message_text=user_text
+            token=token, target=target, message_text=user_text, context_id=context_id
         ):
             if event_name == "chunk":
                 delta = payload.get("delta", "")

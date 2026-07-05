@@ -121,7 +121,7 @@ def test_chat_empty_input_exits(fake_token, monkeypatch) -> None:
 def _stub_stream(chunks: list[str]):
     """Mimic api.stream_dispatch — yield (event, payload) tuples."""
 
-    def fake(*, token, target, message_text):
+    def fake(*, token, target, message_text, context_id=None):
         for c in chunks:
             yield ("chunk", {"delta": c})
         yield (
@@ -144,7 +144,7 @@ def test_chat_streaming_prints_deltas(fake_token, monkeypatch) -> None:
 def test_chat_streaming_error_event_keeps_prompt_open(fake_token, monkeypatch) -> None:
     """An error event should print the message but not crash the chat loop."""
 
-    def err_stream(*, token, target, message_text):
+    def err_stream(*, token, target, message_text, context_id=None):
         yield ("error", {"error": {"code": -32003, "message": "agent crashed"}})
 
     monkeypatch.setattr(api, "stream_dispatch", err_stream)
