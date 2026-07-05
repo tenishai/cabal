@@ -91,12 +91,19 @@ class DoomLoopGuardrail:
     LRU eviction. The outer session dict caps at ``maxsize`` (default 10 000);
     each session's inner map caps at ``per_session_maxsize`` (default 512)
     distinct delegation keys. Eviction drops the *least-recently-checked*
-    entry, so a hot looping key/session is never evicted (only cold ones are),
-    and total memory is O(``maxsize`` × ``per_session_maxsize``) tuples,
-    regardless of session lifetime. A per-key ``ttl_seconds`` (default 600)
-    lazily resets a delegation's count when it hasn't recurred within the
-    window — so the guard fires on N repeats *without progress* rather than N
-    ever — ``None`` disables it.
+    entry, so total memory is O(``maxsize`` × ``per_session_maxsize``) tuples,
+    regardless of session lifetime. A hot looping key survives eviction *as
+    long as it recurs within ``per_session_maxsize`` distinct intervening
+    keys* — a loop cycling through more than ``per_session_maxsize`` distinct
+    delegations would evict its own members before recurrence (the default
+    dwarfs any realistic cycle).
+
+    A per-key ``ttl_seconds`` (default 600) lazily resets a delegation's count
+    when it hasn't recurred within the window — so the guard fires on N repeats
+    *without progress* rather than N ever; ``None`` disables it. NOTE: this
+    applies even to an already-blocking key — a loop that pauses longer than
+    the TTL and resumes restarts from count 1 (intentional: a repeat only every
+    >``ttl`` seconds is not the resource-burning runaway this guard targets).
 
     **No hard-halt** — BLOCK becomes a policy-violation Task in the router
     (via ``annotate``).  The reason message is surfaced back into the calling
@@ -143,11 +150,16 @@ class DoomLoopGuardrail:
         #
         # BOTH dicts are bounded LRU (see check): the outer caps sessions
         # (maxsize), the inner caps distinct delegation keys per session
-        # (per_session_maxsize). "Recently used" = most-recently checked, so a
-        # hot looping key/session is never the one evicted — a guard against
-        # runaway behaviour can't itself grow unboundedly. A per-key TTL resets
-        # a stale count so "N identical *without progress*" means within a time
-        # window, not forever.
+        # (per_session_maxsize). "Recently used" = most-recently checked, so
+        # eviction only ever drops a cold entry — a guard against runaway
+        # behaviour can't itself grow unboundedly. CAVEAT (standard LRU): a hot
+        # key survives only if it recurs within `per_session_maxsize` *distinct*
+        # intervening keys; a loop cycling through C distinct delegation keys
+        # therefore needs `per_session_maxsize >= C` or its members evict each
+        # other before recurrence and the loop escapes detection. The default
+        # (512) dwarfs any realistic C. A per-key TTL resets a stale count so
+        # "N identical *without progress*" means within a time window, not
+        # forever.
         self._state: dict[str, dict[str, tuple[int, float]]] = {}
 
     async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
@@ -186,7 +198,10 @@ class DoomLoopGuardrail:
         counts[delegation_key] = (count, now)  # reinsert last = most-recent
 
         # Inner LRU: cap distinct delegation keys per session. The just-touched
-        # key is most-recent (last), so eviction only ever drops a cold key.
+        # key is most-recent (last), so eviction drops the least-recently-
+        # checked key — never the current one. (See the __init__ CAVEAT: a loop
+        # whose distinct-key cardinality exceeds the cap evicts its own members
+        # before they recur.)
         if len(counts) > self._per_session_maxsize:
             counts.pop(next(iter(counts)))
 

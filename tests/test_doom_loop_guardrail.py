@@ -564,3 +564,26 @@ def test_invalid_per_session_maxsize_rejected() -> None:
     """per_session_maxsize < 1 is rejected at construction."""
     with pytest.raises(ValueError, match="must be >= 1"):
         DoomLoopGuardrail(per_session_maxsize=0)
+
+
+@pytest.mark.asyncio
+async def test_cap_must_exceed_loop_cycle_cardinality() -> None:
+    """LRU 'hot key survives' is conditional (Prudence #65): a loop cycling
+    through C distinct delegation keys needs per_session_maxsize >= C. Below
+    that, cycle members evict each other before recurrence and the loop escapes
+    detection (the documented blind spot); at/above it, detection works."""
+    ctx = _ctx()
+
+    # C = 2 (A, B, A, B, …); cap = 1 < 2 → members evict each other → never blocks.
+    g_small = DoomLoopGuardrail(threshold=3, per_session_maxsize=1)
+    for _ in range(10):
+        assert (await g_small.check(_task("A", context_id="s"), ctx)).type == VerdictType.PASS
+        assert (await g_small.check(_task("B", context_id="s"), ctx)).type == VerdictType.PASS
+
+    # cap = 2 >= C = 2 → both members retained → A accumulates → blocks.
+    g_ok = DoomLoopGuardrail(threshold=3, per_session_maxsize=2)
+    verdicts = []
+    for _ in range(3):
+        verdicts.append(await g_ok.check(_task("A", context_id="s2"), ctx))
+        verdicts.append(await g_ok.check(_task("B", context_id="s2"), ctx))
+    assert any(v.type == VerdictType.BLOCK for v in verdicts)
