@@ -237,10 +237,15 @@ async def per_agent_stream(
     from cabal.core.a2a.types import Task, TaskStatus
 
     task_id = str(uuid.uuid4())
+    # cabal#59 — propagate caller-supplied contextId so the DoomLoopGuardrail
+    # can group re-delegations by a stable session key across A2A hops.
     task = Task(
-        id=task_id,
-        status=TaskStatus(state="submitted", message=params.message),
-        metadata=params.metadata or {},
+        **{
+            "id": task_id,
+            "contextId": params.context_id,
+            "status": TaskStatus(state="submitted", message=params.message),
+            "metadata": params.metadata or {},
+        }
     )
 
     return StreamingResponse(
@@ -373,10 +378,15 @@ async def _message_send(
         err.id = rpc_req.id
         return err
 
+    # cabal#59 — propagate caller-supplied contextId so the DoomLoopGuardrail
+    # can group re-delegations by a stable session key across A2A hops.
     task = Task(
-        id=str(uuid.uuid4()),
-        status=TaskStatus(state="submitted", message=params.message),
-        metadata=params.metadata or {},
+        **{
+            "id": str(uuid.uuid4()),
+            "contextId": params.context_id,
+            "status": TaskStatus(state="submitted", message=params.message),
+            "metadata": params.metadata or {},
+        }
     )
 
     try:

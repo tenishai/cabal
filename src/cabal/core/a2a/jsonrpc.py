@@ -41,6 +41,10 @@ class MessageSendParams(_Open):
     message: Message
     configuration: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
+    # cabal#59 — caller-supplied session key. When present the inbound Task
+    # inherits it so the DoomLoopGuardrail can group re-delegations across
+    # A2A hops by a stable session key rather than the per-hop uuid4 task id.
+    context_id: str | None = Field(default=None, alias="contextId")
 
 
 class TasksGetParams(_Open):

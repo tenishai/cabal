@@ -25,10 +25,28 @@ from dataclasses import dataclass, field
 
 from cabal.agents.llm_persona import LLMPersona, _message_to_chat
 from cabal.agents.subordinate import Subordinate
+from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, CabalReason, annotate
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import KIND_SUBORDINATE
+from cabal.core.guardrails import GuardrailContext, VerdictType
+from cabal.core.guardrails_builtin import DoomLoopGuardrail
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
+
+# Sentinel: distinguishes "caller passed doom_loop=None (disabled)" from
+# "caller omitted doom_loop (use default DoomLoopGuardrail())".
+_DOOM_LOOP_DEFAULT: object = object()
+
+
+class _DoomLoopError(Exception):
+    """Internal signal: doom-loop guardrail blocked a subordinate dispatch.
+
+    Raised inside _dispatch_subordinate and caught in handle_task so the
+    Rook can return an annotated failed Task to its own caller.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
 
 DEFAULT_MODEL = "anthropic/claude-opus-4-7"
 
@@ -62,6 +80,12 @@ class RookPrimusPersona(LLMPersona):
 
     `subordinates` maps role name → Subordinate instance. Required to have
     at least 'implementer'.
+
+    doom_loop controls autonomous-loop protection at the subordinate boundary
+    (cabal#59). By default a fresh ``DoomLoopGuardrail()`` is created so
+    repeated identical delegations from a looping caller are blocked.
+    Pass ``doom_loop=None`` to disable the guard entirely (e.g. for tests
+    that intentionally dispatch the same instruction many times).
     """
 
     subordinates: dict[str, Subordinate] = field(default_factory=dict)
@@ -75,6 +99,7 @@ class RookPrimusPersona(LLMPersona):
         hook_registry: HookRegistry | None = None,
         model: str | None = None,
         max_tokens: int = 8192,
+        doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
     ) -> None:
         if "implementer" not in subordinates:
             raise ValueError("Rook requires at least an 'implementer' subordinate")
@@ -87,27 +112,45 @@ class RookPrimusPersona(LLMPersona):
         )
         self.subordinates = subordinates
         self.hook_registry = hook_registry
+        # doom_loop is default-on: a fresh guard is created unless the caller
+        # explicitly passes None (disabled) or a custom DoomLoopGuardrail instance.
+        if doom_loop is _DOOM_LOOP_DEFAULT:
+            self._doom_loop: DoomLoopGuardrail | None = DoomLoopGuardrail()
+        else:
+            self._doom_loop = doom_loop
 
     async def handle_task(self, task: Task) -> Task:
         # cabal#11 — the parent dispatch node (task.id) is registered by the
         # router; checks here cancel Rook's own pipeline between stages.
         self.abort_coordinator.raise_if_aborted(task.id)
         plan_text = await self._plan(task)
-        implementer_output = await self._dispatch_subordinate(
-            task, role="implementer", instruction=plan_text
-        )
-        reviewer_critique: str | None = None
-        self.abort_coordinator.raise_if_aborted(task.id)
-        if "reviewer" in self.subordinates:
-            reviewer_instruction = (
-                f"PLAN given to implementer:\n{plan_text}\n\n"
-                f"IMPLEMENTER OUTPUT:\n{implementer_output}\n\n"
-                "Critique. Focus on real problems — correctness, security, "
-                "edge cases the implementer missed, broken invariants. "
-                "If you find nothing serious, say 'no significant issues'."
+        try:
+            implementer_output = await self._dispatch_subordinate(
+                task, role="implementer", instruction=plan_text
             )
-            reviewer_critique = await self._dispatch_subordinate(
-                task, role="reviewer", instruction=reviewer_instruction
+            reviewer_critique: str | None = None
+            self.abort_coordinator.raise_if_aborted(task.id)
+            if "reviewer" in self.subordinates:
+                reviewer_instruction = (
+                    f"PLAN given to implementer:\n{plan_text}\n\n"
+                    f"IMPLEMENTER OUTPUT:\n{implementer_output}\n\n"
+                    "Critique. Focus on real problems — correctness, security, "
+                    "edge cases the implementer missed, broken invariants. "
+                    "If you find nothing serious, say 'no significant issues'."
+                )
+                reviewer_critique = await self._dispatch_subordinate(
+                    task, role="reviewer", instruction=reviewer_instruction
+                )
+        except _DoomLoopError as exc:
+            # Doom-loop guard blocked the subordinate dispatch. Return an
+            # annotated failed Task to the caller (mirrors the router's own
+            # guardrail-block pattern — cabal#59).
+            return annotate(
+                task,
+                CabalReason(
+                    code=CODE_POLICY_VIOLATION,
+                    message=f"rook guardrail blocked: {exc.reason}",
+                ),
             )
 
         final_text = await self._aggregate(
@@ -119,11 +162,13 @@ class RookPrimusPersona(LLMPersona):
         if task.status.message is not None:
             history.append(task.status.message)
         return Task(
-            id=task.id,
-            context_id=task.context_id,
-            status=TaskStatus(state="completed", message=agent_msg),
-            history=history,
-            metadata=task.metadata,
+            **{
+                "id": task.id,
+                "contextId": task.context_id,
+                "status": TaskStatus(state="completed", message=agent_msg),
+                "history": history,
+                "metadata": task.metadata,
+            }
         )
 
     # ---- internal pipeline -------------------------------------------------
@@ -154,19 +199,37 @@ class RookPrimusPersona(LLMPersona):
         self, parent_task: Task, *, role: str, instruction: str
     ) -> str:
         subord = self.subordinates[role]
+        # cabal#59 — thread parent's context_id into the sub-task so the
+        # doom-loop guard can group re-delegations by session key.
         sub_task = Task(
-            id=f"{parent_task.id}.{role}-{secrets.token_hex(4)}",
-            status=TaskStatus(
-                state="submitted",
-                message=Message(role="user", parts=[TextPart(text=instruction)]),
-            ),
-            metadata={
-                **parent_task.metadata,
-                "cabal_parent_task": parent_task.id,
-                "cabal_subordinate_role": role,
-                "cabal_span_id": secrets.token_hex(8),
-            },
+            **{
+                "id": f"{parent_task.id}.{role}-{secrets.token_hex(4)}",
+                "contextId": parent_task.context_id,
+                "status": TaskStatus(
+                    state="submitted",
+                    message=Message(role="user", parts=[TextPart(text=instruction)]),
+                ),
+                "metadata": {
+                    **parent_task.metadata,
+                    "cabal_parent_task": parent_task.id,
+                    "cabal_subordinate_role": role,
+                    "cabal_span_id": secrets.token_hex(8),
+                },
+            }
         )
+
+        # cabal#59 — doom-loop guard at the subordinate boundary. This mirrors
+        # the router's input_guardrails check (cabal#42) for the rook fan-out
+        # path, which bypasses the router entirely. The guard runs BEFORE we
+        # register the abort node so there is nothing to clean up on a BLOCK.
+        if self._doom_loop is not None:
+            sub_task.metadata["cabal_target_agent"] = role
+            guard_ctx = GuardrailContext(
+                persona_name=self.name, task_id=sub_task.id, phase="router"
+            )
+            verdict = await self._doom_loop.check(sub_task, guard_ctx)
+            if verdict.type == VerdictType.BLOCK:
+                raise _DoomLoopError(verdict.reason)
 
         # cabal#11 — register the subordinate under the parent so an abort of
         # the parent reaches its in-flight LLM call. Rook calls handle_task
