@@ -38,6 +38,7 @@ def test_registry_contains_all_known_personas() -> None:
     assert set(PERSONA_REGISTRY.keys()) == {
         "archivist",
         "architect",
+        "jackdaw",
         "librarian",
         "rook",
     }
