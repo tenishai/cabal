@@ -630,3 +630,58 @@ async def test_router_input_guardrail_pass_dispatches_normally(
     )
     assert result.status.state == "completed"
     assert len(handler.dispatched) == 1
+
+
+# ---------------------------------------------------------------------------
+# cabal#62 — a raising guardrail fails closed, never crashes the dispatch
+# ---------------------------------------------------------------------------
+
+
+class _BoomGuard:
+    name = "boom_guard"
+
+    async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+        raise RuntimeError("kaboom")
+
+
+@pytest.mark.asyncio
+async def test_run_guardrails_raising_check_is_fail_closed_block() -> None:
+    """A guardrail whose check() raises is converted to a BLOCK naming the
+    guardrail — never propagated (which would crash the dispatch)."""
+    verdict = await run_guardrails([_BoomGuard()], "x", _ctx())
+    assert verdict.type == VerdictType.BLOCK
+    assert "boom_guard" in verdict.reason
+    assert "kaboom" in verdict.reason
+
+
+@pytest.mark.asyncio
+async def test_persona_raising_guardrail_fails_task_not_crash() -> None:
+    """End-to-end: a raising input guardrail fails the Task cleanly (fail-closed)
+    rather than propagating an exception out of handle_task."""
+    client = LiteLLMClient(
+        acompletion_fn=_stub("should not appear"), hook_registry=HookRegistry()
+    )
+    persona = LLMPersona(
+        name="p", model="m", llm_client=client, input_guardrails=[_BoomGuard()]
+    )
+    result = await persona.handle_task(_user_task("hi"))
+    assert result.status.state == "failed"
+    assert reason_code(result) == CODE_POLICY_VIOLATION
+    assert "boom_guard" in (result.metadata.get("cabal_reason_message") or "")
+
+
+@pytest.mark.asyncio
+async def test_run_guardrails_taskaborted_propagates() -> None:
+    """TaskAborted is a first-class cancellation signal — the fail-closed
+    wrapper must let it propagate, not mask it into a policy BLOCK (Prudence
+    #64)."""
+    from cabal.core.abort import TaskAborted
+
+    class _Aborter:
+        name = "aborter"
+
+        async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+            raise TaskAborted(node_id="t-1", reason="canceled mid-check")
+
+    with pytest.raises(TaskAborted):
+        await run_guardrails([_Aborter()], "x", _ctx())
