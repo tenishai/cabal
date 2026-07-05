@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -86,12 +87,16 @@ class DoomLoopGuardrail:
     times spread across a session — which for a byte-identical delegation is
     itself a strong doom-loop signal.
 
-    **Dict growth** — the outer session dict is capped at ``maxsize`` entries
-    (default 10 000), oldest-evicted-first (insertion-order FIFO). Each
-    session's inner map holds one small int per *distinct* delegation key seen
-    in that session (typically a handful). There is no TTL; a long-running
-    daemon asymptotically reaches ``maxsize`` sessions and stays there. A
-    TTL-based eviction policy is a follow-on improvement.
+    **Dict growth (bounded — cabal#63)** — memory is bounded on BOTH axes by
+    LRU eviction. The outer session dict caps at ``maxsize`` (default 10 000);
+    each session's inner map caps at ``per_session_maxsize`` (default 512)
+    distinct delegation keys. Eviction drops the *least-recently-checked*
+    entry, so a hot looping key/session is never evicted (only cold ones are),
+    and total memory is O(``maxsize`` × ``per_session_maxsize``) tuples,
+    regardless of session lifetime. A per-key ``ttl_seconds`` (default 600)
+    lazily resets a delegation's count when it hasn't recurred within the
+    window — so the guard fires on N repeats *without progress* rather than N
+    ever — ``None`` disables it.
 
     **No hard-halt** — BLOCK becomes a policy-violation Task in the router
     (via ``annotate``).  The reason message is surfaced back into the calling
@@ -110,23 +115,44 @@ class DoomLoopGuardrail:
 
     name = "doom_loop"
 
-    def __init__(self, threshold: int = 3, maxsize: int = 10_000) -> None:
+    def __init__(
+        self,
+        threshold: int = 3,
+        maxsize: int = 10_000,
+        per_session_maxsize: int = 512,
+        ttl_seconds: float | None = 600.0,
+        *,
+        _now: Callable[[], float] = time.monotonic,
+    ) -> None:
         if threshold < 1:
             raise ValueError(f"threshold must be >= 1, got {threshold}")
+        if maxsize < 1 or per_session_maxsize < 1:
+            raise ValueError("maxsize and per_session_maxsize must be >= 1")
         self._threshold = threshold
         self._maxsize = maxsize
-        # {session_key: {delegation_key: cumulative_count}}
+        self._per_session_maxsize = per_session_maxsize
+        self._ttl = ttl_seconds  # None disables the time-based reset
+        self._now = _now
+        # {session_key: {delegation_key: (cumulative_count, last_seen)}}
         # Per-key *cumulative* counts within a session — NOT a single
         # consecutive slot. Consecutive-only counting misses the interleaved
-        # multi-role loop (e.g. Rook's implementer/reviewer fan-out produces
+        # multi-role loop (Rook's implementer/reviewer fan-out produces
         # impl, rev, impl, rev, … so no two identical keys are ever adjacent);
         # cumulative per-key counting catches the repeated `impl(X)` regardless
         # of what runs between the repeats.
-        self._state: dict[str, dict[str, int]] = {}
+        #
+        # BOTH dicts are bounded LRU (see check): the outer caps sessions
+        # (maxsize), the inner caps distinct delegation keys per session
+        # (per_session_maxsize). "Recently used" = most-recently checked, so a
+        # hot looping key/session is never the one evicted — a guard against
+        # runaway behaviour can't itself grow unboundedly. A per-key TTL resets
+        # a stale count so "N identical *without progress*" means within a time
+        # window, not forever.
+        self._state: dict[str, dict[str, tuple[int, float]]] = {}
 
     async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
         """Return PASS until a delegation key recurs `threshold` times in the
-        session; BLOCK at the threshold-th occurrence."""
+        session (within the TTL window); BLOCK at the threshold-th occurrence."""
         if not isinstance(target, Task):
             # Non-Task targets (input/output phase) are not doom-loop candidates.
             return Verdict.pass_()
@@ -140,14 +166,29 @@ class DoomLoopGuardrail:
         target_name = str(task.metadata.get("cabal_target_agent", ""))
         payload = _canonical_payload(task)
         delegation_key = _delegation_hash(target_name, payload)
+        now = self._now()
 
-        # Evict oldest session to keep the outer dict bounded before inserting.
-        if session_key not in self._state and len(self._state) >= self._maxsize:
-            self._state.pop(next(iter(self._state)))
+        # Outer LRU: move an existing session to most-recent; for a new session
+        # evict the least-recently-used one if at capacity. (pop-then-reinsert
+        # puts the touched session last in insertion order = most-recent.)
+        counts = self._state.pop(session_key, None)
+        if counts is None:
+            if len(self._state) >= self._maxsize:
+                self._state.pop(next(iter(self._state)))  # evict LRU session
+            counts = {}
+        self._state[session_key] = counts
 
-        counts = self._state.setdefault(session_key, {})
-        count = counts.get(delegation_key, 0) + 1
-        counts[delegation_key] = count
+        # Per-key cumulative count with lazy TTL reset.
+        prev = counts.pop(delegation_key, None)
+        if prev is not None and self._ttl is not None and (now - prev[1]) > self._ttl:
+            prev = None  # stale beyond the TTL window — restart this key's count
+        count = (prev[0] if prev is not None else 0) + 1
+        counts[delegation_key] = (count, now)  # reinsert last = most-recent
+
+        # Inner LRU: cap distinct delegation keys per session. The just-touched
+        # key is most-recent (last), so eviction only ever drops a cold key.
+        if len(counts) > self._per_session_maxsize:
+            counts.pop(next(iter(counts)))
 
         if count >= self._threshold:
             label = target_name or "unknown"

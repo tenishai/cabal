@@ -481,3 +481,86 @@ async def test_non_serialisable_data_part_does_not_crash() -> None:
     assert v1.type == VerdictType.PASS
     v2 = await g.check(task, ctx)
     assert v2.type == VerdictType.BLOCK
+
+
+# ---------------------------------------------------------------------------
+# cabal#63 — bounded memory (LRU on both dicts) + per-key TTL
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inner_dict_is_bounded_and_hot_key_survives() -> None:
+    """The per-session inner map is capped (LRU); a hot looping key is never
+    the one evicted, so it still accumulates to the threshold despite a stream
+    of distinct cold keys churning through the cap."""
+    g = DoomLoopGuardrail(threshold=3, per_session_maxsize=3)
+    ctx = _ctx()
+
+    async def hot():
+        return await g.check(_task("LOOP", context_id="s-inner"), ctx)
+
+    await hot()  # LOOP count=1
+    for i in range(12):
+        await g.check(_task(f"cold-{i}", context_id="s-inner"), ctx)  # churn
+        await hot()  # keep LOOP most-recent
+
+    # Inner map never exceeds the cap...
+    assert len(g._state["s-inner"]) <= 3
+    # ...yet LOOP survived every eviction and is now well past threshold → BLOCK.
+    assert (await hot()).type == VerdictType.BLOCK
+
+
+@pytest.mark.asyncio
+async def test_outer_dict_is_bounded_and_hot_session_survives() -> None:
+    """The outer session dict is capped (LRU); a hot looping session is never
+    evicted even as many cold sessions churn through the cap."""
+    g = DoomLoopGuardrail(threshold=3, maxsize=3)
+    ctx = _ctx()
+
+    async def hot():
+        return await g.check(_task("x", context_id="hot-session"), ctx)
+
+    await hot()  # hot-session LOOP count=1
+    for i in range(12):
+        await g.check(_task("x", context_id=f"cold-session-{i}"), ctx)  # new sessions
+        await hot()  # keep hot-session most-recent
+
+    assert len(g._state) <= 3
+    assert "hot-session" in g._state
+    assert (await hot()).type == VerdictType.BLOCK
+
+
+@pytest.mark.asyncio
+async def test_ttl_resets_a_stale_count() -> None:
+    """A delegation key not seen within ttl_seconds has its count reset — the
+    guard fires on N repeats *without progress* (within a window), not N ever."""
+    clock = {"t": 1000.0}
+    g = DoomLoopGuardrail(threshold=2, ttl_seconds=100.0, _now=lambda: clock["t"])
+    ctx = _ctx()
+
+    # count=1
+    assert (await g.check(_task("x", context_id="s-ttl"), ctx)).type == VerdictType.PASS
+    # Gap beyond the TTL → stale → count restarts at 1 (still PASS, not BLOCK).
+    clock["t"] += 250.0
+    assert (await g.check(_task("x", context_id="s-ttl"), ctx)).type == VerdictType.PASS
+    # Now within the window → count=2 → BLOCK.
+    clock["t"] += 10.0
+    assert (await g.check(_task("x", context_id="s-ttl"), ctx)).type == VerdictType.BLOCK
+
+
+@pytest.mark.asyncio
+async def test_ttl_none_disables_reset() -> None:
+    """ttl_seconds=None keeps counts forever (cumulative regardless of gaps)."""
+    clock = {"t": 0.0}
+    g = DoomLoopGuardrail(threshold=2, ttl_seconds=None, _now=lambda: clock["t"])
+    ctx = _ctx()
+    assert (await g.check(_task("x", context_id="s-none"), ctx)).type == VerdictType.PASS
+    clock["t"] += 1_000_000.0  # enormous gap
+    # TTL disabled → count still accumulates → BLOCK.
+    assert (await g.check(_task("x", context_id="s-none"), ctx)).type == VerdictType.BLOCK
+
+
+def test_invalid_per_session_maxsize_rejected() -> None:
+    """per_session_maxsize < 1 is rejected at construction."""
+    with pytest.raises(ValueError, match="must be >= 1"):
+        DoomLoopGuardrail(per_session_maxsize=0)
