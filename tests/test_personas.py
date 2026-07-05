@@ -10,6 +10,7 @@ from cabal.agents.personas import (
     PERSONA_REGISTRY,
     ArchitectPersona,
     ArchivistPersona,
+    JackdawPersona,
     LibrarianPersona,
 )
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
@@ -38,6 +39,7 @@ def test_registry_contains_all_known_personas() -> None:
     assert set(PERSONA_REGISTRY.keys()) == {
         "archivist",
         "architect",
+        "jackdaw",
         "librarian",
         "rook",
     }
@@ -74,6 +76,36 @@ async def test_architect_uses_opus_by_default() -> None:
     architect = ArchitectPersona(client)
     await architect.handle_task(_user_task())
     assert "opus" in seen["model"].lower()
+
+
+@pytest.mark.asyncio
+async def test_jackdaw_system_prompt_is_senior_engineer() -> None:
+    seen: dict[str, Any] = {}
+
+    async def capture(model: str, messages: list, **kwargs):
+        seen["messages"] = messages
+        return {"choices": [{"message": {"content": "x"}}]}
+
+    client = LiteLLMClient(acompletion_fn=capture, hook_registry=HookRegistry())
+    jackdaw = JackdawPersona(client)
+    await jackdaw.handle_task(_user_task())
+    sys_content = seen["messages"][0]["content"]
+    assert "Jackdaw" in sys_content
+    assert "software engineer" in sys_content.lower()
+
+
+@pytest.mark.asyncio
+async def test_jackdaw_uses_sonnet_by_default() -> None:
+    seen: dict[str, Any] = {}
+
+    async def capture(model: str, messages: list, **kwargs):
+        seen["model"] = model
+        return {"choices": [{"message": {"content": "x"}}]}
+
+    client = LiteLLMClient(acompletion_fn=capture, hook_registry=HookRegistry())
+    jackdaw = JackdawPersona(client)
+    await jackdaw.handle_task(_user_task())
+    assert "sonnet" in seen["model"].lower()
 
 
 @pytest.mark.asyncio

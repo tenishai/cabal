@@ -13,6 +13,7 @@ from collections.abc import Callable
 from cabal.agents.llm_persona import LLMPersona
 from cabal.agents.personas.architect import ArchitectPersona
 from cabal.agents.personas.archivist import ArchivistPersona
+from cabal.agents.personas.jackdaw import JackdawPersona
 from cabal.agents.personas.librarian import LibrarianPersona
 from cabal.agents.personas.rook import RookPrimusPersona
 
@@ -20,6 +21,7 @@ from cabal.agents.personas.rook import RookPrimusPersona
 PERSONA_REGISTRY: dict[str, Callable[..., LLMPersona]] = {
     "archivist": ArchivistPersona,
     "architect": ArchitectPersona,
+    "jackdaw": JackdawPersona,
     "librarian": LibrarianPersona,
     "rook": RookPrimusPersona,
 }
@@ -28,6 +30,7 @@ PERSONA_REGISTRY: dict[str, Callable[..., LLMPersona]] = {
 __all__ = [
     "ArchitectPersona",
     "ArchivistPersona",
+    "JackdawPersona",
     "LibrarianPersona",
     "PERSONA_REGISTRY",
     "RookPrimusPersona",

@@ -107,6 +107,17 @@ safety_tier = "moderate"
 # [personas.architect.checkpointing]
 # enabled = true
 
+[personas.jackdaw]
+description = "Senior software engineer — writes code"
+role = "singleton"
+safety_tier = "moderate"
+# Jackdaw is the implementation IC — hand it a concrete coding task (distinct
+# from Architect's design role and Rook's ops/pipeline role). In-code default
+# model is anthropic/claude-sonnet-5 (coding-tuned). Recommended overrides:
+# model_override = "anthropic/claude-sonnet-5"
+# max_tokens_override = 16384       # jackdaw's code default; the factory otherwise caps at 8192
+# edit_format = "search-replace"    # Jackdaw emits code edits — see the architect note above
+
 [personas.librarian]
 description = "External-documentation lookup"
 role = "singleton"
