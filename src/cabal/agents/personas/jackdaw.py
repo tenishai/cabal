@@ -1,0 +1,98 @@
+"""Jackdaw primus — general-purpose software engineering persona.
+
+Thin subclass of PrimusPersona. All fan-out machinery (PLAN → DISPATCH →
+AGGREGATE, doom-loop guard, hook firing) lives in cabal.agents.primus.
+
+Jackdaw acts as a senior software engineer who breaks concrete coding tasks
+into precise instructions for an implementer subordinate, then aggregates
+the result for the operator. It does NOT write code itself as the primus.
+An optional reviewer subordinate critiques the implementer's output for
+correctness, edge cases, and missed invariants.
+
+Lifecycle per dispatch: see cabal.agents.primus docstring.
+"""
+
+from __future__ import annotations
+
+from cabal.agents.primus import (
+    _DOOM_LOOP_DEFAULT,
+    PrimusPersona,
+)
+from cabal.agents.subordinate import Subordinate
+from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.hooks.registry import HookRegistry
+from cabal.core.llm.litellm_client import LiteLLMClient
+
+__all__ = [
+    "JackdawPrimusPersona",
+    "DEFAULT_MODEL",
+    "JACKDAW_SYSTEM_PROMPT",
+    "JACKDAW_AGGREGATE_PROMPT",
+]
+
+DEFAULT_MODEL = "anthropic/claude-sonnet-5"
+
+JACKDAW_SYSTEM_PROMPT = """\
+You are Cabal's Jackdaw: general-engineering primus and senior software engineer.
+
+You don't write code yourself. You DELEGATE to subordinates:
+  - implementer: produces concrete code, diffs, or working steps.
+  - reviewer: critiques the implementer's output for correctness and edge cases.
+
+For each operator request, your job is to PLAN: in 1-3 sentences, restate
+the task as a precise instruction the implementer should follow. Be specific
+about:
+  - which files or functions to touch
+  - acceptance criteria (what "done" looks like)
+  - any constraints or invariants the implementer must preserve
+
+Your planning instruction must be self-contained enough that the implementer
+can carry it out without asking clarifying questions.
+"""
+
+JACKDAW_AGGREGATE_PROMPT = """\
+You are Cabal's Jackdaw: general-engineering primus and senior software engineer.
+
+The implementer has returned output and (if a reviewer ran) you have the
+reviewer's critique. Summarize the result for the operator in 2-4 sentences.
+Quote the implementer's specific code or steps when useful.
+If the reviewer raised concrete issues, flag them clearly; if they are nitpicks
+or style-only, omit them. If the reviewer found nothing serious, say so plainly
+— don't manufacture problems.
+"""
+
+
+class JackdawPrimusPersona(PrimusPersona):
+    """Jackdaw — general-engineering primus on the shared PrimusPersona base.
+
+    `subordinates` maps role name → Subordinate instance. Required to have
+    at least 'implementer'.
+
+    doom_loop controls autonomous-loop protection at the subordinate boundary
+    (cabal#59). By default a fresh ``DoomLoopGuardrail()`` is created so
+    repeated identical delegations from a looping caller are blocked.
+    Pass ``doom_loop=None`` to disable the guard entirely.
+    """
+
+    def __init__(
+        self,
+        llm_client: LiteLLMClient,
+        subordinates: dict[str, Subordinate],
+        *,
+        hook_registry: HookRegistry | None = None,
+        model: str | None = None,
+        max_tokens: int = 8192,
+        doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
+    ) -> None:
+        super().__init__(
+            llm_client,
+            subordinates,
+            name="jackdaw-primus",
+            system_prompt=JACKDAW_SYSTEM_PROMPT,
+            aggregate_prompt=JACKDAW_AGGREGATE_PROMPT,
+            hook_registry=hook_registry,
+            model=model,
+            default_model=DEFAULT_MODEL,
+            max_tokens=max_tokens,
+            doom_loop=doom_loop,
+        )
