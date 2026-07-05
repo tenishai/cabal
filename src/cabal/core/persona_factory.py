@@ -17,6 +17,7 @@ import httpx
 import structlog
 
 from cabal.agents.personas import PERSONA_REGISTRY
+from cabal.agents.primus import PrimusPersona
 from cabal.agents.subordinate import Subordinate
 from cabal.config.identity import IdentityConfig
 from cabal.core.auth.keys import StoredKey
@@ -57,6 +58,23 @@ def register_personas_from_identity(
             continue
 
         if persona_cfg.role == "primus":
+            # A role="primus" persona must map to a PrimusPersona subclass (the
+            # primus constructor signature). A mis-declared singleton (free-form
+            # role field) would otherwise crash daemon startup with a bare
+            # TypeError on the subordinates/hook_registry kwargs — skip loudly
+            # instead, mirroring the missing-implementer handling below.
+            primus_cls = PERSONA_REGISTRY[persona_name]
+            if not (isinstance(primus_cls, type) and issubclass(primus_cls, PrimusPersona)):
+                log.warning(
+                    "personas.primus_class_mismatch",
+                    persona=persona_name,
+                    msg=(
+                        f"{persona_name!r} declared role='primus' but its registry "
+                        f"class {primus_cls.__name__} is not a PrimusPersona; "
+                        "skipping handler"
+                    ),
+                )
+                continue
             sub_instances: dict[str, Subordinate] = {}
             for role, sub_cfg in persona_cfg.subordinates.items():
                 sub = Subordinate(
@@ -81,7 +99,7 @@ def register_personas_from_identity(
                     ),
                 )
                 continue
-            handler: Any = PERSONA_REGISTRY[persona_name](
+            handler: Any = primus_cls(
                 litellm_client,
                 subordinates=sub_instances,
                 hook_registry=hook_registry,

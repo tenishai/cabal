@@ -93,6 +93,15 @@ class PrimusPersona(LLMPersona):
             system_prompt=system_prompt,
             max_tokens=max_tokens,
         )
+        # Plan + aggregate prompts are stored on immutable private fields, NOT
+        # read from self.system_prompt. The factory mutates handler.system_prompt
+        # (system_prompt_override, edit_format append) — those knobs are meant
+        # for a persona whose system_prompt drives its LLM call, but a primus's
+        # plan/aggregate stages have their own prompts. Reading self.system_prompt
+        # here would silently graft e.g. search-replace edit instructions onto a
+        # *planning* prompt. Keep the primus behaviour-identical to pre-extraction
+        # (both stages used module constants immune to factory mutation).
+        self._plan_prompt = system_prompt
         self._aggregate_prompt = aggregate_prompt
         self.subordinates = subordinates
         self.hook_registry = hook_registry
@@ -160,7 +169,7 @@ class PrimusPersona(LLMPersona):
 
     async def _plan(self, task: Task) -> str:
         messages = [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": self._plan_prompt},
             *(_message_to_chat(m) for m in task.history),
         ]
         if task.status.message is not None:

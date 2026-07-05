@@ -16,7 +16,9 @@ from cabal.agents.personas.jackdaw import (
     JackdawPrimusPersona,
 )
 from cabal.agents.subordinate import Subordinate
+from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, reason_code
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
+from cabal.core.guardrails_builtin import DoomLoopGuardrail
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
@@ -193,3 +195,63 @@ async def test_jackdaw_model_override() -> None:
     assert jackdaw.model == "custom/model-x"
     await jackdaw.handle_task(_task())
     assert primus_calls[0]["model"] == "custom/model-x"
+
+
+@pytest.mark.asyncio
+async def test_primus_plan_prompt_immune_to_system_prompt_mutation() -> None:
+    """Behaviour-preserving (Prudence #67 Important #1): the factory mutates
+    handler.system_prompt (system_prompt_override / edit_format append), but a
+    primus's PLAN stage reads an immutable field — a mutation must NOT leak into
+    the plan call (on main, _plan used a module constant immune to this)."""
+    primus_client, primus_calls = _client(["plan text", "final summary"])
+    sub_client, _ = _client(["impl output"])
+    jackdaw = JackdawPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+    )
+    # Simulate the factory's post-construction mutation (edit_format append, etc.).
+    jackdaw.system_prompt = jackdaw.system_prompt + "\n\nMUTATED_SENTINEL_EDIT_RULES"
+
+    await jackdaw.handle_task(_task())
+
+    # The plan is the FIRST primus call (plan → aggregate); its system message
+    # must be the original immutable plan prompt, not the mutated system_prompt.
+    plan_system = primus_calls[0]["messages"][0]["content"]
+    assert "MUTATED_SENTINEL" not in plan_system, "factory mutation leaked into the plan prompt"
+    assert "Jackdaw" in plan_system  # the original, immutable plan prompt
+
+
+@pytest.mark.asyncio
+async def test_jackdaw_doom_loop_block_labels_jackdaw() -> None:
+    """The shared base's `self.name.removesuffix('-primus')` block label works for
+    the general case, not just Rook: a jackdaw doom-loop BLOCK reads
+    'jackdaw guardrail blocked' (Prudence #67 nit)."""
+    doom_loop = DoomLoopGuardrail(threshold=2)
+    # Identical plan text both dispatches → identical delegation key → trips at 2.
+    primus_client, _ = _client(["same plan", "summary", "same plan"])
+    sub_client, _ = _client(["impl output"])
+    jackdaw = JackdawPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=doom_loop,
+    )
+
+    def _ctx_task(i: int) -> Task:
+        return Task(
+            **{
+                "id": f"t-jd-{i}",
+                "contextId": "loop-session",
+                "status": TaskStatus(
+                    state="submitted",
+                    message=Message(role="user", parts=[TextPart(text="do X")]),
+                ),
+            }
+        )
+
+    r1 = await jackdaw.handle_task(_ctx_task(1))
+    assert r1.status.state == "completed"
+    r2 = await jackdaw.handle_task(_ctx_task(2))
+    assert r2.status.state == "failed"
+    assert reason_code(r2) == CODE_POLICY_VIOLATION
+    assert "jackdaw guardrail blocked" in (r2.metadata.get("cabal_reason_message") or "")
