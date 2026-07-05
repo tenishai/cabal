@@ -63,7 +63,7 @@ def register_personas_from_identity(
             # role field) would otherwise crash daemon startup with a bare
             # TypeError on the subordinates/hook_registry kwargs — skip loudly
             # instead, mirroring the missing-implementer handling below.
-            primus_cls = PERSONA_REGISTRY[persona_name]
+            primus_cls = factory  # resolved + non-None checked above
             if not (isinstance(primus_cls, type) and issubclass(primus_cls, PrimusPersona)):
                 log.warning(
                     "personas.primus_class_mismatch",
