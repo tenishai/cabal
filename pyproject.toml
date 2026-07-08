@@ -7,7 +7,7 @@ name = "cabal"
 version = "0.1.0"
 description = "Self-hosted personal agent orchestration platform"
 readme = "README.md"
-license = "Apache-2.0"
+license = "AGPL-3.0-or-later"
 authors = [{ name = "Richard DiMartino" }]
 requires-python = ">=3.12"
 classifiers = [
