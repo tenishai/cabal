@@ -1,0 +1,16 @@
+# Source pins for non-PyPI dependencies.
+#
+# cabal's optional extras (`mcp`, `memory`, `full`) depend on limenal and techne,
+# neither of which is published to a public index. This file supplies the concrete
+# git sources so cabal installs on a clean machine (agents, other hosts, containers)
+# without sibling checkouts.
+#
+#   Non-dev install, everything wired:
+#       pip install -r requirements-sources.txt ".[full]"
+#
+#   Dev/CI keep editable sibling checkouts instead (live local edits):
+#       pip install -e ../techne -e ../limenal
+#
+# Bump a pinned tag when you want consumers to pick up a new release.
+techne @ git+https://github.com/tenishai/techne.git@v0.9.0
+limenal @ git+https://github.com/tenishai/limenal.git@v0.1.0
