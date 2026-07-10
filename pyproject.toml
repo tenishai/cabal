@@ -29,9 +29,10 @@ dependencies = [
     "httpx>=0.27",
     "structlog>=24.4",
     "tomli>=2.0;python_version<'3.13'",
-    # techne is installed separately from the local sibling checkout during
-    # development (see CABAL-DECISIONS.md D-008). Once techne 0.6.0 is
-    # published to PyPI or a private index, add `techne>=0.6.0` here.
+    # techne + limenal are optional extras (see [project.optional-dependencies]
+    # below: `mcp`, `memory`, `full`). Neither is on a public index; the concrete
+    # git sources are pinned in `requirements-sources.txt` for clean-machine
+    # installs. Dev/CI keep editable sibling checkouts (`-e ../techne -e ../limenal`; D-008).
 ]
 
 [project.optional-dependencies]
@@ -45,10 +46,10 @@ tui = ["textual>=1.0"]
 # `memory` pulls in techne for the Archivist persona + any persona that
 # binds a TechneMemoryStore. Same shape — cabal runs without it; personas
 # that need it raise a clear error pointing at this extra.
-memory = ["techne>=0.6.1"]
+memory = ["techne>=0.9.0"]
 
 # Everything wired together, for the canonical platform install.
-full = ["limenal>=0.1", "techne>=0.6.1"]
+full = ["limenal>=0.1", "techne>=0.9.0"]
 
 dev = [
     "pytest>=8.3",
@@ -74,7 +75,7 @@ code = "cabal.handlers.code:get_handler"
 archivist = "cabal.handlers.archivist:get_handler"
 
 [project.urls]
-Source = "https://github.com/dimartin/cabal"
+Source = "https://github.com/tenishai/cabal"
 
 [tool.setuptools.packages.find]
 where = ["src"]
