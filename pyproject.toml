@@ -32,7 +32,7 @@ dependencies = [
     # techne + limenal are optional extras (see [project.optional-dependencies]
     # below: `mcp`, `memory`, `full`). Neither is on a public index; the concrete
     # git sources are pinned in `requirements-sources.txt` for clean-machine
-    # installs. Dev/CI keep editable sibling checkouts (`-e ../techne`; D-008).
+    # installs. Dev/CI keep editable sibling checkouts (`-e ../techne -e ../limenal`; D-008).
 ]
 
 [project.optional-dependencies]
