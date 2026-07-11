@@ -84,6 +84,7 @@ class AgentCardVerifier:
 
         Raises:
             joserfc.errors.BadSignatureError: signature did not validate
+            joserfc.errors.UnsupportedAlgorithmError: token alg is not RS256
             ValueError: payload is not a valid AgentCard
         """
         sig = jws.extract_compact(jws_compact.encode("ascii"))
@@ -99,8 +100,11 @@ class AgentCardVerifier:
                 return verified
             del self._cache[(kid, content_hash)]
 
-        # Full verify against the JWKS.
-        jws.deserialize_compact(jws_compact, key_set)
+        # Full verify against the JWKS. Pin the algorithm — sign_card() above
+        # hard-codes RS256, so without this an HS256 card forged with any
+        # symmetric key that entered the JWKS would validate (the same
+        # algorithm-confusion class closed for JWTs in cabal#75). See cabal#83.
+        jws.deserialize_compact(jws_compact, key_set, algorithms=["RS256"])
         card = AgentCard.model_validate(json.loads(sig.payload))
         verified = VerifiedCard(card=card, kid=kid, content_hash=content_hash)
         self._cache[(kid, content_hash)] = (verified, time.monotonic() + self._ttl)

@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 from cryptography.fernet import Fernet
-from joserfc.errors import BadSignatureError
-from joserfc.jwk import KeySet, RSAKey
+from joserfc import jws
+from joserfc.errors import BadSignatureError, UnsupportedAlgorithmError
+from joserfc.jwk import KeySet, OctKey, RSAKey
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from cabal.core.a2a.card import (
@@ -113,6 +114,46 @@ async def test_verify_rejects_tampered_payload(
     verifier = AgentCardVerifier()
     with pytest.raises(BadSignatureError):
         verifier.verify(tampered, key_set)
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_hs256_forgery(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    master_key: bytes,
+    sample_card: AgentCard,
+) -> None:
+    """An HS256-forged card must be rejected even when a symmetric key is in
+    the JWKS. sign_card() hard-codes RS256, so without the algorithms pin on
+    deserialize_compact an oct key entering the key set lets an attacker forge
+    an HS256-signed card and have it validate. Sibling of
+    test_auth_jwt.py::test_hs256_forgery_rejected. Regression for cabal#83.
+    """
+    async with sessionmaker() as session:
+        stored = await create_signing_key(session, master_key=master_key)
+        await session.commit()
+
+    # Legit RSA key + an intruder symmetric key sharing the JWKS — the
+    # "one key-type addition away" condition.
+    rsa_jwk = dict(RSAKey.import_key(stored.private_key.public_key()).as_dict(private=False))
+    rsa_jwk["kid"] = stored.kid
+    oct_key = OctKey.generate_key(256, {"kid": "oct-intruder"})
+    key_set = KeySet.import_key_set({"keys": [rsa_jwk, dict(oct_key.as_dict())]})
+
+    # Forge an HS256-signed card with the intruder key, wearing its kid.
+    # Payload shape is irrelevant here: the algorithm gate short-circuits
+    # before the payload is ever parsed, so this need not match sign_card()'s
+    # canonical form (by_alias=True) — do NOT copy this as a signature-path test.
+    payload = jcs_canonicalize(sample_card.model_dump(mode="json", exclude_none=True))
+    forged = jws.serialize_compact(
+        {"alg": "HS256", "kid": "oct-intruder", "typ": "agent-card+jws"},
+        payload,
+        oct_key,
+        algorithms=["HS256"],  # the attacker imposes no RS256 restriction
+    )
+
+    verifier = AgentCardVerifier()
+    with pytest.raises(UnsupportedAlgorithmError):
+        verifier.verify(forged, key_set)
 
 
 @pytest.mark.asyncio
