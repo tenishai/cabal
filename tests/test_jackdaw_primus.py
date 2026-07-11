@@ -112,7 +112,7 @@ async def test_jackdaw_system_prompt_frames_senior_engineering() -> None:
 async def test_jackdaw_requires_implementer() -> None:
     """Missing implementer subordinate → ValueError."""
     primus_client, _ = _client([])
-    with pytest.raises(ValueError, match="implementer"):
+    with pytest.raises(ValueError, match="non-reviewer"):
         JackdawPrimusPersona(primus_client, subordinates={})
 
 
@@ -138,7 +138,7 @@ async def test_jackdaw_runs_reviewer_when_declared() -> None:
     # The reviewer's input includes the implementer output
     reviewer_input = review_calls[0]["messages"][-1]["content"]
     assert "wrote the JSON method" in reviewer_input
-    assert "PLAN given to implementer" in reviewer_input
+    assert "PLAN given to the leg" in reviewer_input
 
     # The aggregator sees the reviewer's critique
     agg_user = primus_calls[1]["messages"][-1]["content"]
@@ -156,7 +156,7 @@ async def test_jackdaw_skips_reviewer_when_not_declared() -> None:
     await jackdaw.handle_task(_task())
     agg_user = primus_calls[1]["messages"][-1]["content"]
     assert "REVIEWER" not in agg_user
-    assert "IMPLEMENTER OUTPUT" in agg_user
+    assert "[implementer] OUTPUT" in agg_user
 
 
 @pytest.mark.asyncio
