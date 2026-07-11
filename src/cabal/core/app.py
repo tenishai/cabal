@@ -44,7 +44,7 @@ from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.broker.heartbeat import HeartbeatScheduler
 from cabal.core.broker.router import DispatchRouter
 from cabal.core.bulletin import store as bulletin_store
-from cabal.core.db import make_engine, make_sessionmaker, open_session
+from cabal.core.db import DEFAULT_DB_URL, make_engine, make_sessionmaker, open_session
 from cabal.core.db_pragmas import install_sqlite_pragmas
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.identity_sync import sync_personas
@@ -69,6 +69,31 @@ log = structlog.get_logger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
+
+
+def _ensure_sqlite_parent_dir(db_url: str) -> None:
+    """Create the parent directory of a SQLite file DB before it is opened.
+
+    SQLite creates the database file but not intermediate directories, so the
+    default ``sqlite+aiosqlite:///data/cabal.db`` dies with "unable to open
+    database file" on a fresh bare-metal boot. Docker masks this via the
+    volume mount, so the path went unexercised. No-op for in-memory or
+    non-SQLite URLs, and never blocks startup on a URL it can't parse. #77.
+    """
+    from sqlalchemy.engine import make_url
+
+    try:
+        parsed = make_url(db_url)
+    except Exception:  # noqa: BLE001 — URL parsing must never block startup
+        return
+    if not parsed.get_backend_name().startswith("sqlite"):
+        return
+    database = parsed.database
+    if not database or database == ":memory:":
+        return
+    parent = Path(database).parent
+    if str(parent) not in ("", "."):
+        parent.mkdir(parents=True, exist_ok=True)
 
 
 def _run_migrations(db_url: str) -> None:
@@ -134,6 +159,11 @@ def create_app(
         master_key = resolve_master_key(allow_dev_fallback=allow_dev_master_key)
         _app.state.master_key = master_key
 
+        # Ensure the SQLite file's directory exists before anything opens it —
+        # otherwise a fresh bare-metal boot dies with "unable to open database
+        # file". Resolve the same effective URL make_engine will use. #77
+        _ensure_sqlite_parent_dir(db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL)
+
         engine = make_engine(db_url)
         install_sqlite_pragmas(engine)
         sessionmaker = make_sessionmaker(engine)
@@ -160,7 +190,15 @@ def create_app(
             sync_url = (
                 db_url or os.environ.get("CABAL_DB_URL", "sqlite:///data/cabal.db")
             ).replace("sqlite+aiosqlite://", "sqlite://", 1)
-            _run_migrations(sync_url)
+            # Log migration/DB-init failures loudly before re-raising. On a
+            # bare-metal boot uvicorn can exit on a startup exception without
+            # the traceback reaching the terminal, so the operator sees a
+            # silent exit; surface it through our own (working) logger. #77
+            try:
+                _run_migrations(sync_url)
+            except Exception:
+                log.exception("cabal.migrations_failed", db_url=sync_url)
+                raise
 
         kid = await ensure_signing_key(sessionmaker, master_key=master_key)
         _app.state.active_kid = kid
