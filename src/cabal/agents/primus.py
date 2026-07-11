@@ -59,8 +59,11 @@ class PrimusPersona(LLMPersona):
     `aggregate_prompt`, and `default_model` via their own thin `__init__`
     that calls `super().__init__()` with those values.
 
-    `subordinates` maps role name → Subordinate instance. Required to have
-    at least 'implementer'.
+    `subordinates` maps role name → Subordinate instance. Every role EXCEPT
+    the reserved 'reviewer' is a concurrent fan-out leg (cabal#69), so at
+    least one non-reviewer leg is required. 'reviewer', if present, runs after
+    the legs join and reviews all their outputs — it is the single reserved
+    role, and only one review phase is expressible.
 
     `doom_loop` controls autonomous-loop protection at the subordinate
     boundary (cabal#59). By default a fresh ``DoomLoopGuardrail()`` is
@@ -184,8 +187,22 @@ class PrimusPersona(LLMPersona):
         Failure posture mirrors the old sequential path: a doom-loop BLOCK on
         any leg fails the whole fan-out (re-raised as `_DoomLoopError` for
         `handle_task` to annotate); an abort or any other error propagates.
-        `return_exceptions=True` lets sibling legs finish (or be collected)
-        rather than leaking as pending tasks when one leg raises.
+
+        DESIGN DECISION (cabal#69 review): we use `gather(return_exceptions=
+        True)` and CONSCIOUSLY DECLINE prompt sibling-cancellation. A
+        `TaskGroup` would cancel in-flight siblings on the first failure
+        (saving their tokens), but its `ExceptionGroup` is ordered by
+        wall-clock — whichever leg fails first — whereas `gather` collects
+        every leg so we can select the failure DETERMINISTICALLY by leg order
+        (real errors before doom-loops; first insertion-order wins, below).
+        The cost is bounded: on a *self-inflicted* leg failure (a doom-loop or
+        a leg's own error) the siblings run one extra round before we re-raise.
+        A PARENT abort is unaffected — it walks all descendants and cancels
+        every leg's in-flight call promptly. Given aborts (the common
+        cancellation) already collapse cleanly and self-inflicted failures are
+        rare and bounded, deterministic ordering was judged the better trade.
+        `return_exceptions=True` also prevents pending-task leaks when one leg
+        raises.
         """
         results = await asyncio.gather(
             *(
