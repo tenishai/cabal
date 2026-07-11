@@ -84,6 +84,7 @@ class AgentCardVerifier:
 
         Raises:
             joserfc.errors.BadSignatureError: signature did not validate
+            joserfc.errors.UnsupportedAlgorithmError: token alg is not RS256
             ValueError: payload is not a valid AgentCard
         """
         sig = jws.extract_compact(jws_compact.encode("ascii"))

@@ -140,6 +140,9 @@ async def test_verify_rejects_hs256_forgery(
     key_set = KeySet.import_key_set({"keys": [rsa_jwk, dict(oct_key.as_dict())]})
 
     # Forge an HS256-signed card with the intruder key, wearing its kid.
+    # Payload shape is irrelevant here: the algorithm gate short-circuits
+    # before the payload is ever parsed, so this need not match sign_card()'s
+    # canonical form (by_alias=True) — do NOT copy this as a signature-path test.
     payload = jcs_canonicalize(sample_card.model_dump(mode="json", exclude_none=True))
     forged = jws.serialize_compact(
         {"alg": "HS256", "kid": "oct-intruder", "typ": "agent-card+jws"},
