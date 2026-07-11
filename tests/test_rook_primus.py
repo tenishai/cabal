@@ -140,7 +140,7 @@ async def test_subordinate_sub_task_inherits_trace_id() -> None:
 @pytest.mark.asyncio
 async def test_rook_requires_implementer() -> None:
     primus_client, _ = _client([])
-    with pytest.raises(ValueError, match="implementer"):
+    with pytest.raises(ValueError, match="non-reviewer"):
         RookPrimusPersona(primus_client, subordinates={})
 
 
@@ -170,7 +170,7 @@ async def test_rook_runs_reviewer_when_declared() -> None:
     # The reviewer's input message includes the implementer output
     reviewer_input = review_calls[0]["messages"][-1]["content"]
     assert "wrote a JSON parser" in reviewer_input
-    assert "PLAN given to implementer" in reviewer_input
+    assert "PLAN given to the leg" in reviewer_input
     # The aggregator sees the reviewer's critique
     agg_user = primus_calls[1]["messages"][-1]["content"]
     assert "REVIEWER CRITIQUE" in agg_user
@@ -188,7 +188,7 @@ async def test_rook_skips_reviewer_block_when_not_declared() -> None:
     await rook.handle_task(_task())
     agg_user = primus_calls[1]["messages"][-1]["content"]
     assert "REVIEWER" not in agg_user
-    assert "IMPLEMENTER OUTPUT" in agg_user
+    assert "[implementer] OUTPUT" in agg_user
 
 
 @pytest.mark.asyncio
@@ -513,3 +513,49 @@ async def test_doom_loop_disabled_by_none() -> None:
         assert r.status.state == "completed", f"call {i} unexpectedly blocked"
 
     assert len(sub_calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_primus_fans_out_non_reviewer_legs_concurrently() -> None:
+    """cabal#69: non-reviewer subordinates are dispatched CONCURRENTLY.
+
+    Two legs each wait on a shared Barrier(2) before producing output. If the
+    legs ran sequentially the first would block forever (only one party ever
+    arrives) and time out; reaching the barrier proves they run concurrently.
+    Both legs' outputs are then joined into the synthesis (aggregate) prompt.
+    """
+    import asyncio
+
+    barrier = asyncio.Barrier(2)
+
+    class BarrierSub(Subordinate):
+        async def handle_task(self, task: Task) -> Task:
+            # Sequential dispatch would deadlock here (a lone party at a 2-party
+            # barrier); wait_for turns that into a fast, clear failure.
+            await asyncio.wait_for(barrier.wait(), timeout=2.0)
+            return await super().handle_task(task)
+
+    primus_client, primus_calls = _client(["plan", "final synthesis"])
+    leg_a_client, _ = _client(["legA result"])
+    leg_b_client, _ = _client(["legB result"])
+    rook = RookPrimusPersona(
+        primus_client,
+        subordinates={
+            "implementer": BarrierSub(
+                role="implementer", llm_client=leg_a_client,
+                model="anthropic/claude-sonnet-4-6",
+            ),
+            "analyzer": BarrierSub(
+                role="analyzer", llm_client=leg_b_client,
+                model="anthropic/claude-sonnet-4-6",
+            ),
+        },
+    )
+
+    result = await rook.handle_task(_task())
+    assert result.status.state == "completed"
+
+    # Both legs' outputs reached the synthesis prompt, each labelled by role.
+    agg_user = primus_calls[1]["messages"][-1]["content"]
+    assert "[implementer] OUTPUT" in agg_user and "legA result" in agg_user
+    assert "[analyzer] OUTPUT" in agg_user and "legB result" in agg_user
