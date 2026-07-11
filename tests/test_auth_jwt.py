@@ -141,3 +141,54 @@ def test_secrets_fetch_accepts_limenal_aud(stored_key) -> None:
     payload = verify(token, key_set=key_set, expected_audience="limenal")
     assert payload["sub"] == "service:limenal"
     assert "secrets-fetch" in payload["cabal_scope"]
+
+
+# ---- Algorithm-confusion regression (cabal#75) -----------------------------
+
+
+def test_hs256_forgery_rejected(stored_key) -> None:
+    """An HS256 token must be rejected even if the keyset holds a symmetric key.
+
+    The RS256 pin is defense-in-depth against the exact scenario cabal#75
+    flags: "one key-type addition away." joserfc already refuses to use an
+    RSA-typed key as an HMAC secret, so the classic public-key-as-secret
+    attack is blocked by key typing regardless of the pin. The pin closes the
+    *next* gap: the moment the JWKS gains any symmetric (oct) key — a future
+    config change, a rotated service secret, a joserfc default change — an
+    HS256 token signed with it would validate under an unpinned decode.
+
+    This test proves the pin closes that path: it constructs a keyset holding
+    the legitimate RSA key PLUS an oct key, forges an HS256 token with the oct
+    key (valid iss/aud/iat/exp, so only the algorithm can reject it), and
+    asserts verify() rejects it. Without the pin this forgery is ACCEPTED;
+    with it, joserfc raises before any claim check.
+    """
+    from joserfc import jwt as jwt_lib
+    from joserfc.jwk import KeySet, OctKey, RSAKey
+
+    stored, _key_set = stored_key
+
+    # Legit RSA key (as published), plus a symmetric key that has entered the
+    # set — the "one key-type addition" the fix guards against.
+    rsa_jwk = dict(RSAKey.import_key(stored.private_key.public_key()).as_dict(private=False))
+    rsa_jwk["kid"] = stored.kid
+    oct_key = OctKey.generate_key(256, {"kid": "oct-intruder"})
+    key_set = KeySet.import_key_set({"keys": [rsa_jwk, dict(oct_key.as_dict())]})
+
+    now = int(time.time())
+    forged = jwt_lib.encode(
+        {"alg": "HS256", "kid": "oct-intruder", "typ": "JWT"},
+        {
+            "iss": "cabal-core",
+            "sub": "attacker:1",
+            "aud": "archivist",
+            "iat": now,
+            "exp": now + 300,
+            "cabal_scope": ["operator"],
+        },
+        oct_key,
+        algorithms=["HS256"],  # the attacker imposes no RS256 restriction
+    )
+
+    with pytest.raises(JWTError):
+        verify(forged, key_set=key_set, expected_audience="archivist")
