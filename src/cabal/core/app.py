@@ -187,8 +187,11 @@ def create_app(
         _app.state.checkpoint_store = SqliteCheckpointStore(sessionmaker=sessionmaker)
 
         if run_migrations:
+            # Resolve the same effective URL as _ensure_sqlite_parent_dir /
+            # make_engine (single default: DEFAULT_DB_URL), then convert the
+            # async driver to sync for alembic.
             sync_url = (
-                db_url or os.environ.get("CABAL_DB_URL", "sqlite:///data/cabal.db")
+                db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL
             ).replace("sqlite+aiosqlite://", "sqlite://", 1)
             # Log migration/DB-init failures loudly before re-raising. On a
             # bare-metal boot uvicorn can exit on a startup exception without
