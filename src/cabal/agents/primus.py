@@ -6,17 +6,21 @@ doom-loop guard, hook firing — lives entirely in this module.
 
 Lifecycle per dispatch:
     1. PLAN. The primus makes one LLM call to produce a precise instruction
-       for the implementer. Output: a short planning text.
-    2. DISPATCH. Build a sub-Task and call the implementer's `handle_task`
-       directly. Fire subordinate_dispatched BEFORE and subordinate_returned
-       AFTER. If a reviewer is present, run a second dispatch with the
-       implementer output in context.
-    3. AGGREGATE. The primus makes one LLM call summarizing the subordinate
-       outputs into a final response for the operator.
+       for the leg(s). Output: a short planning text.
+    2. FAN-OUT. Every non-reviewer subordinate is a *leg*, dispatched
+       CONCURRENTLY on the plan (asyncio.gather over independent sub-tasks —
+       unique ids, so per-leg checkpointing / abort / doom-loop stay isolated;
+       cabal#69). A single-leg primus (just 'implementer') is behaviour-
+       identical to the old sequential path. Fire subordinate_dispatched
+       BEFORE and subordinate_returned AFTER each leg. If a reviewer is
+       present, it runs AFTER the legs join, reviewing all their outputs.
+    3. SYNTHESIS (AGGREGATE). The primus makes one LLM call joining the leg
+       outputs (+ reviewer critique) into a final response for the operator.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 import secrets
 from dataclasses import dataclass, field
@@ -55,8 +59,11 @@ class PrimusPersona(LLMPersona):
     `aggregate_prompt`, and `default_model` via their own thin `__init__`
     that calls `super().__init__()` with those values.
 
-    `subordinates` maps role name → Subordinate instance. Required to have
-    at least 'implementer'.
+    `subordinates` maps role name → Subordinate instance. Every role EXCEPT
+    the reserved 'reviewer' is a concurrent fan-out leg (cabal#69), so at
+    least one non-reviewer leg is required. 'reviewer', if present, runs after
+    the legs join and reviews all their outputs — it is the single reserved
+    role, and only one review phase is expressible.
 
     `doom_loop` controls autonomous-loop protection at the subordinate
     boundary (cabal#59). By default a fresh ``DoomLoopGuardrail()`` is
@@ -82,9 +89,10 @@ class PrimusPersona(LLMPersona):
         max_tokens: int = 8192,
         doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
     ) -> None:
-        if "implementer" not in subordinates:
+        if not any(role != "reviewer" for role in subordinates):
             raise ValueError(
-                f"{name!r} requires at least an 'implementer' subordinate"
+                f"{name!r} requires at least one non-reviewer subordinate "
+                "(a fan-out leg); 'reviewer' alone has nothing to review"
             )
         super().__init__(
             name=name,
@@ -117,25 +125,24 @@ class PrimusPersona(LLMPersona):
         # router; checks here cancel the primus's own pipeline between stages.
         self.abort_coordinator.raise_if_aborted(task.id)
         plan_text = await self._plan(task)
+
+        # cabal#69 — fan-out: every non-reviewer subordinate is a leg,
+        # dispatched CONCURRENTLY on the plan. `subordinates` is insertion-
+        # ordered, so leg order is stable. A single 'implementer' leg reduces
+        # to the old sequential behaviour (gather-of-one).
+        leg_roles = [role for role in self.subordinates if role != "reviewer"]
         try:
-            implementer_output = await self._dispatch_subordinate(
-                task, role="implementer", instruction=plan_text
-            )
+            leg_outputs = await self._dispatch_legs(task, leg_roles, plan_text)
             reviewer_critique: str | None = None
             self.abort_coordinator.raise_if_aborted(task.id)
             if "reviewer" in self.subordinates:
-                reviewer_instruction = (
-                    f"PLAN given to implementer:\n{plan_text}\n\n"
-                    f"IMPLEMENTER OUTPUT:\n{implementer_output}\n\n"
-                    "Critique. Focus on real problems — correctness, security, "
-                    "edge cases the implementer missed, broken invariants. "
-                    "If you find nothing serious, say 'no significant issues'."
-                )
                 reviewer_critique = await self._dispatch_subordinate(
-                    task, role="reviewer", instruction=reviewer_instruction
+                    task,
+                    role="reviewer",
+                    instruction=self._reviewer_instruction(plan_text, leg_outputs),
                 )
         except _DoomLoopError as exc:
-            # Doom-loop guard blocked the subordinate dispatch. Return an
+            # Doom-loop guard blocked a subordinate dispatch. Return an
             # annotated failed Task to the caller (mirrors the router's own
             # guardrail-block pattern — cabal#59).
             _label = self.name.removesuffix("-primus")
@@ -148,7 +155,7 @@ class PrimusPersona(LLMPersona):
             )
 
         final_text = await self._aggregate(
-            task, plan_text, implementer_output, reviewer_critique
+            task, plan_text, leg_outputs, reviewer_critique
         )
 
         agent_msg = Message(role="agent", parts=[TextPart(text=final_text)])
@@ -166,6 +173,69 @@ class PrimusPersona(LLMPersona):
         )
 
     # ---- internal pipeline -------------------------------------------------
+
+    async def _dispatch_legs(
+        self, task: Task, roles: list[str], instruction: str
+    ) -> dict[str, str]:
+        """Dispatch each leg CONCURRENTLY on the same instruction (the plan);
+        return an insertion-ordered role -> output map (cabal#69).
+
+        Each leg goes through `_dispatch_subordinate`, so it's an independent
+        sub-task with its own id, abort node, doom-loop guard, and hooks — no
+        cross-leg interference, and per-leg checkpointing stays isolated.
+
+        Failure posture mirrors the old sequential path: a doom-loop BLOCK on
+        any leg fails the whole fan-out (re-raised as `_DoomLoopError` for
+        `handle_task` to annotate); an abort or any other error propagates.
+
+        DESIGN DECISION (cabal#69 review): we use `gather(return_exceptions=
+        True)` and CONSCIOUSLY DECLINE prompt sibling-cancellation. A
+        `TaskGroup` would cancel in-flight siblings on the first failure
+        (saving their tokens), but its `ExceptionGroup` is ordered by
+        wall-clock — whichever leg fails first — whereas `gather` collects
+        every leg so we can select the failure DETERMINISTICALLY by leg order
+        (real errors before doom-loops; first insertion-order wins, below).
+        The cost is bounded: on a *self-inflicted* leg failure (a doom-loop or
+        a leg's own error) the siblings run one extra round before we re-raise.
+        A PARENT abort is unaffected — it walks all descendants and cancels
+        every leg's in-flight call promptly. Given aborts (the common
+        cancellation) already collapse cleanly and self-inflicted failures are
+        rare and bounded, deterministic ordering was judged the better trade.
+        `return_exceptions=True` also prevents pending-task leaks when one leg
+        raises.
+        """
+        results = await asyncio.gather(
+            *(
+                self._dispatch_subordinate(task, role=role, instruction=instruction)
+                for role in roles
+            ),
+            return_exceptions=True,
+        )
+        doom: _DoomLoopError | None = None
+        for res in results:
+            if isinstance(res, _DoomLoopError):
+                doom = doom or res
+            elif isinstance(res, BaseException):
+                raise res  # abort / real errors propagate, as before
+        if doom is not None:
+            raise doom
+        return dict(zip(roles, results, strict=True))
+
+    def _reviewer_instruction(
+        self, plan_text: str, leg_outputs: dict[str, str]
+    ) -> str:
+        """Build the reviewer's instruction from the plan + every leg's output.
+        A single 'implementer' leg yields the familiar single-output review."""
+        leg_block = "\n\n".join(
+            f"[{role}] OUTPUT:\n{out}" for role, out in leg_outputs.items()
+        )
+        return (
+            f"PLAN given to the leg(s):\n{plan_text}\n\n"
+            f"{leg_block}\n\n"
+            "Critique. Focus on real problems — correctness, security, edge "
+            "cases the leg(s) missed, broken invariants. If you find nothing "
+            "serious, say 'no significant issues'."
+        )
 
     async def _plan(self, task: Task) -> str:
         messages = [
@@ -249,12 +319,9 @@ class PrimusPersona(LLMPersona):
         self,
         task: Task,
         plan_text: str,
-        implementer_output: str,
+        leg_outputs: dict[str, str],
         reviewer_critique: str | None = None,
     ) -> str:
-        # Strip noisy LLM artifacts the implementer might emit (numbered
-        # bullets, code-fences) before quoting in the aggregation prompt.
-        condensed_impl = re.sub(r"\n{3,}", "\n\n", implementer_output)
         messages = [
             {"role": "system", "content": self._aggregate_prompt},
             *(_message_to_chat(m) for m in task.history),
@@ -262,7 +329,13 @@ class PrimusPersona(LLMPersona):
         if task.status.message is not None:
             messages.append(_message_to_chat(task.status.message))
 
-        user_blocks = [f"PLAN: {plan_text}", f"IMPLEMENTER OUTPUT:\n{condensed_impl}"]
+        # Join every leg's output (a single 'implementer' leg is the common
+        # case). Strip noisy LLM artifacts (numbered bullets, code-fences)
+        # before quoting in the aggregation prompt.
+        user_blocks = [f"PLAN: {plan_text}"]
+        for role, out in leg_outputs.items():
+            condensed = re.sub(r"\n{3,}", "\n\n", out)
+            user_blocks.append(f"[{role}] OUTPUT:\n{condensed}")
         if reviewer_critique is not None:
             condensed_review = re.sub(r"\n{3,}", "\n\n", reviewer_critique)
             user_blocks.append(f"REVIEWER CRITIQUE:\n{condensed_review}")

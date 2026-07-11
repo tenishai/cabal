@@ -164,7 +164,15 @@ class DoomLoopGuardrail:
 
     async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
         """Return PASS until a delegation key recurs `threshold` times in the
-        session (within the TTL window); BLOCK at the threshold-th occurrence."""
+        session (within the TTL window); BLOCK at the threshold-th occurrence.
+
+        MUST REMAIN AWAIT-FREE. A primus fan-out (cabal#69) calls this
+        concurrently across legs sharing ONE guard instance. On a cooperative
+        event loop an await-free `async def` runs atomically to completion, so
+        the shared `_state` mutations can't interleave. Adding any `await` here
+        (a cache/DB lookup, say) would reintroduce a data race on the counter —
+        guard the state instead of awaiting inside it.
+        """
         if not isinstance(target, Task):
             # Non-Task targets (input/output phase) are not doom-loop candidates.
             return Verdict.pass_()
