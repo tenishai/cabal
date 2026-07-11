@@ -36,6 +36,13 @@ async def bootstrap(req: BootstrapRequest, request: Request) -> BootstrapRespons
     sessionmaker = request.app.state.sessionmaker
     master_key = request.app.state.master_key
 
+    # Run the entire bootstrap inside the transaction so that ANY failure —
+    # missing signing key, unconfigured operator_id, mint error — rolls back
+    # the consume() below (open_session rolls back on exception). A one-shot
+    # code exists for replay prevention, not misconfiguration punishment: a
+    # server-side 500 must not burn it. Previously the operator_id check and
+    # mint ran *after* the block committed, so a config mistake spent the
+    # operator's code and cost a daemon restart. See cabal#78.
     async with open_session(sessionmaker) as session:
         try:
             persona_name = await consume(session, req.code)
@@ -51,34 +58,35 @@ async def bootstrap(req: BootstrapRequest, request: Request) -> BootstrapRespons
                 detail="no active signing key",
             )
 
-    if persona_name is None:
-        identity = getattr(request.app.state, "identity", None)
-        operator_id = (
-            (identity.cabal.operator_id if identity is not None else None)
-            or os.environ.get("CABAL_OPERATOR_ID")
-        )
-        if not operator_id:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                    "operator_id not configured; "
-                    "set cabal.operator_id in identity.toml or CABAL_OPERATOR_ID env var"
-                ),
+        if persona_name is None:
+            identity = getattr(request.app.state, "identity", None)
+            operator_id = (
+                (identity.cabal.operator_id if identity is not None else None)
+                or os.environ.get("CABAL_OPERATOR_ID")
             )
-        sub = f"operator:{operator_id}"
-        aud = "cabal-core"
-        scope = ["operator"]
-    else:
-        sub = f"persona:{persona_name}"
-        aud = persona_name
-        scope = ["dispatch"]
+            if not operator_id:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                        "operator_id not configured; "
+                        "set cabal.operator_id in identity.toml or CABAL_OPERATOR_ID env var"
+                    ),
+                )
+            sub = f"operator:{operator_id}"
+            aud = "cabal-core"
+            scope = ["operator"]
+        else:
+            sub = f"persona:{persona_name}"
+            aud = persona_name
+            scope = ["dispatch"]
 
-    token = mint(
-        signing_key=stored,
-        sub=sub,
-        aud=aud,
-        persona=persona_name,
-        scope=scope,
-        ttl_seconds=60 * 60,  # 1h — operator token; Tasks use session_token for >5min
-    )
+        token = mint(
+            signing_key=stored,
+            sub=sub,
+            aud=aud,
+            persona=persona_name,
+            scope=scope,
+            ttl_seconds=60 * 60,  # 1h — operator token; Tasks use session_token for >5min
+        )
+
     return BootstrapResponse(access_token=token, persona=persona_name)

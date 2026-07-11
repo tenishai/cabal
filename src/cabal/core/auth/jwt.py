@@ -110,7 +110,15 @@ def verify(
     Raises JWTError on any failure (signature, audience mismatch, expired).
     """
     try:
-        decoded = jwt_lib.decode(token, key_set)
+        # Pin the algorithm explicitly. Without this, joserfc accepts any
+        # algorithm compatible with a key in the set, so the "RS256 only"
+        # invariant would rely implicitly on the key set holding only RSA
+        # keys — one key-type addition (or an alg-forgery like HS256 wearing
+        # a legit kid) away from silently weakening. See cabal#75.
+        # COUPLED with mint()'s hard-coded RS256 header above: a future
+        # rotation to a different alg (RS384/512, EdDSA) must update BOTH
+        # sites, or verification will silently reject freshly-minted tokens.
+        decoded = jwt_lib.decode(token, key_set, algorithms=["RS256"])
     except Exception as exc:  # noqa: BLE001
         raise JWTError(f"signature verification failed: {exc}") from exc
 
