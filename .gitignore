@@ -69,3 +69,6 @@ litestream/
 # K8s — never commit the real secret
 k8s/secret.yaml
 k8s/ingress.yaml
+
+# Local operator config — personas/creds refs live here; never commit the real one
+/identity.toml
