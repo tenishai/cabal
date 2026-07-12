@@ -49,16 +49,22 @@ class DoomLoopGuardrail:
        ``contextId`` field; both ``message/send`` and ``message/stream``
        routes propagate it onto the inbound ``Task``. When a client (or
        peer agent) supplies a stable ``contextId`` across hops, the router's
-       ``input_guardrails`` can group those hops and detect the loop. Without
-       a caller-supplied ``contextId`` each hop still falls back to its
-       fresh task uuid, so cross-hop detection requires the client to thread
-       the id (``cbl chat`` streaming does this as of cabal#59).
+       ``input_guardrails`` can group those hops and detect the loop — but
+       ONLY on the non-streaming ``dispatch()`` path: ``dispatch_streaming``
+       does not run ``input_guardrails`` at all (and refuses federated
+       targets outright), so streaming hops are never router-guarded,
+       ``contextId`` or not. Without a caller-supplied ``contextId`` each hop
+       falls back to its fresh task uuid, so cross-hop detection on the
+       non-streaming path requires the client to thread the id (``cbl chat``
+       non-streaming reuses one context id per session — see "Original scope").
 
-       CAVEAT: this A2A path is only active when a ``DoomLoopGuardrail`` is
-       actually wired as a router ``input_guardrail``. The production router
-       (``app.py``) currently constructs with none, so the inbound ``contextId``
-       feeds nothing until a deployment opts in. The **Rook** path above needs
-       no such opt-in — it is default-on.
+       As of cabal#76 the production router (``app.py``
+       ``build_router_input_guardrails``) wires a ``DoomLoopGuardrail`` as a
+       router ``input_guardrail`` by DEFAULT (identity.toml ``[guardrails]
+       doom_loop = false`` opts out) — so the inbound ``contextId`` now feeds
+       the guard, and crucially this is the enforcement point for
+       ``kind="federated"`` peers (the **Rook** path below is in-process only
+       and never reaches a remote hop).
 
     Original scope (still accurate for standalone use): a client re-sending
     a byte-identical message under a shared ``context_id`` (e.g. ``cbl chat``
