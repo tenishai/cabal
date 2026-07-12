@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import structlog
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -159,10 +159,29 @@ class GuardrailsConfig(_Open):
     ``kind="federated"`` peers — the in-process Rook ``DoomLoopGuardrail``
     (primus.py) only fires at the subordinate boundary and never reaches a
     remote hop. Default-on; a deployment opts out here.
+
+    The default threshold (5) is deliberately looser than the in-process Rook
+    guard (3): this guard runs on ALL production dispatch, human ``cbl chat``
+    turns included, so a slightly higher bar avoids blocking a user who sends
+    the same short message (``yes`` / ``continue``) a few times in a session,
+    while a genuine agent doom loop blows past 5 easily.
     """
 
     doom_loop: bool = True
-    doom_loop_threshold: int = 3
+    doom_loop_threshold: int = 5
+
+    @field_validator("doom_loop_threshold")
+    @classmethod
+    def _threshold_at_least_one(cls, v: int) -> int:
+        # DoomLoopGuardrail itself raises for threshold < 1; catch it here at
+        # config-load so a bad identity.toml surfaces a field-named error
+        # instead of aborting create_app deep in router construction.
+        if v < 1:
+            raise ValueError(
+                f"guardrails.doom_loop_threshold must be >= 1 (got {v}); "
+                "raise it or disable the guard with doom_loop = false"
+            )
+        return v
 
 
 class IdentityConfig(_Open):

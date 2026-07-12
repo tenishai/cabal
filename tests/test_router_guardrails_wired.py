@@ -68,12 +68,25 @@ async def test_production_router_wires_doom_loop_by_default(app: FastAPI) -> Non
 
 
 def test_build_router_input_guardrails_default_on() -> None:
-    """No identity (no identity.toml) → default-on DoomLoop at threshold 3."""
+    """No identity (no identity.toml) → default-on DoomLoop at threshold 5.
+
+    The default is 5 (looser than the in-process Rook guard's 3) because this
+    guard runs on ALL production dispatch, human cbl chat turns included.
+    """
     dooms = [
         g for g in build_router_input_guardrails(None) if isinstance(g, DoomLoopGuardrail)
     ]
     assert len(dooms) == 1
-    assert dooms[0]._threshold == 3
+    assert dooms[0]._threshold == 5
+
+
+def test_guardrails_config_rejects_threshold_below_one() -> None:
+    """A bad doom_loop_threshold surfaces a field-named config error at load,
+    not a raw ValueError deep in create_app router construction."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="doom_loop_threshold"):
+        GuardrailsConfig(doom_loop_threshold=0)
 
 
 def test_build_router_input_guardrails_threshold_from_config() -> None:
