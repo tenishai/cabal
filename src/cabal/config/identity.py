@@ -35,6 +35,7 @@ KNOWN_TOP_LEVEL = {
     "langfuse",
     "techne",
     "limenal",
+    "guardrails",
 }
 
 
@@ -150,6 +151,20 @@ class LimenalConfig(_Open):
     jwt_aud: str = "limenal"
 
 
+class GuardrailsConfig(_Open):
+    """Router-level input guardrails (cabal#76).
+
+    These run in ``DispatchRouter.dispatch`` *before* the local-vs-remote
+    branch, so they are the one enforcement point that also covers
+    ``kind="federated"`` peers — the in-process Rook ``DoomLoopGuardrail``
+    (primus.py) only fires at the subordinate boundary and never reaches a
+    remote hop. Default-on; a deployment opts out here.
+    """
+
+    doom_loop: bool = True
+    doom_loop_threshold: int = 3
+
+
 class IdentityConfig(_Open):
     cabal: CabalConfig = Field(default_factory=CabalConfig)
     personas: dict[str, PersonaConfig] = Field(default_factory=dict)
@@ -157,6 +172,7 @@ class IdentityConfig(_Open):
     langfuse: LangfuseConfig = Field(default_factory=LangfuseConfig)
     techne: TechneConfig = Field(default_factory=TechneConfig)
     limenal: LimenalConfig = Field(default_factory=LimenalConfig)
+    guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     hooks: dict[str, Any] = Field(default_factory=dict)
 
 

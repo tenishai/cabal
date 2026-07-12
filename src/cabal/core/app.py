@@ -30,6 +30,7 @@ from sqlalchemy import select
 from cabal import __version__
 from cabal.agents.echo import EchoAgent
 from cabal.config.identity import (
+    GuardrailsConfig,
     IdentityConfig,
     load_identity,
     resolve_data_dir,
@@ -46,6 +47,8 @@ from cabal.core.broker.router import DispatchRouter
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import DEFAULT_DB_URL, make_engine, make_sessionmaker, open_session
 from cabal.core.db_pragmas import install_sqlite_pragmas
+from cabal.core.guardrails import Guardrail
+from cabal.core.guardrails_builtin import DoomLoopGuardrail
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.identity_sync import sync_personas
 from cabal.core.llm.budget import BudgetGuard
@@ -134,6 +137,23 @@ def _default_acompletion() -> Callable[..., Any]:
     import litellm  # local import — heavy module
 
     return litellm.acompletion
+
+
+def build_router_input_guardrails(identity: IdentityConfig | None) -> list[Guardrail]:
+    """Router-level input guardrails for the production DispatchRouter (cabal#76).
+
+    These run in ``DispatchRouter.dispatch`` BEFORE the local-vs-remote branch,
+    so they are the only enforcement point that also covers ``kind="federated"``
+    peers. The in-process Rook ``DoomLoopGuardrail`` (primus.py) fires at the
+    subordinate boundary and never reaches a remote hop, so without this a
+    delegation to a federated peer gets JWT auth + bookkeeping + AbortGraph but
+    ZERO guardrails. Default-on; identity.toml ``[guardrails]`` opts out.
+    """
+    gconf = identity.guardrails if identity is not None else GuardrailsConfig()
+    guardrails: list[Guardrail] = []
+    if gconf.doom_loop:
+        guardrails.append(DoomLoopGuardrail(threshold=gconf.doom_loop_threshold))
+    return guardrails
 
 
 def create_app(
@@ -265,6 +285,9 @@ def create_app(
             jwks_provider=jwks_provider,
             http_client=http_client,
             hook_registry=hook_registry,
+            # cabal#76 — default-on router guardrails so FEDERATED dispatch is
+            # doom-loop protected (the Rook DoomLoop never reaches remote hops).
+            input_guardrails=build_router_input_guardrails(identity),
         )
         dispatch_router.register_local(EchoAgent())
 

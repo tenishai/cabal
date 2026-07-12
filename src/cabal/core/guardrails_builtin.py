@@ -54,11 +54,13 @@ class DoomLoopGuardrail:
        fresh task uuid, so cross-hop detection requires the client to thread
        the id (``cbl chat`` streaming does this as of cabal#59).
 
-       CAVEAT: this A2A path is only active when a ``DoomLoopGuardrail`` is
-       actually wired as a router ``input_guardrail``. The production router
-       (``app.py``) currently constructs with none, so the inbound ``contextId``
-       feeds nothing until a deployment opts in. The **Rook** path above needs
-       no such opt-in — it is default-on.
+       As of cabal#76 the production router (``app.py``
+       ``build_router_input_guardrails``) wires a ``DoomLoopGuardrail`` as a
+       router ``input_guardrail`` by DEFAULT (identity.toml ``[guardrails]
+       doom_loop = false`` opts out) — so the inbound ``contextId`` now feeds
+       the guard, and crucially this is the enforcement point for
+       ``kind="federated"`` peers (the **Rook** path below is in-process only
+       and never reaches a remote hop).
 
     Original scope (still accurate for standalone use): a client re-sending
     a byte-identical message under a shared ``context_id`` (e.g. ``cbl chat``
