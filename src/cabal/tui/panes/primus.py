@@ -38,7 +38,18 @@ class PrimusPane(Widget):
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="transcript"):
             pass
-        yield Input(placeholder=f"Message {self.persona}…", id="msg-input")
+        yield Input(
+            placeholder=f"Message {self.persona}…  (/exit to quit)",
+            id="msg-input",
+        )
+
+    def on_mount(self) -> None:
+        """Focus the message input on launch so the user can type immediately.
+
+        Without this, focus lands on the scrollable transcript and the user
+        has to press Tab to reach the input bar.
+        """
+        self.query_one("#msg-input", Input).focus()
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -50,9 +61,22 @@ class PrimusPane(Widget):
         if not text:
             return
 
+        # Slash commands are handled locally and never sent to the broker.
+        if text.lower() in ("/exit", "/quit", "/q"):
+            event.input.clear()
+            self.app.exit()
+            return
+
         # Clear the input immediately so the user can type the next message.
         event.input.clear()
+        await self.send_user_message(text)
 
+    async def send_user_message(self, text: str) -> None:
+        """Append a user turn to the transcript and stream the persona's reply.
+
+        Shared by the Enter handler and the on-launch greeting so a typed
+        message and the opening ``Hello`` render through the same path.
+        """
         # Append the user turn to the transcript.
         transcript = self.query_one("#transcript", VerticalScroll)
         await transcript.mount(
@@ -71,22 +95,49 @@ class PrimusPane(Widget):
     async def _stream_response(self, text: str) -> None:
         """Async worker: streams deltas from the broker into the transcript."""
         transcript = self.query_one("#transcript", VerticalScroll)
+        prefix = f"[bold green]{self.persona}[/bold green]: "
 
-        # Create the agent-turn widget up front so it appears immediately.
-        response_widget = Static(
-            f"[bold green]{self.persona}[/bold green]: ",
-            markup=True,
-        )
-        await transcript.mount(response_widget)
+        # Working indicator: a single left-justified dot that blinks under the
+        # prompt while we wait for the model (for a primus, also while it plans
+        # and delegates to subordinates). Left-aligned like the transcript
+        # lines, replaced by the response the moment the first delta arrives.
+        dot = Static("[bold green]●[/]", markup=True, classes="working-dot")
+        dot.styles.height = 1
+        await transcript.mount(dot)
         transcript.scroll_end(animate=False)
 
-        buf = StreamBuffer(
-            widget=response_widget,
-            prefix=f"[bold green]{self.persona}[/bold green]: ",
-        )
+        dot_lit = True
+
+        def _blink() -> None:
+            nonlocal dot_lit
+            dot_lit = not dot_lit
+            dot.update("[bold green]●[/]" if dot_lit else " ")
+
+        blink_timer = self.set_interval(0.5, _blink)
+
+        response_widget = Static(prefix, markup=True)
+        buf = StreamBuffer(widget=response_widget, prefix=prefix)
+
+        async def _swap_in_response() -> None:
+            """Stop the blink, remove the dot, mount the response line (once)."""
+            blink_timer.stop()
+            await dot.remove()
+            await transcript.mount(response_widget)
+
+        pending = True  # dot still showing; response not yet mounted
         try:
             async for delta in self.broker.send_message(self.persona, text):
+                if pending:
+                    await _swap_in_response()
+                    pending = False
                 buf.append(delta)
                 transcript.scroll_end(animate=False)
         except BrokerError as exc:
+            if pending:
+                await _swap_in_response()
+                pending = False
             response_widget.update(f"[red bold]error[/red bold]: {exc}")
+        finally:
+            # Empty response (no deltas, no error): still clear the indicator.
+            if pending:
+                await _swap_in_response()

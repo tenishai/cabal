@@ -64,6 +64,13 @@ class InProcessBrokerClient:
             )
         self._operator_token = operator_token
 
+        # Per-persona in-session conversation history (A2A Messages, user/agent
+        # alternating) threaded into each Task so the persona sees prior turns.
+        # Lives only for the life of this process — persistence is techne's job,
+        # not this. A stable contextId per persona links the turns.
+        self._history: dict[str, list[Message]] = {}
+        self._context_ids: dict[str, str] = {}
+
         # Set during __aenter__
         self._app: Any | None = None
         self._lifespan_cm: Any | None = None
@@ -136,16 +143,21 @@ class InProcessBrokerClient:
             except Exception as exc:  # noqa: BLE001
                 raise BrokerError(f"failed to mint dispatch token: {exc}") from exc
 
-        # Step 3: build task.
+        # Step 3: build task, threading this session's prior turns as history
+        # so the persona has in-session memory. contextId links the turns.
+        user_msg = Message(role="user", parts=[TextPart(text=text)])
+        history = self._history.setdefault(persona, [])
+        context_id = self._context_ids.setdefault(persona, str(uuid.uuid4()))
         task = Task(
             id=str(uuid.uuid4()),
-            status=TaskStatus(
-                state="submitted",
-                message=Message(role="user", parts=[TextPart(text=text)]),
-            ),
+            contextId=context_id,
+            history=list(history),
+            status=TaskStatus(state="submitted", message=user_msg),
         )
 
-        # Step 4: stream from the router.
+        # Step 4: stream from the router, capturing the reply so the completed
+        # turn can be appended to history for subsequent messages.
+        reply_chunks: list[str] = []
         try:
             async for delta in self._router.dispatch_streaming(
                 target_agent=persona,
@@ -153,9 +165,16 @@ class InProcessBrokerClient:
                 task=task,
                 caller_jwt=dispatch_token,
             ):
+                reply_chunks.append(delta)
                 yield delta
         except DispatchError as exc:
             raise BrokerError(f"dispatch error: {exc}") from exc
+
+        # Record the completed turn (user + agent) so the next message sees it.
+        history.append(user_msg)
+        history.append(
+            Message(role="agent", parts=[TextPart(text="".join(reply_chunks))])
+        )
 
     def _mint_operator_token(self) -> str:
         """Mint a short-lived operator token from the booted app's signing key.
