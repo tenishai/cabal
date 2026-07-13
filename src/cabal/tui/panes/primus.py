@@ -84,6 +84,11 @@ class PrimusPane(Widget):
         )
         transcript.scroll_end(animate=False)
 
+        # Serialize turns: disable the input while this turn streams so a second
+        # send can't interleave and scramble in-session history (Prudence #101).
+        # Re-enabled in _stream_response's finally.
+        self.query_one("#msg-input", Input).disabled = True
+
         # Kick off the streaming worker.
         self._stream_response(text)
 
@@ -141,3 +146,7 @@ class PrimusPane(Widget):
             # Empty response (no deltas, no error): still clear the indicator.
             if pending:
                 await _swap_in_response()
+            # Re-enable + refocus the input now that this turn is done.
+            inp = self.query_one("#msg-input", Input)
+            inp.disabled = False
+            inp.focus()

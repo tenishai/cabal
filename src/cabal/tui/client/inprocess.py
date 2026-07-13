@@ -170,11 +170,15 @@ class InProcessBrokerClient:
         except DispatchError as exc:
             raise BrokerError(f"dispatch error: {exc}") from exc
 
-        # Record the completed turn (user + agent) so the next message sees it.
-        history.append(user_msg)
-        history.append(
-            Message(role="agent", parts=[TextPart(text="".join(reply_chunks))])
-        )
+        # Record the completed turn only if the agent actually replied. An empty
+        # agent message would serialize as an empty assistant content block,
+        # which some providers reject on the next turn (Prudence #101). Recording
+        # the pair atomically also keeps history strictly user/agent-alternating.
+        if reply_chunks:
+            history.append(user_msg)
+            history.append(
+                Message(role="agent", parts=[TextPart(text="".join(reply_chunks))])
+            )
 
     def _mint_operator_token(self) -> str:
         """Mint a short-lived operator token from the booted app's signing key.
