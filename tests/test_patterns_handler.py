@@ -234,6 +234,27 @@ def test_get_handler_factory_returns_patterns_handler() -> None:
     assert isinstance(h, PatternsHandler)
 
 
+def test_get_handler_reads_env_db_path(monkeypatch, tmp_path: Path) -> None:
+    """CABAL_ARCHITECT_DB seeds default_config.db_path; unset/empty → None.
+
+    This is the env-config branch that lets `limenal serve` point the patterns
+    handler at a fixed architect.db — the reason the commit exists (Prudence #101).
+    """
+    from cabal.handlers.patterns import get_handler
+
+    db = tmp_path / "architect.db"
+    monkeypatch.setenv("CABAL_ARCHITECT_DB", str(db))
+    assert get_handler().default_config.db_path == db
+
+    # empty string is falsy → no db_path
+    monkeypatch.setenv("CABAL_ARCHITECT_DB", "")
+    assert get_handler().default_config.db_path is None
+
+    # unset → None
+    monkeypatch.delenv("CABAL_ARCHITECT_DB", raising=False)
+    assert get_handler().default_config.db_path is None
+
+
 def test_capability_card_has_required_fields() -> None:
     handler = PatternsHandler()
     card = handler.capability_card()
