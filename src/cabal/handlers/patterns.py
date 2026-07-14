@@ -25,6 +25,7 @@ when no override arrives.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import UTC
 from pathlib import Path
@@ -272,5 +273,15 @@ class PatternsHandler:
 
 
 def get_handler() -> Handler:
-    """Entry-point factory for the patterns handler."""
-    return PatternsHandler()
+    """Entry-point factory for the patterns handler.
+
+    Reads ``CABAL_ARCHITECT_DB`` from the environment (if set) to wire the
+    served handler's fallback corpus path, so ``limenal serve`` can point at
+    a fixed ``architect.db`` without every caller supplying it per-call. A
+    per-persona ``ctx.extra['patterns.db_path']`` still overrides it.
+    """
+    db_env = os.environ.get("CABAL_ARCHITECT_DB")
+    config = (
+        PatternsConfig(db_path=Path(db_env).expanduser()) if db_env else PatternsConfig()
+    )
+    return PatternsHandler(default_config=config)

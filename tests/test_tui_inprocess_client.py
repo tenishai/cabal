@@ -100,6 +100,47 @@ async def test_send_message_streams_stub_response(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_message_threads_in_session_history(tmp_path: Path) -> None:
+    """A second message carries the first turn (user + agent) as history.
+
+    Proves in-session memory: the persona sees what was said earlier in the
+    same client, so multi-turn conversation works.
+    """
+    identity_path = _write_identity(tmp_path)
+
+    calls: list[list[Any]] = []
+
+    async def recording_stub(model: str, messages: list[Any], **kwargs: Any) -> Any:
+        calls.append(messages)
+        last_user = next(
+            (m["content"] for m in reversed(messages) if m.get("role") == "user"), ""
+        )
+
+        async def _stream():
+            yield {"choices": [{"delta": {"content": f"echo: {last_user}"}}]}
+
+        return _stream()
+
+    async with InProcessBrokerClient(
+        config_path=str(identity_path),
+        acompletion_fn=recording_stub,
+        operator_token="placeholder",
+    ) as client:
+        client._operator_token = client._mint_operator_token()
+
+        async for _ in client.send_message("archivist", "my name is Richard"):
+            pass
+        async for _ in client.send_message("archivist", "what is my name?"):
+            pass
+
+    assert len(calls) >= 2, f"expected >=2 LLM calls (one per turn); got {len(calls)}"
+    second = " ".join(str(m.get("content", "")) for m in calls[-1])
+    # The first user turn AND the first agent reply must be present in turn 2.
+    assert "my name is Richard" in second, f"prior user turn not threaded: {second!r}"
+    assert "echo: my name is Richard" in second, f"prior agent turn not threaded: {second!r}"
+
+
+@pytest.mark.asyncio
 async def test_send_message_accumulates_multiple_chunks(tmp_path: Path) -> None:
     """send_message yields each chunk separately and they concatenate correctly."""
     identity_path = _write_identity(tmp_path)

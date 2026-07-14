@@ -42,8 +42,13 @@ class CabalTUI(App[None]):
     # ------------------------------------------------------------------
 
     async def on_mount(self) -> None:
-        """Enter the broker context when the app starts."""
+        """Enter the broker context, then open with a greeting.
+
+        Sending a ``Hello`` as the user on launch makes the persona introduce
+        itself immediately, instead of presenting an empty ("dead") window.
+        """
         await self.broker.__aenter__()
+        await self.query_one(PrimusPane).send_user_message("Hello")
 
     async def on_unmount(self) -> None:
         """Exit the broker context when the app stops."""
