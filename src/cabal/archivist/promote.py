@@ -120,10 +120,25 @@ def promote_techne_knowledge(
     conn = sqlite3.connect(str(techne_db))
     conn.row_factory = sqlite3.Row
     try:
+        # Honour techne's soft-archive (techne#216). An archived entry is one the
+        # operator has explicitly pulled out of circulation; promoting it anyway
+        # would republish it to the SHARED corpus, where — unlike a local recall —
+        # it cannot be quietly re-archived out of teammates' clones. Archiving is
+        # therefore the reversible "keep it local, stop sharing it" lever, and it
+        # only works if this query respects it.
+        #
+        # Probed rather than assumed: this function reads an ARBITRARY agent's
+        # techne db, and `status` post-dates the original schema. A hard reference
+        # would raise OperationalError on any older store, turning a best-effort
+        # sync into a hard failure. Absent column => nothing was ever archived.
+        has_status = any(
+            r["name"] == "status" for r in conn.execute("PRAGMA table_info(knowledge)")
+        )
+        archived_clause = " AND status != 'archived'" if has_status else ""
         rows = conn.execute(
-            """SELECT id, type, content, tags, source, confidence_numeric
+            f"""SELECT id, type, content, tags, source, confidence_numeric
                FROM knowledge
-               WHERE superseded_by IS NULL
+               WHERE superseded_by IS NULL{archived_clause}
                ORDER BY id"""
         ).fetchall()
     finally:

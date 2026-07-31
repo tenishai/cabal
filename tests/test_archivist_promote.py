@@ -43,28 +43,81 @@ def test_promote_preserves_zero_confidence_as_importance(tmp_path: Path) -> None
     assert hits[0].importance == 0.0  # not 1.0
 
 
-def _techne_db(path: Path, rows: list[dict]) -> Path:
+def _techne_db(path: Path, rows: list[dict], *, with_status: bool = True) -> Path:
+    """Build a minimal techne `knowledge` table.
+
+    `with_status=False` reproduces the PRE-status schema of an older techne store,
+    which promote must still read rather than raising OperationalError.
+    """
+    status_col = ",\n            status TEXT NOT NULL DEFAULT 'current'" if with_status else ""
     conn = sqlite3.connect(str(path))
     conn.execute(
-        """CREATE TABLE knowledge (
+        f"""CREATE TABLE knowledge (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT NOT NULL,
             content TEXT NOT NULL,
             source TEXT,
             tags TEXT,
             confidence_numeric REAL NOT NULL DEFAULT 0.6,
-            superseded_by INTEGER
+            superseded_by INTEGER{status_col}
         )"""
     )
+    cols = "type, content, tags, confidence_numeric, superseded_by"
+    ph = "?, ?, ?, ?, ?"
     for r in rows:
+        vals = [r["type"], r["content"], r.get("tags"), r.get("conf", 0.6), r.get("superseded_by")]
+        if with_status:
+            vals.append(r.get("status", "current"))
         conn.execute(
-            "INSERT INTO knowledge (type, content, tags, confidence_numeric, superseded_by) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (r["type"], r["content"], r.get("tags"), r.get("conf", 0.6), r.get("superseded_by")),
+            f"INSERT INTO knowledge ({cols}{', status' if with_status else ''}) "
+            f"VALUES ({ph}{', ?' if with_status else ''})",
+            vals,
         )
     conn.commit()
     conn.close()
     return path
+
+
+def test_promote_skips_archived_knowledge(tmp_path: Path) -> None:
+    """techne's soft-archive (techne#216) must stop promotion to the SHARED corpus.
+
+    Regression: promote filtered only `superseded_by IS NULL`, so archiving an entry
+    removed it from local recall but it kept re-syncing to the team repo — where it
+    cannot be un-shared. Archiving is the reversible 'keep local, stop sharing' lever.
+    """
+    tdb = _techne_db(
+        tmp_path / "techne.db",
+        [
+            {"type": "fact", "content": "shared and useful", "tags": "keep"},
+            {
+                "type": "fact",
+                "content": "the clone lives at /Users/someone/working/repo",
+                "tags": "machine-specific",
+                "status": "archived",
+            },
+        ],
+    )
+    store = ArchivistStore(tmp_path / "arch.db")
+    rep = promote_techne_knowledge(tdb, store, written_by="Prudence")
+
+    assert rep.read == 1, "archived row must not even be read as a candidate"
+    assert rep.new == 1
+    assert store.search("shared and useful"), "the live entry should still promote"
+    assert store.search("clone lives") == [], "archived entry must NOT reach the corpus"
+
+
+def test_promote_reads_store_without_status_column(tmp_path: Path) -> None:
+    """An older techne db has no `status` column; promote must not hard-fail on it."""
+    tdb = _techne_db(
+        tmp_path / "legacy.db",
+        [{"type": "fact", "content": "legacy schema entry", "tags": "old"}],
+        with_status=False,
+    )
+    store = ArchivistStore(tmp_path / "arch.db")
+    rep = promote_techne_knowledge(tdb, store, written_by="Prudence")
+
+    assert rep.new == 1
+    assert store.search("legacy schema entry")
 
 
 def test_promote_maps_and_publishes(tmp_path: Path) -> None:
