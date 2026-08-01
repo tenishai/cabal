@@ -132,3 +132,25 @@ def test_prompt_templates_carry_no_hardcoded_primus_name() -> None:
         assert "{primus}" in template, f"{role} prompt must address the primus by placeholder"
         for literal in ("Rook", "Jackdaw", "Mason", "Wright"):
             assert literal not in template, f"{role} prompt hard-codes {literal!r}"
+
+
+def test_prompt_templates_are_actually_formattable() -> None:
+    """Because the prompts are str.format templates, an UNESCAPED literal brace
+    — e.g. a JSON example like {"status": "done"} — raises KeyError at
+    Subordinate construction. Neither factory call site (app.py:374,
+    admin.py:610) wraps `register_personas_from_identity`, so that is a daemon
+    that will not boot.
+
+    The comment on SUBORDINATE_PROMPTS says to double literal braces; this
+    enforces it. Caught by Prudence on PR #112: the sibling test above passes
+    on such a prompt, since it only checks for `{primus}` and absent names —
+    so the guard it advertises had a hole exactly where it mattered.
+    """
+    for role, template in SUBORDINATE_PROMPTS.items():
+        try:
+            template.format(primus="X", role="y")
+        except (KeyError, IndexError, ValueError) as exc:  # pragma: no cover - failure path
+            raise AssertionError(
+                f"{role} prompt is not formattable ({type(exc).__name__}: {exc}). "
+                "Double any literal brace: {{ }}."
+            ) from exc
