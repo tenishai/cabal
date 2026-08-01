@@ -28,7 +28,7 @@ graph TB
     subgraph Project["Project Personas"]
         direction TB
         MASON["mason-primus<br/>(lead · opus)"]
-        MASONSUB["mason-secundus<br/>(worker · sonnet)"]
+        MASONSUB["mason-implementer<br/>(worker · sonnet)"]
         RAVEN["raven-primus"]
     end
 

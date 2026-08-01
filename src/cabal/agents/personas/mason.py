@@ -18,7 +18,10 @@ from cabal.core.guardrails_builtin import DoomLoopGuardrail
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
-# Re-export so any code that imports these from mason keeps working.
+# Re-exported so importers can take these from the persona module rather than
+# reaching into cabal.agents.primus. (Predates the rename, when this module was
+# `rook`; nothing imported them from `mason` before, so the original "keeps
+# working" phrasing had become self-referential.)
 __all__ = [
     "MasonPrimusPersona",
     "_DoomLoopError",

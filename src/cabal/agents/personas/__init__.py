@@ -28,10 +28,10 @@ PERSONA_REGISTRY: dict[str, Callable[..., LLMPersona]] = {
 
 
 __all__ = [
+    "PERSONA_REGISTRY",
     "ArchitectPersona",
     "ArchivistPersona",
-    "WrightPrimusPersona",
     "LibrarianPersona",
-    "PERSONA_REGISTRY",
     "MasonPrimusPersona",
+    "WrightPrimusPersona",
 ]
