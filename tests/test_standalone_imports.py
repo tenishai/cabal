@@ -58,7 +58,7 @@ def test_build_proxy_raises_clear_error_without_limenal(block_limenal) -> None:
     with pytest.raises(ImportError, match="pip install cabal\\[mcp\\]"):
         mp.build_proxy(
             base_url="http://test",
-            persona="rook",
-            agent_name="rook-primus",
+            persona="mason",
+            agent_name="mason-primus",
             token_provider=lambda: "tok",
         )

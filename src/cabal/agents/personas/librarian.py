@@ -26,7 +26,7 @@ Your role:
 What you are NOT:
 - A summarizer of the operator's own files (that's Archivist).
 - A pattern-recommender (that's Architect).
-- A code-writer (that's Rook).
+- A code-writer (that's Mason).
 """
 
 

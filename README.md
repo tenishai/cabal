@@ -2,7 +2,7 @@
 
 Self-hosted personal agent orchestration platform. Cabal Core is the SQLite-backed
 control plane and A2A broker; personas (Architect, Archivist, Librarian, ...) and
-the Rook primus run as agent modules registered with the bulletin board.
+the Mason primus run as agent modules registered with the bulletin board.
 
 ## Status
 
@@ -39,7 +39,7 @@ src/cabal/
     routes/       admin, a2a, tasks, well-known, auth, healthz
     observability/ Trace exporter + Langfuse adapter
   cli/            cbl entrypoint
-  personas/       LLMPersona, RookPrimusPersona, EchoPersona
+  personas/       LLMPersona, MasonPrimusPersona, EchoPersona
   config/         identity.toml loader
 migrations/       Alembic revisions
 tests/            pytest suite (305 tests)

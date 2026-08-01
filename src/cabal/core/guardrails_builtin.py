@@ -38,7 +38,7 @@ class DoomLoopGuardrail:
     SCOPE / EFFICACY (cabal#59, now closed): the counter trips when the same
     session key recurs. Two loop paths are now covered:
 
-    1. **Rook fan-out** (cabal#59): ``RookPrimusPersona`` holds a shared
+    1. **Mason fan-out** (cabal#59): ``MasonPrimusPersona`` holds a shared
        ``DoomLoopGuardrail`` instance (default-on) and runs ``check()`` at
        the subordinate boundary in ``_dispatch_subordinate`` before calling
        ``subord.handle_task``. Sub-tasks inherit the parent's ``context_id``
@@ -63,7 +63,7 @@ class DoomLoopGuardrail:
        router ``input_guardrail`` by DEFAULT (identity.toml ``[guardrails]
        doom_loop = false`` opts out) — so the inbound ``contextId`` now feeds
        the guard, and crucially this is the enforcement point for
-       ``kind="federated"`` peers (the **Rook** path below is in-process only
+       ``kind="federated"`` peers (the **Mason** path below is in-process only
        and never reaches a remote hop).
 
     Original scope (still accurate for standalone use): a client re-sending
@@ -149,7 +149,7 @@ class DoomLoopGuardrail:
         # {session_key: {delegation_key: (cumulative_count, last_seen)}}
         # Per-key *cumulative* counts within a session — NOT a single
         # consecutive slot. Consecutive-only counting misses the interleaved
-        # multi-role loop (Rook's implementer/reviewer fan-out produces
+        # multi-role loop (Mason's implementer/reviewer fan-out produces
         # impl, rev, impl, rev, … so no two identical keys are ever adjacent);
         # cumulative per-key counting catches the repeated `impl(X)` regardless
         # of what runs between the repeats.

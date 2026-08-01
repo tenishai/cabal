@@ -5,7 +5,7 @@ Background: the router runs ``input_guardrails`` in ``dispatch()`` BEFORE the
 local-vs-remote branch, so it is the one enforcement point that also covers
 ``kind="federated"`` peers. Pre-#76 the production router (app.py) constructed
 with none — a delegation to a federated peer got JWT auth + bookkeeping +
-AbortGraph but ZERO guardrails. The in-process Rook ``DoomLoopGuardrail``
+AbortGraph but ZERO guardrails. The in-process Mason ``DoomLoopGuardrail``
 (primus.py) only fires at the subordinate boundary and never reaches a remote
 hop.
 
@@ -70,7 +70,7 @@ async def test_production_router_wires_doom_loop_by_default(app: FastAPI) -> Non
 def test_build_router_input_guardrails_default_on() -> None:
     """No identity (no identity.toml) → default-on DoomLoop at threshold 5.
 
-    The default is 5 (looser than the in-process Rook guard's 3) because this
+    The default is 5 (looser than the in-process Mason guard's 3) because this
     guard runs on ALL production dispatch, human cbl chat turns included.
     """
     dooms = [

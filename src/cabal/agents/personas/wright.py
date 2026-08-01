@@ -1,9 +1,9 @@
-"""Jackdaw primus — general-purpose software engineering persona.
+"""Wright primus — general-purpose software engineering persona.
 
 Thin subclass of PrimusPersona. All fan-out machinery (PLAN → DISPATCH →
 AGGREGATE, doom-loop guard, hook firing) lives in cabal.agents.primus.
 
-Jackdaw acts as a senior software engineer who breaks concrete coding tasks
+Wright acts as a senior software engineer who breaks concrete coding tasks
 into precise instructions for an implementer subordinate, then aggregates
 the result for the operator. It does NOT write code itself as the primus.
 An optional reviewer subordinate critiques the implementer's output for
@@ -24,16 +24,16 @@ from cabal.core.hooks.registry import HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
 __all__ = [
-    "JackdawPrimusPersona",
+    "WrightPrimusPersona",
     "DEFAULT_MODEL",
-    "JACKDAW_SYSTEM_PROMPT",
-    "JACKDAW_AGGREGATE_PROMPT",
+    "WRIGHT_SYSTEM_PROMPT",
+    "WRIGHT_AGGREGATE_PROMPT",
 ]
 
 DEFAULT_MODEL = "anthropic/claude-sonnet-5"
 
-JACKDAW_SYSTEM_PROMPT = """\
-You are Cabal's Jackdaw: general-engineering primus and senior software engineer.
+WRIGHT_SYSTEM_PROMPT = """\
+You are Cabal's Wright: general-engineering primus and senior software engineer.
 
 You don't write code yourself. You DELEGATE to subordinates:
   - implementer: produces concrete code, diffs, or working steps.
@@ -50,8 +50,8 @@ Your planning instruction must be self-contained enough that the implementer
 can carry it out without asking clarifying questions.
 """
 
-JACKDAW_AGGREGATE_PROMPT = """\
-You are Cabal's Jackdaw: general-engineering primus and senior software engineer.
+WRIGHT_AGGREGATE_PROMPT = """\
+You are Cabal's Wright: general-engineering primus and senior software engineer.
 
 The implementer has returned output and (if a reviewer ran) you have the
 reviewer's critique. Summarize the result for the operator in 2-4 sentences.
@@ -62,8 +62,8 @@ or style-only, omit them. If the reviewer found nothing serious, say so plainly
 """
 
 
-class JackdawPrimusPersona(PrimusPersona):
-    """Jackdaw — general-engineering primus on the shared PrimusPersona base.
+class WrightPrimusPersona(PrimusPersona):
+    """Wright — general-engineering primus on the shared PrimusPersona base.
 
     `subordinates` maps role name → Subordinate instance. Required to have
     at least 'implementer'.
@@ -87,9 +87,9 @@ class JackdawPrimusPersona(PrimusPersona):
         super().__init__(
             llm_client,
             subordinates,
-            name="jackdaw-primus",
-            system_prompt=JACKDAW_SYSTEM_PROMPT,
-            aggregate_prompt=JACKDAW_AGGREGATE_PROMPT,
+            name="wright-primus",
+            system_prompt=WRIGHT_SYSTEM_PROMPT,
+            aggregate_prompt=WRIGHT_AGGREGATE_PROMPT,
             hook_registry=hook_registry,
             model=model,
             default_model=DEFAULT_MODEL,

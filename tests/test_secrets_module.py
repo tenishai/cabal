@@ -41,12 +41,12 @@ def master_key() -> bytes:
 
 
 def test_make_name_uses_colon_separator() -> None:
-    assert make_name("rook", "slack", "SLACK_BOT_TOKEN") == "rook:slack:SLACK_BOT_TOKEN"
+    assert make_name("mason", "slack", "SLACK_BOT_TOKEN") == "mason:slack:SLACK_BOT_TOKEN"
 
 
 def test_parse_name_roundtrip() -> None:
-    name = make_name("rook", "slack", "SLACK_BOT_TOKEN")
-    assert parse_name(name) == ("rook", "slack", "SLACK_BOT_TOKEN")
+    name = make_name("mason", "slack", "SLACK_BOT_TOKEN")
+    assert parse_name(name) == ("mason", "slack", "SLACK_BOT_TOKEN")
 
 
 def test_parse_name_preserves_key_with_underscores() -> None:
@@ -73,7 +73,7 @@ async def test_set_and_get_roundtrip(sessionmaker, master_key) -> None:
         await set_secret(
             s,
             master_key=master_key,
-            persona="rook",
+            persona="mason",
             handler="slack",
             key="SLACK_BOT_TOKEN",
             value="xoxb-test",
@@ -82,7 +82,7 @@ async def test_set_and_get_roundtrip(sessionmaker, master_key) -> None:
 
     async with sessionmaker() as s:
         creds = await get_secrets_for(
-            s, master_key=master_key, persona="rook", handler="slack"
+            s, master_key=master_key, persona="mason", handler="slack"
         )
     assert creds == {"SLACK_BOT_TOKEN": "xoxb-test"}
 
@@ -94,7 +94,7 @@ async def test_set_is_encrypted_at_rest(sessionmaker, master_key) -> None:
         await set_secret(
             s,
             master_key=master_key,
-            persona="rook",
+            persona="mason",
             handler="slack",
             key="K",
             value="plaintext-secret",
@@ -102,7 +102,7 @@ async def test_set_is_encrypted_at_rest(sessionmaker, master_key) -> None:
         await s.commit()
 
     async with sessionmaker() as s:
-        row = await s.get(Secret, "rook:slack:K")
+        row = await s.get(Secret, "mason:slack:K")
         assert row is not None
         assert b"plaintext-secret" not in row.value_encrypted
 
@@ -154,24 +154,24 @@ async def test_decryption_failure_skips_silently(sessionmaker, master_key) -> No
 async def test_get_only_matches_persona_and_handler(sessionmaker, master_key) -> None:
     async with sessionmaker() as s:
         await set_secret(
-            s, master_key=master_key, persona="rook", handler="slack",
-            key="ROOK_SLACK", value="rs",
+            s, master_key=master_key, persona="mason", handler="slack",
+            key="MASON_SLACK", value="rs",
         )
         await set_secret(
             s, master_key=master_key, persona="raven", handler="slack",
             key="RAVEN_SLACK", value="vs",
         )
         await set_secret(
-            s, master_key=master_key, persona="rook", handler="github",
-            key="ROOK_GH", value="rg",
+            s, master_key=master_key, persona="mason", handler="github",
+            key="MASON_GH", value="rg",
         )
         await s.commit()
 
     async with sessionmaker() as s:
         creds = await get_secrets_for(
-            s, master_key=master_key, persona="rook", handler="slack"
+            s, master_key=master_key, persona="mason", handler="slack"
         )
-    assert creds == {"ROOK_SLACK": "rs"}
+    assert creds == {"MASON_SLACK": "rs"}
 
 
 # ---- unset / purge -----------------------------------------------------
@@ -228,7 +228,7 @@ async def test_purge_deletes_all_for_persona_handler(sessionmaker, master_key) -
 async def test_list_returns_entries_no_values(sessionmaker, master_key) -> None:
     async with sessionmaker() as s:
         await set_secret(
-            s, master_key=master_key, persona="rook", handler="slack",
+            s, master_key=master_key, persona="mason", handler="slack",
             key="SLACK_BOT_TOKEN", value="xoxb-1",
         )
         await set_secret(
@@ -250,7 +250,7 @@ async def test_list_returns_entries_no_values(sessionmaker, master_key) -> None:
 async def test_list_filters_by_persona(sessionmaker, master_key) -> None:
     async with sessionmaker() as s:
         await set_secret(
-            s, master_key=master_key, persona="rook", handler="slack",
+            s, master_key=master_key, persona="mason", handler="slack",
             key="K", value="v",
         )
         await set_secret(
@@ -260,9 +260,9 @@ async def test_list_filters_by_persona(sessionmaker, master_key) -> None:
         await s.commit()
 
     async with sessionmaker() as s:
-        rook = await list_secret_entries(s, persona="rook")
+        mason = await list_secret_entries(s, persona="mason")
         raven = await list_secret_entries(s, persona="raven")
-    assert [e.persona for e in rook] == ["rook"]
+    assert [e.persona for e in mason] == ["mason"]
     assert [e.persona for e in raven] == ["raven"]
 
 
@@ -270,11 +270,11 @@ async def test_list_filters_by_persona(sessionmaker, master_key) -> None:
 async def test_list_filters_by_handler(sessionmaker, master_key) -> None:
     async with sessionmaker() as s:
         await set_secret(
-            s, master_key=master_key, persona="rook", handler="slack",
+            s, master_key=master_key, persona="mason", handler="slack",
             key="K", value="v",
         )
         await set_secret(
-            s, master_key=master_key, persona="rook", handler="github",
+            s, master_key=master_key, persona="mason", handler="github",
             key="K", value="v",
         )
         await s.commit()

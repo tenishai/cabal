@@ -31,7 +31,7 @@ def test_select_returns_none_when_no_agents_registered() -> None:
 def test_select_returns_agent_with_matching_capability() -> None:
     r = _make_router()
     r.register_capabilities("architect", ["pattern-lookup", "architectural-advice"])
-    r.register_capabilities("rook-primus", ["code-write"])
+    r.register_capabilities("mason-primus", ["code-write"])
     assert r.select_by_capabilities(["pattern-lookup"]) == "architect"
 
 

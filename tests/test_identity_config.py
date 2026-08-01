@@ -74,12 +74,12 @@ def test_full_config(tmp_path: Path) -> None:
             port = 7400
             data_dir = "data"
 
-            [personas.rook]
+            [personas.mason]
             description = "Engineering primus"
             role = "primus"
             safety_tier = "strict"
 
-            [personas.rook.subordinates.implementer]
+            [personas.mason.subordinates.implementer]
             model = "anthropic/claude-sonnet-4-6"
             max_tokens = 16384
 
@@ -96,9 +96,9 @@ def test_full_config(tmp_path: Path) -> None:
     )
     cfg: IdentityConfig = load_identity(cfg_path)
     assert cfg.cabal.host == "0.0.0.0"
-    assert set(cfg.personas.keys()) == {"rook", "archivist"}
-    assert cfg.personas["rook"].role == "primus"
-    sub = cfg.personas["rook"].subordinates["implementer"]
+    assert set(cfg.personas.keys()) == {"mason", "archivist"}
+    assert cfg.personas["mason"].role == "primus"
+    sub = cfg.personas["mason"].subordinates["implementer"]
     assert sub.model == "anthropic/claude-sonnet-4-6"
     assert sub.max_tokens == 16384
     assert cfg.litellm.api_base == "http://litellm:4000"

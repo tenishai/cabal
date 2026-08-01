@@ -71,7 +71,7 @@ async def test_minted_service_token_passes_secrets_endpoint_auth(
 ) -> None:
     """End-to-end: mint a service token, use it on /admin/secrets — verifies
     the secrets-fetch scope is accepted exactly as Phase GG promised."""
-    monkeypatch.setenv("CABAL_SECRET_rook_test_FOO", "bar")
+    monkeypatch.setenv("CABAL_SECRET_mason_test_FOO", "bar")
 
     op_token = await _operator_token(app, client)
     mint_r = await client.post(
@@ -87,7 +87,7 @@ async def test_minted_service_token_passes_secrets_endpoint_auth(
     service_token = mint_r.json()["access_token"]
 
     r = await client.get(
-        "/admin/secrets/rook/test",
+        "/admin/secrets/mason/test",
         headers={"Authorization": f"Bearer {service_token}"},
     )
     assert r.status_code == 200

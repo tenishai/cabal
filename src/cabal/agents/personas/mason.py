@@ -1,4 +1,4 @@
-"""Rook primus — SRE / reliability engineering persona.
+"""Mason primus — SRE / reliability engineering persona.
 
 Thin subclass of PrimusPersona. All fan-out machinery (PLAN → DISPATCH →
 AGGREGATE, doom-loop guard, hook firing) lives in cabal.agents.primus.
@@ -18,20 +18,20 @@ from cabal.core.guardrails_builtin import DoomLoopGuardrail
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
-# Re-export so any code that imports these from rook keeps working.
+# Re-export so any code that imports these from mason keeps working.
 __all__ = [
-    "RookPrimusPersona",
+    "MasonPrimusPersona",
     "_DoomLoopError",
     "_DOOM_LOOP_DEFAULT",
     "DEFAULT_MODEL",
-    "ROOK_SYSTEM_PROMPT",
-    "ROOK_AGGREGATE_PROMPT",
+    "MASON_SYSTEM_PROMPT",
+    "MASON_AGGREGATE_PROMPT",
 ]
 
 DEFAULT_MODEL = "anthropic/claude-opus-4-7"
 
-ROOK_SYSTEM_PROMPT = """\
-You are Cabal's Rook: engineering primus.
+MASON_SYSTEM_PROMPT = """\
+You are Cabal's Mason: engineering primus.
 
 You don't write code yourself. You DELEGATE to subordinates:
   - implementer: produces concrete code/diffs/steps.
@@ -42,8 +42,8 @@ the task as a precise instruction the implementer should follow. Be
 specific about acceptance criteria.
 """
 
-ROOK_AGGREGATE_PROMPT = """\
-You are Cabal's Rook: engineering primus.
+MASON_AGGREGATE_PROMPT = """\
+You are Cabal's Mason: engineering primus.
 
 The implementer has returned output and (if a reviewer ran) you have
 the reviewer's critique. Summarize the result for the operator in
@@ -54,8 +54,8 @@ don't manufacture problems.
 """
 
 
-class RookPrimusPersona(PrimusPersona):
-    """Rook — SRE / reliability primus on the shared PrimusPersona base.
+class MasonPrimusPersona(PrimusPersona):
+    """Mason — SRE / reliability primus on the shared PrimusPersona base.
 
     `subordinates` maps role name → Subordinate instance. Required to have
     at least 'implementer'.
@@ -80,9 +80,9 @@ class RookPrimusPersona(PrimusPersona):
         super().__init__(
             llm_client,
             subordinates,
-            name="rook-primus",
-            system_prompt=ROOK_SYSTEM_PROMPT,
-            aggregate_prompt=ROOK_AGGREGATE_PROMPT,
+            name="mason-primus",
+            system_prompt=MASON_SYSTEM_PROMPT,
+            aggregate_prompt=MASON_AGGREGATE_PROMPT,
             hook_registry=hook_registry,
             model=model,
             default_model=DEFAULT_MODEL,

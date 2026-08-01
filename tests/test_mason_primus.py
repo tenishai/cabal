@@ -1,4 +1,4 @@
-"""Rook primus + Subordinate dispatch tests."""
+"""Mason primus + Subordinate dispatch tests."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from cabal.agents.personas.rook import RookPrimusPersona
+from cabal.agents.personas.mason import MasonPrimusPersona
 from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, reason_code
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
@@ -36,7 +36,7 @@ def _client(responses: list[str]) -> tuple[LiteLLMClient, list[dict[str, Any]]]:
 
 def _task(text: str = "implement json parsing") -> Task:
     return Task(
-        id="t-rook-1",
+        id="t-mason-1",
         status=TaskStatus(
             state="submitted",
             message=Message(role="user", parts=[TextPart(text=text)]),
@@ -46,12 +46,12 @@ def _task(text: str = "implement json parsing") -> Task:
 
 def _subordinate(client: LiteLLMClient, role: str = "implementer") -> Subordinate:
     return Subordinate(
-        primus="rook", role=role, llm_client=client, model="anthropic/claude-sonnet-4-6"
+        primus="mason", role=role, llm_client=client, model="anthropic/claude-sonnet-4-6"
     )
 
 
 @pytest.mark.asyncio
-async def test_rook_dispatches_to_implementer_and_aggregates() -> None:
+async def test_mason_dispatches_to_implementer_and_aggregates() -> None:
     """The primus PLAN → DISPATCH → AGGREGATE pipeline produces a final Task."""
     primus_client, primus_calls = _client(
         [
@@ -63,9 +63,9 @@ async def test_rook_dispatches_to_implementer_and_aggregates() -> None:
         ["Here is the JSON parser code:\n```python\nimport json\n```"]
     )
     subordinates = {"implementer": _subordinate(sub_client)}
-    rook = RookPrimusPersona(primus_client, subordinates=subordinates)
+    mason = MasonPrimusPersona(primus_client, subordinates=subordinates)
 
-    response = await rook.handle_task(_task())
+    response = await mason.handle_task(_task())
     assert response.status.state == "completed"
     assert "implementer wrote a parser" in response.status.message.parts[0].text
 
@@ -73,7 +73,7 @@ async def test_rook_dispatches_to_implementer_and_aggregates() -> None:
     # from kwargs before reaching the stub (they're hook-payload only), so
     # distinguish by which system prompt was sent.
     assert len(primus_calls) == 2
-    assert "You are Cabal's Rook" in primus_calls[0]["messages"][0]["content"]
+    assert "You are Cabal's Mason" in primus_calls[0]["messages"][0]["content"]
     assert "Summarize the result" in primus_calls[1]["messages"][0]["content"]
 
     # One subordinate call
@@ -95,15 +95,15 @@ async def test_subordinate_dispatch_fires_hooks() -> None:
     primus_client, _ = _client(["plan", "summary"])
     sub_client, _ = _client(["implementer reply"])
     subordinates = {"implementer": _subordinate(sub_client)}
-    rook = RookPrimusPersona(
+    mason = MasonPrimusPersona(
         primus_client, subordinates=subordinates, hook_registry=hook_registry
     )
 
-    await rook.handle_task(_task())
+    await mason.handle_task(_task())
 
     assert len(dispatched) == 1
     assert dispatched[0]["role"] == "implementer"
-    assert dispatched[0]["parent_task_id"] == "t-rook-1"
+    assert dispatched[0]["parent_task_id"] == "t-mason-1"
 
     assert len(returned) == 1
     assert returned[0]["state"] == "completed"
@@ -123,35 +123,35 @@ async def test_subordinate_sub_task_inherits_trace_id() -> None:
 
     sub_client, _ = _client(["implementer reply"])
     captured = CaptureSub(
-        primus="rook", role="implementer", llm_client=sub_client,
+        primus="mason", role="implementer", llm_client=sub_client,
         model="anthropic/claude-sonnet-4-6",
     )
 
-    rook = RookPrimusPersona(primus_client, subordinates={"implementer": captured})
+    mason = MasonPrimusPersona(primus_client, subordinates={"implementer": captured})
     task = _task()
     task.metadata["cabal_trace_id"] = "a" * 32
     task.metadata["cabal_span_id"] = "b" * 16
-    await rook.handle_task(task)
+    await mason.handle_task(task)
 
     sub_meta = captured_sub_task["metadata"]
     assert sub_meta["cabal_trace_id"] == "a" * 32
     assert sub_meta["cabal_span_id"] != "b" * 16  # fresh span per hop
-    assert sub_meta["cabal_parent_task"] == "t-rook-1"
+    assert sub_meta["cabal_parent_task"] == "t-mason-1"
     assert sub_meta["cabal_subordinate_role"] == "implementer"
 
 
 @pytest.mark.asyncio
-async def test_rook_requires_implementer() -> None:
+async def test_mason_requires_implementer() -> None:
     primus_client, _ = _client([])
     with pytest.raises(ValueError, match="non-reviewer"):
-        RookPrimusPersona(primus_client, subordinates={})
+        MasonPrimusPersona(primus_client, subordinates={})
 
 
 # ---- reviewer subordinate (Phase P) ----------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_rook_runs_reviewer_when_declared() -> None:
+async def test_mason_runs_reviewer_when_declared() -> None:
     """When both implementer + reviewer are present, the reviewer runs and
     its critique reaches the aggregator."""
     primus_client, primus_calls = _client(["the plan", "final summary"])
@@ -163,9 +163,9 @@ async def test_rook_runs_reviewer_when_declared() -> None:
         "implementer": _subordinate(impl_client, role="implementer"),
         "reviewer": _subordinate(review_client, role="reviewer"),
     }
-    rook = RookPrimusPersona(primus_client, subordinates=subordinates)
+    mason = MasonPrimusPersona(primus_client, subordinates=subordinates)
 
-    response = await rook.handle_task(_task())
+    response = await mason.handle_task(_task())
     assert response.status.state == "completed"
     # Both subordinates ran exactly once
     assert len(impl_calls) == 1
@@ -181,14 +181,14 @@ async def test_rook_runs_reviewer_when_declared() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rook_skips_reviewer_block_when_not_declared() -> None:
+async def test_mason_skips_reviewer_block_when_not_declared() -> None:
     """No reviewer in subordinates → aggregate prompt has no REVIEWER block,
     so existing (Phase K) operators don't see prompt drift."""
     primus_client, primus_calls = _client(["plan", "summary"])
     impl_client, _ = _client(["impl output"])
     subordinates = {"implementer": _subordinate(impl_client)}
-    rook = RookPrimusPersona(primus_client, subordinates=subordinates)
-    await rook.handle_task(_task())
+    mason = MasonPrimusPersona(primus_client, subordinates=subordinates)
+    await mason.handle_task(_task())
     agg_user = primus_calls[1]["messages"][-1]["content"]
     assert "REVIEWER" not in agg_user
     assert "[implementer] OUTPUT" in agg_user
@@ -213,10 +213,10 @@ async def test_reviewer_dispatch_fires_subordinate_hooks() -> None:
         "implementer": _subordinate(impl_client, role="implementer"),
         "reviewer": _subordinate(review_client, role="reviewer"),
     }
-    rook = RookPrimusPersona(
+    mason = MasonPrimusPersona(
         primus_client, subordinates=subordinates, hook_registry=hook_registry
     )
-    await rook.handle_task(_task())
+    await mason.handle_task(_task())
 
     # Expect TWO of each — once for implementer, once for reviewer
     assert [d["role"] for d in dispatched] == ["implementer", "reviewer"]
@@ -246,8 +246,8 @@ async def test_reviewer_runs_after_implementer_strictly() -> None:
         "implementer": _subordinate(impl_client, role="implementer"),
         "reviewer": _subordinate(review_client, role="reviewer"),
     }
-    rook = RookPrimusPersona(primus_client, subordinates=subordinates)
-    await rook.handle_task(_task())
+    mason = MasonPrimusPersona(primus_client, subordinates=subordinates)
+    await mason.handle_task(_task())
 
     # The reviewer ran AFTER the implementer completed
     assert review_calls == [("review", 1)]
@@ -262,8 +262,8 @@ async def test_plan_text_passed_to_aggregate_prompt() -> None:
     )
     sub_client, _ = _client(["implementer output: did the X thing"])
     subordinates = {"implementer": _subordinate(sub_client)}
-    rook = RookPrimusPersona(primus_client, subordinates=subordinates)
-    await rook.handle_task(_task())
+    mason = MasonPrimusPersona(primus_client, subordinates=subordinates)
+    await mason.handle_task(_task())
 
     aggregate_messages = primus_calls[1]["messages"]
     final_user = aggregate_messages[-1]["content"]
@@ -289,7 +289,7 @@ def _task_with_ctx(text: str = "do the thing", context_id: str = "ctx-1") -> Tas
 
 
 @pytest.mark.asyncio
-async def test_rook_doom_loop_blocks_repeated_identical_subordinate_dispatch() -> None:
+async def test_mason_doom_loop_blocks_repeated_identical_subordinate_dispatch() -> None:
     """THE key test for cabal#59: the autonomous loop shape is now caught.
 
     With a stable context_id and identical plan text (simulating an agent
@@ -311,7 +311,7 @@ async def test_rook_doom_loop_blocks_repeated_identical_subordinate_dispatch() -
     )
     sub_client, sub_calls = _client(["impl output"])
 
-    rook = RookPrimusPersona(
+    mason = MasonPrimusPersona(
         primus_client,
         subordinates={"implementer": _subordinate(sub_client)},
         doom_loop=doom_loop,
@@ -328,7 +328,7 @@ async def test_rook_doom_loop_blocks_repeated_identical_subordinate_dispatch() -
             ),
         }
     )
-    r1 = await rook.handle_task(task1)
+    r1 = await mason.handle_task(task1)
     assert r1.status.state == "completed"
     assert len(sub_calls) == 1  # implementer was called once
 
@@ -343,18 +343,18 @@ async def test_rook_doom_loop_blocks_repeated_identical_subordinate_dispatch() -
             ),
         }
     )
-    r2 = await rook.handle_task(task2)
+    r2 = await mason.handle_task(task2)
     assert r2.status.state == "failed"
     assert reason_code(r2) == CODE_POLICY_VIOLATION
     reason_msg = r2.metadata.get("cabal_reason_message") or ""
-    assert "rook guardrail blocked" in reason_msg
+    assert "mason guardrail blocked" in reason_msg
     assert "identical delegations" in reason_msg
     # Implementer was NOT called a second time — the block happened before dispatch.
     assert len(sub_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_rook_doom_loop_blocks_in_two_role_pipeline() -> None:
+async def test_mason_doom_loop_blocks_in_two_role_pipeline() -> None:
     """cabal#59 (Prudence): the PRODUCTION-DEFAULT two-role pipeline.
 
     With both implementer and reviewer, each handle_task fans out
@@ -372,7 +372,7 @@ async def test_rook_doom_loop_blocks_in_two_role_pipeline() -> None:
     impl_client, impl_calls = _client(["impl output", "impl output"])
     review_client, review_calls = _client(["critique", "critique"])
 
-    rook = RookPrimusPersona(
+    mason = MasonPrimusPersona(
         primus_client,
         subordinates={
             "implementer": _subordinate(impl_client, role="implementer"),
@@ -394,20 +394,20 @@ async def test_rook_doom_loop_blocks_in_two_role_pipeline() -> None:
         )
 
     # Runs 1 and 2 complete (impl count 1, 2 — interleaved with reviewer).
-    assert (await rook.handle_task(_task(1))).status.state == "completed"
-    assert (await rook.handle_task(_task(2))).status.state == "completed"
+    assert (await mason.handle_task(_task(1))).status.state == "completed"
+    assert (await mason.handle_task(_task(2))).status.state == "completed"
     # Run 3: impl(planX) reaches count=3 → BLOCK before the implementer dispatch.
-    r3 = await rook.handle_task(_task(3))
+    r3 = await mason.handle_task(_task(3))
     assert r3.status.state == "failed"
     assert reason_code(r3) == CODE_POLICY_VIOLATION
-    assert "rook guardrail blocked" in (r3.metadata.get("cabal_reason_message") or "")
+    assert "mason guardrail blocked" in (r3.metadata.get("cabal_reason_message") or "")
     # Implementer ran on runs 1+2 only; reviewer never reached on run 3.
     assert len(impl_calls) == 2
     assert len(review_calls) == 2
 
 
 @pytest.mark.asyncio
-async def test_rook_doom_loop_different_instructions_do_not_block() -> None:
+async def test_mason_doom_loop_different_instructions_do_not_block() -> None:
     """Different plan texts reset the doom-loop counter — no false block.
 
     Even with threshold=2 and a shared context_id, genuinely different
@@ -418,7 +418,7 @@ async def test_rook_doom_loop_different_instructions_do_not_block() -> None:
     primus_client, _ = _client(["plan A", "summary A", "plan B", "summary B"])
     sub_client, sub_calls = _client(["impl A", "impl B"])
 
-    rook = RookPrimusPersona(
+    mason = MasonPrimusPersona(
         primus_client,
         subordinates={"implementer": _subordinate(sub_client)},
         doom_loop=doom_loop,
@@ -435,7 +435,7 @@ async def test_rook_doom_loop_different_instructions_do_not_block() -> None:
                 ),
             }
         )
-        r = await rook.handle_task(task)
+        r = await mason.handle_task(task)
         assert r.status.state == "completed", f"dispatch {i} unexpectedly blocked"
 
     assert len(sub_calls) == 2
@@ -459,12 +459,12 @@ async def test_context_id_threads_to_sub_task() -> None:
     primus_client, _ = _client(["plan", "summary"])
     sub_client, _ = _client(["impl reply"])
     cap = CaptureSub(
-        primus="rook", role="implementer", llm_client=sub_client,
+        primus="mason", role="implementer", llm_client=sub_client,
         model="anthropic/claude-sonnet-4-6",
     )
 
     # doom_loop=None so we don't accidentally trip the guard in a single call.
-    rook = RookPrimusPersona(
+    mason = MasonPrimusPersona(
         primus_client, subordinates={"implementer": cap}, doom_loop=None
     )
 
@@ -478,7 +478,7 @@ async def test_context_id_threads_to_sub_task() -> None:
             ),
         }
     )
-    await rook.handle_task(parent_task)
+    await mason.handle_task(parent_task)
 
     assert captured["context_id"] == "inherited-ctx"
 
@@ -495,7 +495,7 @@ async def test_doom_loop_disabled_by_none() -> None:
     )
     sub_client, sub_calls = _client(["out", "out", "out"])
 
-    rook = RookPrimusPersona(
+    mason = MasonPrimusPersona(
         primus_client,
         subordinates={"implementer": _subordinate(sub_client)},
         doom_loop=None,
@@ -513,7 +513,7 @@ async def test_doom_loop_disabled_by_none() -> None:
                 ),
             }
         )
-        r = await rook.handle_task(task)
+        r = await mason.handle_task(task)
         assert r.status.state == "completed", f"call {i} unexpectedly blocked"
 
     assert len(sub_calls) == 3
@@ -542,21 +542,21 @@ async def test_primus_fans_out_non_reviewer_legs_concurrently() -> None:
     primus_client, primus_calls = _client(["plan", "final synthesis"])
     leg_a_client, _ = _client(["legA result"])
     leg_b_client, _ = _client(["legB result"])
-    rook = RookPrimusPersona(
+    mason = MasonPrimusPersona(
         primus_client,
         subordinates={
             "implementer": BarrierSub(
-                primus="rook", role="implementer", llm_client=leg_a_client,
+                primus="mason", role="implementer", llm_client=leg_a_client,
                 model="anthropic/claude-sonnet-4-6",
             ),
             "analyzer": BarrierSub(
-                primus="rook", role="analyzer", llm_client=leg_b_client,
+                primus="mason", role="analyzer", llm_client=leg_b_client,
                 model="anthropic/claude-sonnet-4-6",
             ),
         },
     )
 
-    result = await rook.handle_task(_task())
+    result = await mason.handle_task(_task())
     assert result.status.state == "completed"
 
     # Both legs' outputs reached the synthesis prompt, each labelled by role.

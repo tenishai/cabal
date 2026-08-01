@@ -133,7 +133,7 @@ async def test_local_dispatch_succeeds_with_valid_jwt(
     handler = FakeArchivist()
     router.register_local(handler)
 
-    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
     response = await router.dispatch(
         target_agent="archivist",
         target_generation=None,
@@ -156,7 +156,7 @@ async def test_local_dispatch_rejects_invalid_jwt(
     router.register_local(FakeArchivist())
 
     # Wrong audience -> rejection at the router boundary
-    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="librarian")
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="librarian")
     with pytest.raises(DispatchError, match="caller JWT"):
         await router.dispatch(
             target_agent="archivist",
@@ -180,7 +180,7 @@ async def test_local_dispatch_rejects_expired_jwt(
     past = int(time.time()) - 1000
     token = mint(
         signing_key=signing_key,
-        sub="rook-primus:1",
+        sub="mason-primus:1",
         aud="archivist",
         ttl_seconds=60,
         now=past,
@@ -208,7 +208,7 @@ async def test_successful_dispatch_writes_conversation_and_events(
     )
     router.register_local(FakeArchivist())
 
-    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
     await router.dispatch(
         target_agent="archivist",
         target_generation=None,
@@ -248,7 +248,7 @@ async def test_failed_local_dispatch_records_failure(
     )
     router.register_local(Boom())
 
-    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
     with pytest.raises(RuntimeError, match="kaboom"):
         await router.dispatch(
             target_agent="archivist",
@@ -282,7 +282,7 @@ async def test_dispatch_generates_trace_id_when_absent(
     handler = FakeArchivist()
     router.register_local(handler)
 
-    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
     task = _sample_task()
     assert "cabal_trace_id" not in task.metadata
     await router.dispatch(
@@ -310,7 +310,7 @@ async def test_dispatch_preserves_existing_trace_id(
     handler = FakeArchivist()
     router.register_local(handler)
 
-    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
     incoming_trace = "a" * 32
     task = _sample_task()
     task.metadata["cabal_trace_id"] = incoming_trace
@@ -333,27 +333,27 @@ async def test_explicit_generation_routes_to_draining(
 ) -> None:
     """A subordinate return targeting generation=1 should reach a draining row."""
     async with sessionmaker() as s:
-        s.add(Persona(name="rook", config_json={}))
+        s.add(Persona(name="mason", config_json={}))
         await s.flush()
         await bulletin_store.register_agent(
             s,
-            name="rook-primus",
-            persona_name="rook",
+            name="mason-primus",
+            persona_name="mason",
             role="primus",
-            endpoint="http://rook-primus:7400",
+            endpoint="http://mason-primus:7400",
             capabilities={},
             safety_tier="strict",
             agent_card_json={},
             agent_card_kid="kid-1",
             generation=1,
         )
-        await bulletin_store.mark_draining(s, "rook-primus", 1)
+        await bulletin_store.mark_draining(s, "mason-primus", 1)
         await bulletin_store.register_agent(
             s,
-            name="rook-primus",
-            persona_name="rook",
+            name="mason-primus",
+            persona_name="mason",
             role="primus",
-            endpoint="http://rook-primus-g2:7400",
+            endpoint="http://mason-primus-g2:7400",
             capabilities={},
             safety_tier="strict",
             agent_card_json={},
@@ -364,7 +364,7 @@ async def test_explicit_generation_routes_to_draining(
 
     @dataclass(slots=True)
     class TrackingHandler:
-        name: str = "rook-primus"
+        name: str = "mason-primus"
         seen_generations: list[int] | None = None
 
         def __post_init__(self) -> None:
@@ -386,11 +386,11 @@ async def test_explicit_generation_routes_to_draining(
     handler = TrackingHandler()
     router.register_local(handler)
 
-    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="rook-primus")
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="mason-primus")
     task = _sample_task()
     task.metadata["cabal_generation"] = 1
     await router.dispatch(
-        target_agent="rook-primus",
+        target_agent="mason-primus",
         target_generation=1,
         task=task,
         caller_jwt=token,
@@ -419,7 +419,7 @@ async def test_router_fires_session_start_and_end_on_root_dispatch(
     )
     router.register_local(FakeArchivist())
 
-    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
     await router.dispatch(
         target_agent="archivist",
         target_generation=None,
@@ -450,7 +450,7 @@ async def test_router_does_not_double_fire_for_subdispatch(
     )
     router.register_local(FakeArchivist())
 
-    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
     task = _sample_task()
     task.metadata["cabal_session_started"] = True
     await router.dispatch(
@@ -485,7 +485,7 @@ async def test_router_fires_session_end_on_failure(
     )
     router.register_local(Boom())
 
-    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
     with pytest.raises(RuntimeError):
         await router.dispatch(
             target_agent="archivist",
@@ -507,7 +507,7 @@ async def test_unknown_target_raises(
         bookkeeper=Bookkeeper(sessionmaker),
         jwks_provider=jwks_provider,
     )
-    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="ghost")
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="ghost")
     with pytest.raises(DispatchError, match="no agent registered"):
         await router.dispatch(
             target_agent="ghost",
@@ -546,7 +546,7 @@ async def test_remote_dispatch_calls_endpoint_with_bearer(
             jwks_provider=jwks_provider,
             http_client=client,
         )
-        token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+        token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
         response = await router.dispatch(
             target_agent="archivist",
             target_generation=None,
@@ -581,7 +581,7 @@ async def test_remote_dispatch_writes_same_bookkeeping_as_local(
             jwks_provider=jwks_provider,
             http_client=client,
         )
-        token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+        token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
         await router.dispatch(
             target_agent="archivist",
             target_generation=None,
@@ -611,7 +611,7 @@ async def test_remote_dispatch_propagates_transport_error(
             jwks_provider=jwks_provider,
             http_client=client,
         )
-        token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+        token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
         with pytest.raises(DispatchError, match="transport"):
             await router.dispatch(
                 target_agent="archivist",
@@ -685,7 +685,7 @@ async def test_federated_routes_remote_even_with_local_handler(
         )
         local = FakeArchivist()
         router.register_local(local)  # same name — guard must still go remote
-        token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist@rd")
+        token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist@rd")
         resp = await router.dispatch(
             target_agent="archivist",
             target_generation=None,
@@ -711,7 +711,7 @@ async def test_federated_requires_sovereign_audience(
         bookkeeper=Bookkeeper(sessionmaker),
         jwks_provider=jwks_provider,
     )
-    bad = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist")
+    bad = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
     with pytest.raises(DispatchError, match="caller JWT"):
         await router.dispatch(
             target_agent="archivist",
@@ -750,7 +750,7 @@ async def test_federated_streaming_refused(
     )
     handler = FakeStreamingArchivist()
     router.register_local(handler)  # streaming-capable local handler present
-    token = mint(signing_key=signing_key, sub="rook-primus:1", aud="archivist@rd")
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist@rd")
     with pytest.raises(DispatchError, match="federated"):
         async for _ in router.dispatch_streaming(
             target_agent="archivist",
@@ -902,7 +902,7 @@ async def test_combined_session_passthrough_for_correctly_aimed_token(
     )
     request = SimpleNamespace(app=SimpleNamespace(state=state))
     aimed_token = mint(
-        signing_key=signing_key, sub="rook-primus:1", aud="archivist", scope=["dispatch"]
+        signing_key=signing_key, sub="mason-primus:1", aud="archivist", scope=["dispatch"]
     )
     returned = await _resolve_dispatch_token(request, aimed_token, "archivist")
     # Must be the SAME token object, not a re-minted one.

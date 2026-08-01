@@ -1,7 +1,7 @@
 """LLM-backed persona base class.
 
 A LocalHandler that calls an LLM via LiteLLMClient and wraps the response
-as a completed Task. Real personas (Architect, Archivist, Librarian, Rook
+as a completed Task. Real personas (Architect, Archivist, Librarian, Mason
 implementer/reviewer subordinates) subclass this and override `system_prompt`
 or `build_messages` to specialize behavior.
 

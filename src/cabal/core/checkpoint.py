@@ -23,7 +23,7 @@ between a tool-execution round and the next LLM call. Specifically:
 What's deferred (follow-ups)
 ----------------------------
 
-  - `RookPrimusPersona` multi-stage pipeline checkpointing
+  - `MasonPrimusPersona` multi-stage pipeline checkpointing
     (PLAN→IMPLEMENT→REVIEW→AGGREGATE has its own state shape).
   - Resume-on-different-generation semantics — pairs with §6.10
     generation rotation, not yet wired.

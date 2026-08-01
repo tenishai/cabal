@@ -144,7 +144,7 @@ def build_router_input_guardrails(identity: IdentityConfig | None) -> list[Guard
 
     These run in ``DispatchRouter.dispatch`` BEFORE the local-vs-remote branch,
     so they are the only enforcement point that also covers ``kind="federated"``
-    peers. The in-process Rook ``DoomLoopGuardrail`` (primus.py) fires at the
+    peers. The in-process Mason ``DoomLoopGuardrail`` (primus.py) fires at the
     subordinate boundary and never reaches a remote hop, so without this a
     delegation to a federated peer gets JWT auth + bookkeeping + AbortGraph but
     ZERO guardrails. Default-on; identity.toml ``[guardrails]`` opts out.
@@ -286,7 +286,7 @@ def create_app(
             http_client=http_client,
             hook_registry=hook_registry,
             # cabal#76 — default-on router guardrails so FEDERATED dispatch is
-            # doom-loop protected (the Rook DoomLoop never reaches remote hops).
+            # doom-loop protected (the Mason DoomLoop never reaches remote hops).
             input_guardrails=build_router_input_guardrails(identity),
         )
         dispatch_router.register_local(EchoAgent())
