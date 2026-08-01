@@ -114,9 +114,9 @@ safety_tier = "moderate"
 
 # ----- Primus -----
 # Mason is the SRE / reliability primus — infrastructure, platform, deployment
-# and operational correctness. (Wright, below, is the software one.) Its
-# bulletin row registers as
-# 'mason-primus' / generation=1 and the LocalHandler is wired automatically.
+# and operational correctness. (Wright, below, is the software one.) Its bulletin
+# row registers as 'mason-primus' / generation=1 and the LocalHandler is wired
+# automatically.
 # Pipeline per dispatch: PLAN (primus) → IMPLEMENT (implementer subordinate)
 # → REVIEW (reviewer subordinate, if declared) → AGGREGATE (primus).
 # Comment out [personas.mason.subordinates.reviewer] to skip the review step.
@@ -139,7 +139,8 @@ max_tokens = 8192
 # 'wright-primus' / generation=1 and the LocalHandler is wired automatically.
 # Pipeline per dispatch: PLAN (primus) → IMPLEMENT (implementer subordinate)
 # → REVIEW (reviewer subordinate, if declared) → AGGREGATE (primus).
-# Comment out [personas.wright.subordinates.reviewer] to skip the review step.
+# Wright ships WITHOUT a reviewer: uncomment [personas.wright.subordinates.reviewer]
+# below to add the REVIEW step. (Mason ships with one.)
 
 [personas.wright]
 description = "Senior software engineer — general-engineering primus"

@@ -27,6 +27,7 @@ The two pairs ship together and must agree:
 
 from __future__ import annotations
 
+import importlib
 import tomllib
 from pathlib import Path
 
@@ -40,25 +41,50 @@ def _served(litellm_cfg: dict) -> set[str]:
     return {m["model_name"] for m in litellm_cfg.get("model_list", [])}
 
 
+def _default_model(persona: str) -> str:
+    """The model a persona dispatches on when it declares no `model_override`.
+
+    Derived from PERSONA_REGISTRY rather than a hand-written map. The first
+    version of this helper hardcoded {"mason", "wright"} and skipped anything
+    else with a bare `elif name in defaults`, which meant it was blind to
+    `archivist`, `architect` and `librarian` — all three ship declared, none
+    declares an override, and all three fall through to their module default
+    exactly as wright did. Prudence demonstrated the hole on PR #113 by
+    pointing archivist's DEFAULT_MODEL at a nonexistent model and watching all
+    four tests pass.
+
+    RAISES on an unknown persona instead of skipping it. A silent skip is the
+    same shape as the bug this module exists to catch.
+    """
+    from cabal.agents.personas import PERSONA_REGISTRY
+
+    if persona not in PERSONA_REGISTRY:
+        raise AssertionError(
+            f"persona {persona!r} is declared in a shipped config but absent from "
+            "PERSONA_REGISTRY — it cannot resolve a handler at all"
+        )
+    module = importlib.import_module(f"cabal.agents.personas.{persona}")
+    default = getattr(module, "DEFAULT_MODEL", None)
+    if default is None:
+        raise AssertionError(
+            f"cabal.agents.personas.{persona} exports no DEFAULT_MODEL, so the model "
+            "it dispatches on when no override is declared cannot be checked. Export "
+            "one, or this persona is invisible to the drift guard."
+        )
+    return default
+
+
 def _requested(identity: dict) -> set[str]:
     """Every model an identity.toml can dispatch to.
 
-    Includes the DEFAULT_MODEL fallback: a primus that declares no
-    `model_override` still dispatches, using its persona module's default —
-    which is exactly how `wright` slipped through, since its override was
-    absent rather than wrong.
+    Includes the DEFAULT_MODEL fallback for EVERY persona that declares no
+    `model_override` — which is how `wright` slipped through, its override
+    being absent rather than wrong.
     """
-    from cabal.agents.personas.mason import DEFAULT_MODEL as MASON_DEFAULT
-    from cabal.agents.personas.wright import DEFAULT_MODEL as WRIGHT_DEFAULT
-
-    defaults = {"mason": MASON_DEFAULT, "wright": WRIGHT_DEFAULT}
     wanted: set[str] = set()
     for name, cfg in (identity.get("personas") or {}).items():
         override = cfg.get("model_override")
-        if override:
-            wanted.add(override)
-        elif name in defaults:
-            wanted.add(defaults[name])
+        wanted.add(override if override else _default_model(name))
         for sub in (cfg.get("subordinates") or {}).values():
             if sub.get("model"):
                 wanted.add(sub["model"])

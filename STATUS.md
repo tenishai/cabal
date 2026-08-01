@@ -14,7 +14,7 @@ for the per-decision rationale log.
   - `cbl chat <persona>` multi-turn interactive mode with history
   - `cbl status` lists the agent fleet + heartbeats
   - `cbl primus rotate <persona>` rotates a primus generation
-- **Four real personas**: Archivist (memory-backed via techne), Architect (opus, patterns), Librarian (citation-mandated docs), Mason (primus that fans out to implementer subordinate).
+- **Five real personas**: Archivist (memory-backed via techne), Architect (opus, patterns), Librarian (citation-mandated docs), Mason (SRE/infra primus, fans out to an implementer subordinate), Wright (software primus, likewise).
 - **A2A v1.0 JSON-RPC**: `POST /agents/{name}` with `message/send` + `tasks/get`; per-agent `/.well-known/agent-card`.
 - **Containerized**: Dockerfile + docker-compose.yml with LiteLLM proxy + Litestream sidecars.
 
@@ -93,7 +93,7 @@ cbl status
 
 ```bash
 cp .env.example .env                       # CABAL_MASTER_KEY, LITELLM_MASTER_KEY, ANTHROPIC_API_KEY
-cp identity.toml.example identity.toml     # archivist + architect + librarian + mason all declared
+cp identity.toml.example identity.toml     # archivist + architect + librarian + mason + wright all declared
 docker compose build && docker compose up
 docker compose logs cabal-core | grep bootstrap_code
 cbl login --code <CODE>
