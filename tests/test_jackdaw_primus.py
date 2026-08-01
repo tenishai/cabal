@@ -50,7 +50,9 @@ def _task(text: str = "add JSON serialisation to the User model") -> Task:
 
 
 def _subordinate(client: LiteLLMClient, role: str = "implementer") -> Subordinate:
-    return Subordinate(role=role, llm_client=client, model="anthropic/claude-sonnet-5")
+    return Subordinate(
+        primus="jackdaw", role=role, llm_client=client, model="anthropic/claude-sonnet-5"
+    )
 
 
 @pytest.mark.asyncio

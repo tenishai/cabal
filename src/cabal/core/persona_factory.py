@@ -78,6 +78,7 @@ def register_personas_from_identity(
             sub_instances: dict[str, Subordinate] = {}
             for role, sub_cfg in persona_cfg.subordinates.items():
                 sub = Subordinate(
+                    primus=persona_name,
                     role=role,
                     llm_client=litellm_client,
                     model=sub_cfg.model,
