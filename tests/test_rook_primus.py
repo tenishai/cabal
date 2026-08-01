@@ -45,7 +45,9 @@ def _task(text: str = "implement json parsing") -> Task:
 
 
 def _subordinate(client: LiteLLMClient, role: str = "implementer") -> Subordinate:
-    return Subordinate(role=role, llm_client=client, model="anthropic/claude-sonnet-4-6")
+    return Subordinate(
+        primus="rook", role=role, llm_client=client, model="anthropic/claude-sonnet-4-6"
+    )
 
 
 @pytest.mark.asyncio
@@ -121,7 +123,8 @@ async def test_subordinate_sub_task_inherits_trace_id() -> None:
 
     sub_client, _ = _client(["implementer reply"])
     captured = CaptureSub(
-        role="implementer", llm_client=sub_client, model="anthropic/claude-sonnet-4-6"
+        primus="rook", role="implementer", llm_client=sub_client,
+        model="anthropic/claude-sonnet-4-6",
     )
 
     rook = RookPrimusPersona(primus_client, subordinates={"implementer": captured})
@@ -456,7 +459,8 @@ async def test_context_id_threads_to_sub_task() -> None:
     primus_client, _ = _client(["plan", "summary"])
     sub_client, _ = _client(["impl reply"])
     cap = CaptureSub(
-        role="implementer", llm_client=sub_client, model="anthropic/claude-sonnet-4-6"
+        primus="rook", role="implementer", llm_client=sub_client,
+        model="anthropic/claude-sonnet-4-6",
     )
 
     # doom_loop=None so we don't accidentally trip the guard in a single call.
@@ -542,11 +546,11 @@ async def test_primus_fans_out_non_reviewer_legs_concurrently() -> None:
         primus_client,
         subordinates={
             "implementer": BarrierSub(
-                role="implementer", llm_client=leg_a_client,
+                primus="rook", role="implementer", llm_client=leg_a_client,
                 model="anthropic/claude-sonnet-4-6",
             ),
             "analyzer": BarrierSub(
-                role="analyzer", llm_client=leg_b_client,
+                primus="rook", role="analyzer", llm_client=leg_b_client,
                 model="anthropic/claude-sonnet-4-6",
             ),
         },

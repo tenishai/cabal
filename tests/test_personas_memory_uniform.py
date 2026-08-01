@@ -109,6 +109,7 @@ async def test_subordinate_accepts_memory_store(shared_memory) -> None:
     """Rook subordinates can also share the memory DB now."""
     client, seen = _capture_client()
     impl = Subordinate(
+        primus="rook",
         role="implementer",
         llm_client=client,
         model="x",
