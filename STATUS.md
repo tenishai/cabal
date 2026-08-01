@@ -23,9 +23,13 @@ for the per-decision rationale log.
 > Component names in this table track their **current** names, not the names in
 > use when the phase landed — it is an index of what exists, keyed by when it
 > arrived. (Phases K and P shipped the primus then called `rook`, now `mason`.)
-> Distinct from an account of a past *event*, which keeps the vocabulary of its
-> time: see the pre-rename names deliberately preserved in
-> `tests/test_subordinate_primus_attribution.py`.
+>
+> One rule, two consequences: *use the vocabulary that makes the sentence true
+> for what the sentence asserts.* This table asserts "the component you call
+> `mason` arrived in phase K" — true, and findable only under the current name,
+> which is what an index is for. A test docstring asserting "the code contained
+> `rook-implementer`" is false if renamed, so it keeps the old vocabulary — see
+> `tests/test_subordinate_primus_attribution.py`. Neither is a bent rule.
 
 | Phase | Topic | Tests | Highlight |
 |---|---|---|---|

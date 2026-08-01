@@ -153,8 +153,15 @@ def test_prompt_templates_carry_no_hardcoded_primus_name() -> None:
         # prompt that bakes in any primus name, and a reintroduced "Rook" is
         # exactly as broken as a baked-in "Mason". The rename collapsed these
         # four into two duplicates and silently dropped that half of the guard.
-        for literal in ("Rook", "Jackdaw", "Mason", "Wright"):
-            assert literal not in template, f"{role} prompt hard-codes {literal!r}"
+        #
+        # CASE-INSENSITIVE deliberately. The capitalised form is how _display()
+        # renders a name into prose, but `{primus}-{role}` is the convention
+        # everywhere else in this subsystem, so a bake-in is at least as likely
+        # to read "report to mason-primus" as "Mason's". Prudence demonstrated
+        # on PR #113 that the capitalised-only guard passed on exactly that.
+        low = template.lower()
+        for literal in ("rook", "jackdaw", "mason", "wright"):
+            assert literal not in low, f"{role} prompt hard-codes {literal!r}"
 
 
 def test_prompt_templates_are_actually_formattable() -> None:

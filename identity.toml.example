@@ -113,14 +113,16 @@ role = "singleton"
 safety_tier = "moderate"
 
 # ----- Primus -----
-# Mason is the engineering primus. Its bulletin row registers as
+# Mason is the SRE / reliability primus — infrastructure, platform, deployment
+# and operational correctness. (Wright, below, is the software one.) Its
+# bulletin row registers as
 # 'mason-primus' / generation=1 and the LocalHandler is wired automatically.
 # Pipeline per dispatch: PLAN (primus) → IMPLEMENT (implementer subordinate)
 # → REVIEW (reviewer subordinate, if declared) → AGGREGATE (primus).
 # Comment out [personas.mason.subordinates.reviewer] to skip the review step.
 
 [personas.mason]
-description = "Engineering primus"
+description = "Engineering / SRE primus"
 role = "primus"
 safety_tier = "strict"
 
