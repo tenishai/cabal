@@ -79,6 +79,12 @@ def test_factory_attributes_each_primus_its_own_subordinates() -> None:
     subordinates were still built as `rook-implementer`. Unit-testing
     `Subordinate` alone would not have caught that — the defect was the call
     site omitting the owner, not the class mishandling it.
+
+    NOTE FOR THE CORVID-RENAME PR: this deliberately names real registry keys,
+    so it depends on PERSONA_REGISTRY holding `rook` and `jackdaw`. When those
+    are renamed (→ `mason`/`wright`), this test WILL fail — expected, not a
+    regression. An integration test over the registry *should* notice the
+    registry changing; update the two keys and the expected names here.
     """
     from cabal.config.identity import IdentityConfig, PersonaConfig, SubordinateConfig
     from cabal.core.abort import AbortCoordinator
