@@ -20,6 +20,13 @@ for the per-decision rationale log.
 
 ## Build arc — what landed in each phase
 
+> Component names in this table track their **current** names, not the names in
+> use when the phase landed — it is an index of what exists, keyed by when it
+> arrived. (Phases K and P shipped the primus then called `rook`, now `mason`.)
+> Distinct from an account of a past *event*, which keeps the vocabulary of its
+> time: see the pre-rename names deliberately preserved in
+> `tests/test_subordinate_primus_attribution.py`.
+
 | Phase | Topic | Tests | Highlight |
 |---|---|---|---|
 | 1 | scaffold | 5 | pyproject, Typer CLI shell, FastAPI smoke |

@@ -34,7 +34,11 @@ def _client() -> LiteLLMClient:
     return LiteLLMClient(acompletion_fn=fn, hook_registry=HookRegistry())
 
 
-@pytest.mark.parametrize("primus", ["mason", "wright", "mason", "wright"])
+# Four DISTINCT names on purpose, spanning pre- and post-rename vocabulary:
+# the point is that any name works, not that these particular ones do. The
+# rook->mason rename collapsed this into ["mason","wright","mason","wright"];
+# restored deliberately.
+@pytest.mark.parametrize("primus", ["rook", "jackdaw", "mason", "wright"])
 @pytest.mark.parametrize("role", ["implementer", "reviewer"])
 def test_subordinate_name_is_prefixed_by_its_owning_primus(primus: str, role: str) -> None:
     sub = Subordinate(primus=primus, role=role, llm_client=_client(), model="m")
@@ -145,7 +149,11 @@ def test_prompt_templates_carry_no_hardcoded_primus_name() -> None:
     that bakes in a name would pass the tests above for that name and fail here."""
     for role, template in SUBORDINATE_PROMPTS.items():
         assert "{primus}" in template, f"{role} prompt must address the primus by placeholder"
-        for literal in ("Mason", "Wright", "Mason", "Wright"):
+        # Includes the RETIRED names on purpose: this guard exists to catch a
+        # prompt that bakes in any primus name, and a reintroduced "Rook" is
+        # exactly as broken as a baked-in "Mason". The rename collapsed these
+        # four into two duplicates and silently dropped that half of the guard.
+        for literal in ("Rook", "Jackdaw", "Mason", "Wright"):
             assert literal not in template, f"{role} prompt hard-codes {literal!r}"
 
 

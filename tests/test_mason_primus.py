@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from cabal.agents.personas.mason import MasonPrimusPersona
+from cabal.agents.personas.mason import MASON_SYSTEM_PROMPT, MasonPrimusPersona
 from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, reason_code
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
@@ -563,3 +563,16 @@ async def test_primus_fans_out_non_reviewer_legs_concurrently() -> None:
     agg_user = primus_calls[1]["messages"][-1]["content"]
     assert "[implementer] OUTPUT" in agg_user and "legA result" in agg_user
     assert "[analyzer] OUTPUT" in agg_user and "legB result" in agg_user
+
+
+def test_mason_system_prompt_frames_sre_and_reliability() -> None:
+    """The name Mason encodes "builds the load-bearing layer" — but the model
+    only ever sees the system prompt. The module docstring and identity.toml
+    both said SRE; the prompt said a generic "engineering primus", so the one
+    place the role had to be legible was the one place it wasn't
+    (Prudence, PR #113). Mirrors test_wright_primus.py's equivalent.
+    """
+    low = MASON_SYSTEM_PROMPT.lower()
+    assert "sre" in low or "reliability" in low
+    assert "infrastructure" in low or "platform" in low
+    assert "delegate" in low
