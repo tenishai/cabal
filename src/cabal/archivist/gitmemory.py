@@ -91,11 +91,19 @@ def sync_promote(
     """The full bridge-to-git flow for one agent: pull team memory → promote this
     agent's distilled techne knowledge into it → push. Returns a report.
 
-    Soft-archived knowledge (techne `status='archived'`) is NOT promoted — see
-    `promote_techne_knowledge`. Archiving is therefore the reversible "keep this
-    local, stop sharing it" lever, which matters here because the shared corpus
-    is the one place an entry cannot be un-shared: `export_corpus` is write-only
-    and `ArchivistStore` exposes no delete.
+    Only techne knowledge with `status='current'` is promoted — see
+    `promote_techne_knowledge` for why the selection is an allowlist.
+
+    Archiving an entry stops it being shared FROM THE NEXT SYNC ONWARD. It does
+    NOT retract an entry already in the corpus: `export_corpus` is write-only
+    and `ArchivistStore` exposes no delete, so a published entry stays live and
+    searchable for every teammate, with no marker saying its author has since
+    withdrawn it. Removing one is a manual operation on the memory repo —
+    `git rm entries/<content_hash>.json`, commit, then re-materialise.
+
+    That asymmetry is the whole reason the allowlist fails closed: the cost of
+    wrongly withholding is a re-sync, and the cost of wrongly publishing is
+    permanent.
     """
     from cabal.archivist.promote import promote_techne_knowledge
 

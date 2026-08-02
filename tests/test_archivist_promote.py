@@ -78,6 +78,74 @@ def _techne_db(path: Path, rows: list[dict], *, with_status: bool = True) -> Pat
     return path
 
 
+def test_promote_skips_uncertain_knowledge(tmp_path: Path) -> None:
+    """`uncertain` is techne's doubt-cascade status (_cascade_uncertain), set when
+    an entry's supporting knowledge is contradicted, and carrying a 0.5 confidence
+    penalty. The first version of this filter was a DENYLIST of `archived`, so
+    these were published to the unretractable shared corpus — and at full
+    un-penalised importance, since promote reads raw confidence_numeric rather
+    than techne's effective confidence. Selection is now an allowlist of
+    `current` (Prudence, PR #115).
+    """
+    tdb = _techne_db(
+        tmp_path / "techne.db",
+        [
+            {"type": "fact", "content": "settled and shareable", "tags": "keep"},
+            {
+                "type": "fact",
+                "content": "techne itself has flagged this as doubtful",
+                "tags": "doubt",
+                "status": "uncertain",
+            },
+        ],
+    )
+    store = ArchivistStore(tmp_path / "arch.db")
+    rep = promote_techne_knowledge(tdb, store, written_by="Prudence")
+
+    assert rep.read == 1, "an uncertain row must not even be read as a candidate"
+    assert store.search("settled and shareable")
+    assert store.search("doubtful") == [], "uncertain must not reach a write-only corpus"
+
+
+def test_promote_treats_null_status_as_current(tmp_path: Path) -> None:
+    """Fail closed on unknown VALUES, fail open on an absent CONCEPT.
+
+    `status = 'current'` is NULL-propagating, so a store whose column is
+    NULLABLE and unset would promote NOTHING AT ALL — silently, which is the
+    exact failure class this change exists to remove. A NULL means the row
+    predates or ignores the concept, the same situation as the absent column.
+
+    Builds the schema inline rather than via `_techne_db`, which declares
+    `status TEXT NOT NULL DEFAULT 'current'` (matching techne itself) and so
+    cannot express the pathological store this guards against.
+    """
+    tdb = tmp_path / "nullable.db"
+    conn = sqlite3.connect(str(tdb))
+    conn.execute(
+        """CREATE TABLE knowledge (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            content TEXT NOT NULL,
+            source TEXT,
+            tags TEXT,
+            confidence_numeric REAL NOT NULL DEFAULT 0.6,
+            superseded_by INTEGER,
+            status TEXT
+        )"""
+    )
+    conn.execute(
+        "INSERT INTO knowledge (type, content, tags, status) VALUES (?, ?, ?, NULL)",
+        ("fact", "row from a store with a nullable status", "x"),
+    )
+    conn.commit()
+    conn.close()
+
+    store = ArchivistStore(tmp_path / "arch.db")
+    rep = promote_techne_knowledge(tdb, store, written_by="Prudence")
+    assert rep.new == 1, "a NULL status must not silently suppress everything"
+    assert store.search("nullable status")
+
+
 def test_promote_skips_archived_knowledge(tmp_path: Path) -> None:
     """techne's soft-archive (techne#216) must stop promotion to the SHARED corpus.
 
