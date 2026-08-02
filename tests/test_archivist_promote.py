@@ -43,8 +43,84 @@ def test_promote_preserves_zero_confidence_as_importance(tmp_path: Path) -> None
     assert hits[0].importance == 0.0  # not 1.0
 
 
-def _techne_db(path: Path, rows: list[dict]) -> Path:
+def _techne_db(path: Path, rows: list[dict], *, with_status: bool = True) -> Path:
+    """Build a minimal techne `knowledge` table.
+
+    `with_status=False` reproduces the PRE-status schema of an older techne store,
+    which promote must still read rather than raising OperationalError.
+    """
+    status_col = ",\n            status TEXT NOT NULL DEFAULT 'current'" if with_status else ""
     conn = sqlite3.connect(str(path))
+    conn.execute(
+        f"""CREATE TABLE knowledge (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            content TEXT NOT NULL,
+            source TEXT,
+            tags TEXT,
+            confidence_numeric REAL NOT NULL DEFAULT 0.6,
+            superseded_by INTEGER{status_col}
+        )"""
+    )
+    cols = "type, content, tags, confidence_numeric, superseded_by"
+    ph = "?, ?, ?, ?, ?"
+    for r in rows:
+        vals = [r["type"], r["content"], r.get("tags"), r.get("conf", 0.6), r.get("superseded_by")]
+        if with_status:
+            vals.append(r.get("status", "current"))
+        conn.execute(
+            f"INSERT INTO knowledge ({cols}{', status' if with_status else ''}) "
+            f"VALUES ({ph}{', ?' if with_status else ''})",
+            vals,
+        )
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_promote_skips_uncertain_knowledge(tmp_path: Path) -> None:
+    """`uncertain` is techne's doubt-cascade status (_cascade_uncertain), set when
+    an entry's supporting knowledge is contradicted, and carrying a 0.5 confidence
+    penalty. The first version of this filter was a DENYLIST of `archived`, so
+    these were published to the unretractable shared corpus — and at full
+    un-penalised importance, since promote reads raw confidence_numeric rather
+    than techne's effective confidence. Selection is now an allowlist of
+    `current` (Prudence, PR #115).
+    """
+    tdb = _techne_db(
+        tmp_path / "techne.db",
+        [
+            {"type": "fact", "content": "settled and shareable", "tags": "keep"},
+            {
+                "type": "fact",
+                "content": "techne itself has flagged this as doubtful",
+                "tags": "doubt",
+                "status": "uncertain",
+            },
+        ],
+    )
+    store = ArchivistStore(tmp_path / "arch.db")
+    rep = promote_techne_knowledge(tdb, store, written_by="Prudence")
+
+    assert rep.read == 1, "an uncertain row must not even be read as a candidate"
+    assert store.search("settled and shareable")
+    assert store.search("doubtful") == [], "uncertain must not reach a write-only corpus"
+
+
+def test_promote_treats_null_status_as_current(tmp_path: Path) -> None:
+    """Fail closed on unknown VALUES, fail open on an absent CONCEPT.
+
+    `status = 'current'` is NULL-propagating, so a store whose column is
+    NULLABLE and unset would promote NOTHING AT ALL — silently, which is the
+    exact failure class this change exists to remove. A NULL means the row
+    predates or ignores the concept, the same situation as the absent column.
+
+    Builds the schema inline rather than via `_techne_db`, which declares
+    `status TEXT NOT NULL DEFAULT 'current'` (matching techne itself) and so
+    cannot express the pathological store this guards against.
+    """
+    tdb = tmp_path / "nullable.db"
+    conn = sqlite3.connect(str(tdb))
     conn.execute(
         """CREATE TABLE knowledge (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,18 +129,63 @@ def _techne_db(path: Path, rows: list[dict]) -> Path:
             source TEXT,
             tags TEXT,
             confidence_numeric REAL NOT NULL DEFAULT 0.6,
-            superseded_by INTEGER
+            superseded_by INTEGER,
+            status TEXT
         )"""
     )
-    for r in rows:
-        conn.execute(
-            "INSERT INTO knowledge (type, content, tags, confidence_numeric, superseded_by) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (r["type"], r["content"], r.get("tags"), r.get("conf", 0.6), r.get("superseded_by")),
-        )
+    conn.execute(
+        "INSERT INTO knowledge (type, content, tags, status) VALUES (?, ?, ?, NULL)",
+        ("fact", "row from a store with a nullable status", "x"),
+    )
     conn.commit()
     conn.close()
-    return path
+
+    store = ArchivistStore(tmp_path / "arch.db")
+    rep = promote_techne_knowledge(tdb, store, written_by="Prudence")
+    assert rep.new == 1, "a NULL status must not silently suppress everything"
+    assert store.search("nullable status")
+
+
+def test_promote_skips_archived_knowledge(tmp_path: Path) -> None:
+    """techne's soft-archive (techne#216) must stop promotion to the SHARED corpus.
+
+    Regression: promote filtered only `superseded_by IS NULL`, so archiving an entry
+    removed it from local recall but it kept re-syncing to the team repo — where it
+    cannot be un-shared. Archiving is the reversible 'keep local, stop sharing' lever.
+    """
+    tdb = _techne_db(
+        tmp_path / "techne.db",
+        [
+            {"type": "fact", "content": "shared and useful", "tags": "keep"},
+            {
+                "type": "fact",
+                "content": "the clone lives at /Users/someone/working/repo",
+                "tags": "machine-specific",
+                "status": "archived",
+            },
+        ],
+    )
+    store = ArchivistStore(tmp_path / "arch.db")
+    rep = promote_techne_knowledge(tdb, store, written_by="Prudence")
+
+    assert rep.read == 1, "archived row must not even be read as a candidate"
+    assert rep.new == 1
+    assert store.search("shared and useful"), "the live entry should still promote"
+    assert store.search("clone lives") == [], "archived entry must NOT reach the corpus"
+
+
+def test_promote_reads_store_without_status_column(tmp_path: Path) -> None:
+    """An older techne db has no `status` column; promote must not hard-fail on it."""
+    tdb = _techne_db(
+        tmp_path / "legacy.db",
+        [{"type": "fact", "content": "legacy schema entry", "tags": "old"}],
+        with_status=False,
+    )
+    store = ArchivistStore(tmp_path / "arch.db")
+    rep = promote_techne_knowledge(tdb, store, written_by="Prudence")
+
+    assert rep.new == 1
+    assert store.search("legacy schema entry")
 
 
 def test_promote_maps_and_publishes(tmp_path: Path) -> None:
