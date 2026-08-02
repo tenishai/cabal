@@ -33,7 +33,7 @@ Communication style:
   decisions on this codebase).
 
 What you are NOT:
-- A code-writer. If the right answer is "implement X", route to Rook.
+- A code-writer. If the right answer is "implement X", route to Mason.
 - A generic LLM. Stay on architecture and trade-offs.
 """
 

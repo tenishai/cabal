@@ -192,7 +192,7 @@ async def test_multiple_secrets_all_flow_through(
         ("REGION", "us-east-1"),
     ]:
         r = await client.post(
-            "/admin/secrets/rook/echo-creds",
+            "/admin/secrets/mason/echo-creds",
             json={"key": key, "value": value},
             headers={"Authorization": f"Bearer {op_token}"},
         )
@@ -215,9 +215,9 @@ async def test_multiple_secrets_all_flow_through(
         )
     dispatch_token = _mint_jwt(
         signing_key=stored_key,
-        sub="rook-primus",
+        sub="mason-primus",
         aud="limenal",
-        persona="rook",
+        persona="mason",
         scope=["dispatch"],
     )
 
@@ -272,7 +272,7 @@ async def test_multiple_secrets_all_flow_through(
 async def test_persona_isolation_different_personas_different_creds(
     app: FastAPI, client: AsyncClient
 ) -> None:
-    """rook/notify and archivist/notify have separate credential sets; each
+    """mason/notify and archivist/notify have separate credential sets; each
     persona's token only retrieves its own secrets."""
     from limenal.protocol import Context, ToolResult, ToolSpec
     from limenal.registry import Registry
@@ -289,8 +289,8 @@ async def test_persona_isolation_different_personas_different_creds(
 
     # Store distinct secrets per persona.
     await client.post(
-        "/admin/secrets/rook/echo-creds",
-        json={"key": "WEBHOOK_URL", "value": "https://rook.example.com/hook"},
+        "/admin/secrets/mason/echo-creds",
+        json={"key": "WEBHOOK_URL", "value": "https://mason.example.com/hook"},
         headers={"Authorization": f"Bearer {op_token}"},
     )
     await client.post(
@@ -365,12 +365,12 @@ async def test_persona_isolation_different_personas_different_creds(
         assert body.get("error") is None, body
         return json.loads(body["result"]["content"][0]["text"])["creds"]
 
-    rook_creds = await _call_as("rook", "rook-primus")
+    mason_creds = await _call_as("mason", "mason-primus")
     archivist_creds = await _call_as("archivist", "archivist")
 
     await cabal_http.aclose()
 
-    assert rook_creds["WEBHOOK_URL"] == "https://rook.example.com/hook"
+    assert mason_creds["WEBHOOK_URL"] == "https://mason.example.com/hook"
     assert archivist_creds["WEBHOOK_URL"] == "https://archivist.example.com/hook"
 
 

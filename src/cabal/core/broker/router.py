@@ -219,7 +219,7 @@ class DispatchRouter:
         ctx = await self._prepare(target_agent, target_generation, caller_jwt)
         task = _ensure_trace(task)
         # cabal#11 — register this invocation in the AbortGraph. Parent comes
-        # from cabal_parent_task (set by Rook fan-out); top-level tasks have none.
+        # from cabal_parent_task (set by Mason fan-out); top-level tasks have none.
         self._abort.register(
             task.id, parent_id=task.metadata.get("cabal_parent_task"), kind=KIND_DISPATCH
         )

@@ -80,7 +80,7 @@ class PersonaMCPConfig(_Open):
     Even if `[limenal]` is configured at the top level, a persona only
     gets a tool_proxy when its `mcp.enabled = true`. This keeps
     operators in control — Architect-the-thinker probably doesn't want
-    tools, Rook-the-engineer probably does.
+    tools, Mason-the-engineer probably does.
 
     `tool_extras` is a dict of arbitrary scoping config forwarded to
     limenal as `Context.extra`. The handler-author's contract decides
@@ -156,11 +156,11 @@ class GuardrailsConfig(_Open):
 
     These run in ``DispatchRouter.dispatch`` *before* the local-vs-remote
     branch, so they are the one enforcement point that also covers
-    ``kind="federated"`` peers — the in-process Rook ``DoomLoopGuardrail``
+    ``kind="federated"`` peers — the in-process Mason ``DoomLoopGuardrail``
     (primus.py) only fires at the subordinate boundary and never reaches a
     remote hop. Default-on; a deployment opts out here.
 
-    The default threshold (5) is deliberately looser than the in-process Rook
+    The default threshold (5) is deliberately looser than the in-process Mason
     guard (3): this guard runs on ALL production dispatch, human ``cbl chat``
     turns included, so a slightly higher bar avoids blocking a user who sends
     the same short message (``yes`` / ``continue``) a few times in a session,

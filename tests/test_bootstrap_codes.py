@@ -45,11 +45,11 @@ async def test_operator_code_roundtrip(sessionmaker) -> None:
 @pytest.mark.asyncio
 async def test_persona_code_returns_name(sessionmaker) -> None:
     async with sessionmaker() as s:
-        code = await issue_persona_code(s, "rook")
+        code = await issue_persona_code(s, "mason")
         await s.commit()
 
     async with sessionmaker() as s:
-        assert await consume(s, code) == "rook"
+        assert await consume(s, code) == "mason"
         await s.commit()
 
 

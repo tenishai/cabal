@@ -10,7 +10,7 @@ They do NOT route through HookRegistry — hooks stay side-effect-only.
 
 Usage::
 
-    ctx = GuardrailContext(persona_name="rook", task_id=task.id, phase="input")
+    ctx = GuardrailContext(persona_name="mason", task_id=task.id, phase="input")
     verdict = await run_guardrails(guardrails, messages, ctx)
     if verdict.type == VerdictType.BLOCK:
         # fail the task with verdict.reason

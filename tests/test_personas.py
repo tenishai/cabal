@@ -36,11 +36,11 @@ def _stub_client(reply: str = "ok") -> LiteLLMClient:
 
 def test_registry_contains_all_known_personas() -> None:
     assert set(PERSONA_REGISTRY.keys()) == {
-        "archivist",
         "architect",
-        "jackdaw",
+        "archivist",
         "librarian",
-        "rook",
+        "mason",
+        "wright",
     }
 
 

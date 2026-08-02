@@ -2,12 +2,18 @@
 
 Regression: `Subordinate` hard-coded `name=f"rook-{role}"`, and every entry in
 `SUBORDINATE_PROMPTS` opened with "You are Rook's ... subordinate". Both were
-literals, so a *second* primus (jackdaw) built subordinates that registered as
+literals, so a *second* primus (`jackdaw`) built subordinates that registered as
 `rook-implementer` and were told in their system prompt that they worked for
 Rook — wrong agent names in bulletin rows / events / traces, and a wrong prompt.
 
 These tests fail against that version: `name` was `rook-implementer` regardless
 of owner, and the prompt said "Rook's" regardless of owner.
+
+`rook`/`jackdaw` above are the PRE-RENAME primus names and are stated verbatim
+on purpose. They were renamed to `mason`/`wright` in the following PR, and the
+mechanical rename initially rewrote this paragraph too — turning an accurate
+account of a real defect into a claim about names that did not yet exist. A
+description of the past has to keep the past's vocabulary.
 """
 
 from __future__ import annotations
@@ -28,6 +34,10 @@ def _client() -> LiteLLMClient:
     return LiteLLMClient(acompletion_fn=fn, hook_registry=HookRegistry())
 
 
+# Four DISTINCT names on purpose, spanning pre- and post-rename vocabulary:
+# the point is that any name works, not that these particular ones do. The
+# rook->mason rename collapsed this into ["mason","wright","mason","wright"];
+# restored deliberately.
 @pytest.mark.parametrize("primus", ["rook", "jackdaw", "mason", "wright"])
 @pytest.mark.parametrize("role", ["implementer", "reviewer"])
 def test_subordinate_name_is_prefixed_by_its_owning_primus(primus: str, role: str) -> None:
@@ -36,12 +46,12 @@ def test_subordinate_name_is_prefixed_by_its_owning_primus(primus: str, role: st
 
 
 @pytest.mark.parametrize("role", ["implementer", "reviewer"])
-def test_canonical_prompt_names_the_owning_primus_not_rook(role: str) -> None:
+def test_canonical_prompt_names_the_owning_primus_not_mason(role: str) -> None:
     """The bug lived in the canonical prompts, not only the fallback — so a
     declared role (implementer/reviewer) is the case that must be pinned."""
-    sub = Subordinate(primus="jackdaw", role=role, llm_client=_client(), model="m")
-    assert "Jackdaw's" in sub.system_prompt
-    assert "Rook" not in sub.system_prompt
+    sub = Subordinate(primus="wright", role=role, llm_client=_client(), model="m")
+    assert "Wright's" in sub.system_prompt
+    assert "Mason" not in sub.system_prompt
 
 
 def test_unknown_role_falls_back_without_naming_another_primus() -> None:
@@ -49,7 +59,7 @@ def test_unknown_role_falls_back_without_naming_another_primus() -> None:
     assert sub.name == "wright-archaeologist"
     assert "Wright's" in sub.system_prompt
     assert "archaeologist" in sub.system_prompt
-    assert "Rook" not in sub.system_prompt
+    assert "Mason" not in sub.system_prompt
 
 
 def test_explicit_system_prompt_still_wins() -> None:
@@ -75,16 +85,18 @@ def test_factory_attributes_each_primus_its_own_subordinates() -> None:
     """The integration seam where the bug actually bit.
 
     `persona_factory` constructs every primus's subordinates. Before the fix it
-    never passed an owner, so with TWO primus personas declared, jackdaw's
-    subordinates were still built as `rook-implementer`. Unit-testing
+    never passed an owner, so with TWO primus personas declared, the second
+    primus's subordinates were still built under the first primus's name
+    (historically: `jackdaw`'s were built as `rook-implementer`). Unit-testing
     `Subordinate` alone would not have caught that — the defect was the call
     site omitting the owner, not the class mishandling it.
 
-    NOTE FOR THE CORVID-RENAME PR: this deliberately names real registry keys,
-    so it depends on PERSONA_REGISTRY holding `rook` and `jackdaw`. When those
-    are renamed (→ `mason`/`wright`), this test WILL fail — expected, not a
-    regression. An integration test over the registry *should* notice the
-    registry changing; update the two keys and the expected names here.
+    REGISTRY COUPLING: this deliberately names real PERSONA_REGISTRY keys
+    (`mason`, `wright`), so a future persona rename will fail it. That is
+    correct for an integration test over the registry — it *should* notice the
+    registry changing — but the failure is expected, not a regression: update
+    the keys and expected names here. (The `rook`→`mason` / `jackdaw`→`wright`
+    rename did exactly that, which is why this note exists.)
     """
     from cabal.config.identity import IdentityConfig, PersonaConfig, SubordinateConfig
     from cabal.core.abort import AbortCoordinator
@@ -108,8 +120,8 @@ def test_factory_attributes_each_primus_its_own_subordinates() -> None:
     sub = SubordinateConfig(model="m")
     identity = IdentityConfig(
         personas={
-            "rook": PersonaConfig(role="primus", subordinates={"implementer": sub}),
-            "jackdaw": PersonaConfig(role="primus", subordinates={"implementer": sub}),
+            "mason": PersonaConfig(role="primus", subordinates={"implementer": sub}),
+            "wright": PersonaConfig(role="primus", subordinates={"implementer": sub}),
         }
     )
 
@@ -123,12 +135,13 @@ def test_factory_attributes_each_primus_its_own_subordinates() -> None:
     )
 
     by_name = {h.name: h for h in registered}
-    assert set(by_name) == {"rook-primus", "jackdaw-primus"}, by_name.keys()
+    assert set(by_name) == {"mason-primus", "wright-primus"}, by_name.keys()
 
-    assert by_name["rook-primus"].subordinates["implementer"].name == "rook-implementer"
-    # The actual regression: this was "rook-implementer" before the fix.
-    assert by_name["jackdaw-primus"].subordinates["implementer"].name == "jackdaw-implementer"
-    assert "Jackdaw's" in by_name["jackdaw-primus"].subordinates["implementer"].system_prompt
+    assert by_name["mason-primus"].subordinates["implementer"].name == "mason-implementer"
+    # The actual regression: the second primus's subordinate carried the FIRST
+    # primus's name before the fix (then: "rook-implementer" for jackdaw).
+    assert by_name["wright-primus"].subordinates["implementer"].name == "wright-implementer"
+    assert "Wright's" in by_name["wright-primus"].subordinates["implementer"].system_prompt
 
 
 def test_prompt_templates_carry_no_hardcoded_primus_name() -> None:
@@ -136,8 +149,19 @@ def test_prompt_templates_carry_no_hardcoded_primus_name() -> None:
     that bakes in a name would pass the tests above for that name and fail here."""
     for role, template in SUBORDINATE_PROMPTS.items():
         assert "{primus}" in template, f"{role} prompt must address the primus by placeholder"
-        for literal in ("Rook", "Jackdaw", "Mason", "Wright"):
-            assert literal not in template, f"{role} prompt hard-codes {literal!r}"
+        # Includes the RETIRED names on purpose: this guard exists to catch a
+        # prompt that bakes in any primus name, and a reintroduced "Rook" is
+        # exactly as broken as a baked-in "Mason". The rename collapsed these
+        # four into two duplicates and silently dropped that half of the guard.
+        #
+        # CASE-INSENSITIVE deliberately. The capitalised form is how _display()
+        # renders a name into prose, but `{primus}-{role}` is the convention
+        # everywhere else in this subsystem, so a bake-in is at least as likely
+        # to read "report to mason-primus" as "Mason's". Prudence demonstrated
+        # on PR #113 that the capitalised-only guard passed on exactly that.
+        low = template.lower()
+        for literal in ("rook", "jackdaw", "mason", "wright"):
+            assert literal not in low, f"{role} prompt hard-codes {literal!r}"
 
 
 def test_prompt_templates_are_actually_formattable() -> None:

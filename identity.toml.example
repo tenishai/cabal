@@ -47,7 +47,8 @@ jwt_aud = "limenal"
 
 # ----- Singletons (built-in personas) -----
 # Each persona declared here gets a bulletin-board row at daemon startup.
-# Personas named in PERSONA_REGISTRY (archivist, architect, librarian)
+# Personas named in PERSONA_REGISTRY (archivist, architect, librarian,
+# mason, wright)
 # also get a LocalHandler so dispatches actually reach an LLM. Personas
 # NOT in the registry register a bulletin row but error on dispatch.
 
@@ -97,7 +98,7 @@ safety_tier = "moderate"
 # block instructions to this persona's system prompt, AND `cbl chat`
 # parses + applies the resulting blocks (with operator y/n) when
 # launched with `--edit-format search-replace`. Recommended for any
-# persona that emits code edits (architect, codex, rook).
+# persona that emits code edits (architect, codex, mason).
 # edit_format = "search-replace"
 # cabal#2 — opt into checkpoint-based durable execution. When enabled,
 # every LLM call inside handle_task writes a row to task_checkpoints;
@@ -113,41 +114,44 @@ role = "singleton"
 safety_tier = "moderate"
 
 # ----- Primus -----
-# Rook is the engineering primus. Its bulletin row registers as
-# 'rook-primus' / generation=1 and the LocalHandler is wired automatically.
+# Mason is the SRE / reliability primus — infrastructure, platform, deployment
+# and operational correctness. (Wright, below, is the software one.) Its bulletin
+# row registers as 'mason-primus' / generation=1 and the LocalHandler is wired
+# automatically.
 # Pipeline per dispatch: PLAN (primus) → IMPLEMENT (implementer subordinate)
 # → REVIEW (reviewer subordinate, if declared) → AGGREGATE (primus).
-# Comment out [personas.rook.subordinates.reviewer] to skip the review step.
+# Comment out [personas.mason.subordinates.reviewer] to skip the review step.
 
-[personas.rook]
-description = "Engineering primus"
+[personas.mason]
+description = "Engineering / SRE primus"
 role = "primus"
 safety_tier = "strict"
 
-[personas.rook.subordinates.implementer]
+[personas.mason.subordinates.implementer]
 model = "anthropic/claude-sonnet-4-6"
 max_tokens = 16384
 
-[personas.rook.subordinates.reviewer]
+[personas.mason.subordinates.reviewer]
 model = "anthropic/claude-opus-4-7"
 max_tokens = 8192
 
-# ----- Jackdaw primus -----
-# Jackdaw is the general-engineering primus. Its bulletin row registers as
-# 'jackdaw-primus' / generation=1 and the LocalHandler is wired automatically.
+# ----- Wright primus -----
+# Wright is the general-engineering primus. Its bulletin row registers as
+# 'wright-primus' / generation=1 and the LocalHandler is wired automatically.
 # Pipeline per dispatch: PLAN (primus) → IMPLEMENT (implementer subordinate)
 # → REVIEW (reviewer subordinate, if declared) → AGGREGATE (primus).
-# Comment out [personas.jackdaw.subordinates.reviewer] to skip the review step.
+# Wright ships WITHOUT a reviewer: uncomment [personas.wright.subordinates.reviewer]
+# below to add the REVIEW step. (Mason ships with one.)
 
-[personas.jackdaw]
+[personas.wright]
 description = "Senior software engineer — general-engineering primus"
 role = "primus"
 safety_tier = "strict"
 
-[personas.jackdaw.subordinates.implementer]
+[personas.wright.subordinates.implementer]
 model = "anthropic/claude-sonnet-5"
 max_tokens = 16384
 
-# [personas.jackdaw.subordinates.reviewer]
+# [personas.wright.subordinates.reviewer]
 # model = "anthropic/claude-sonnet-5"
 # max_tokens = 8192

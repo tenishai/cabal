@@ -58,6 +58,12 @@ dev = [
     "httpx>=0.27",
     "ruff>=0.8",
     "mypy>=1.13",
+    # tests/test_config_models_are_served.py parses the shipped k8s + compose
+    # YAML. It was already importable transitively (litellm pulls pyyaml), which
+    # is precisely why it needs declaring: a transitive dep that disappears on a
+    # dependency bump takes the test with it, and that test exists to catch
+    # config-vs-config drift that nothing else checks.
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]

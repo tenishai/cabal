@@ -27,8 +27,8 @@ graph TB
     %% ===== Personas =====
     subgraph Project["Project Personas"]
         direction TB
-        ROOK["rook-primus<br/>(lead · opus)"]
-        ROOKSUB["rook-secundus<br/>(worker · sonnet)"]
+        MASON["mason-primus<br/>(lead · opus)"]
+        MASONSUB["mason-implementer<br/>(worker · sonnet)"]
         RAVEN["raven-primus"]
     end
 
@@ -66,18 +66,18 @@ graph TB
     IDP --- DB
     DB <-. WAL replicate .-> LITS
 
-    A2A --> ROOK
+    A2A --> MASON
     A2A --> RAVEN
     A2A --> ARCH
     A2A --> ARCHV
     A2A --> LIB
 
-    ROOK -. subordinate fan-out .-> ROOKSUB
+    MASON -. subordinate fan-out .-> MASONSUB
 
     %% every persona wires through the per-agent substrate
-    ROOK & RAVEN & ROOKSUB & ARCH & ARCHV & LIB --> LIM
-    ROOK & RAVEN & ROOKSUB & ARCH & ARCHV & LIB --> TEC
-    ROOK & RAVEN & ROOKSUB & ARCH & ARCHV & LIB --> LLMCLI
+    MASON & RAVEN & MASONSUB & ARCH & ARCHV & LIB --> LIM
+    MASON & RAVEN & MASONSUB & ARCH & ARCHV & LIB --> TEC
+    MASON & RAVEN & MASONSUB & ARCH & ARCHV & LIB --> LLMCLI
 
     %% MCP shallow retrieval bypasses A2A for the singleton data backends
     LIM -. shallow MCP .-> ARCH
@@ -88,7 +88,7 @@ graph TB
     LITE --> PROV
 
     %% lifecycle hooks feed the bus
-    ROOK -. lifecycle hooks .-> EB
+    MASON -. lifecycle hooks .-> EB
     RAVEN -. lifecycle hooks .-> EB
     ARCH -. lifecycle hooks .-> EB
 
@@ -100,7 +100,7 @@ graph TB
     classDef ext fill:#7c2d12,stroke:#9a3412,color:#f9fafb
     classDef wire fill:#facc15,stroke:#ca8a04,color:#1f2937
     class IDP,BROK,BB,EB,PROJ core
-    class ROOK,ROOKSUB,RAVEN persona
+    class MASON,MASONSUB,RAVEN persona
     class ARCH,ARCHV,LIB singleton
     class LIM,TEC,LLMCLI sub
     class LITE,PROV,LITS ext
@@ -124,7 +124,7 @@ when target and caller share a process; AgentCard JWS verification runs on every
 hop regardless, so the security model is uniform across solo and per-pod
 deployments.
 
-**Personas.** Project personas (rook, raven, …) own the work. Primus agents own
+**Personas.** Project personas (mason, raven, …) own the work. Primus agents own
 plan/dispatch/aggregate; subordinates fan out under them. Singleton personas
 (Architect; Archivist + Librarian in v2) front shared data stores and expose two
 faces: A2A for synthesis dispatches and MCP for cheap shallow retrieval that

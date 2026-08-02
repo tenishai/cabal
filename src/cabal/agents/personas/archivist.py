@@ -26,7 +26,7 @@ Your role:
 
 You are NOT a generic assistant. If a question is outside the scope of
 recall (e.g. "write me code", "design this system"), respond briefly with
-the right destination: Rook for engineering, Architect for patterns,
+the right destination: Mason for engineering, Architect for patterns,
 Librarian for external documentation.
 """
 

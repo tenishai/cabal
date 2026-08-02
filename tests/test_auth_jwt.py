@@ -44,21 +44,21 @@ def test_mint_and_verify_roundtrip(stored_key) -> None:
     stored, key_set = stored_key
     token = mint(
         signing_key=stored,
-        sub="rook-primus:1",
+        sub="mason-primus:1",
         aud="archivist",
-        persona="rook",
+        persona="mason",
         scope=["dispatch"],
     )
     payload = verify(token, key_set=key_set, expected_audience="archivist")
-    assert payload["sub"] == "rook-primus:1"
+    assert payload["sub"] == "mason-primus:1"
     assert payload["aud"] == "archivist"
-    assert payload["cabal_persona"] == "rook"
+    assert payload["cabal_persona"] == "mason"
     assert payload["cabal_scope"] == ["dispatch"]
 
 
 def test_audience_mismatch_rejected(stored_key) -> None:
     stored, key_set = stored_key
-    token = mint(signing_key=stored, sub="rook-primus:1", aud="archivist")
+    token = mint(signing_key=stored, sub="mason-primus:1", aud="archivist")
     with pytest.raises(JWTError, match="audience mismatch"):
         verify(token, key_set=key_set, expected_audience="librarian")
 
@@ -68,7 +68,7 @@ def test_expired_token_rejected(stored_key) -> None:
     past = int(time.time()) - 600
     token = mint(
         signing_key=stored,
-        sub="rook-primus:1",
+        sub="mason-primus:1",
         aud="archivist",
         ttl_seconds=60,
         now=past,
@@ -81,7 +81,7 @@ def test_audience_omitted_skips_check(stored_key) -> None:
     """When the caller doesn't pin an audience, the token still validates
     on signature + exp."""
     stored, key_set = stored_key
-    token = mint(signing_key=stored, sub="rook-primus:1", aud="archivist")
+    token = mint(signing_key=stored, sub="mason-primus:1", aud="archivist")
     payload = verify(token, key_set=key_set, expected_audience=None)
     assert payload["aud"] == "archivist"
 
@@ -89,7 +89,7 @@ def test_audience_omitted_skips_check(stored_key) -> None:
 def test_wrong_issuer_rejected(stored_key) -> None:
     stored, key_set = stored_key
     token = mint(
-        signing_key=stored, sub="rook-primus:1", aud="archivist", issuer="other-issuer"
+        signing_key=stored, sub="mason-primus:1", aud="archivist", issuer="other-issuer"
     )
     with pytest.raises(JWTError, match="unexpected iss"):
         verify(token, key_set=key_set, expected_audience="archivist")
@@ -97,7 +97,7 @@ def test_wrong_issuer_rejected(stored_key) -> None:
 
 def test_signature_fail_on_wrong_keyset(stored_key) -> None:
     stored, _key_set = stored_key
-    token = mint(signing_key=stored, sub="rook-primus:1", aud="archivist")
+    token = mint(signing_key=stored, sub="mason-primus:1", aud="archivist")
 
     # A different keyset (no matching kid) should fail verification.
     from cabal.core.auth.keys import generate_rsa_keypair

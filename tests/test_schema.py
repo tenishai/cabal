@@ -29,7 +29,7 @@ async def sessionmaker() -> async_sessionmaker[AsyncSession]:
     return make_sessionmaker(engine)
 
 
-async def _make_persona(s: AsyncSession, name: str = "rook") -> Persona:
+async def _make_persona(s: AsyncSession, name: str = "mason") -> Persona:
     p = Persona(name=name, config_json={"role": "primus"})
     s.add(p)
     await s.flush()
@@ -56,12 +56,12 @@ async def test_two_generations_coexist(sessionmaker) -> None:
     """The composite PK on (name, generation) lets old + new rows live together."""
     async with sessionmaker() as s:
         await _make_persona(s)
-        s.add(_agent_row("rook-primus", 1, "rook", status="draining"))
-        s.add(_agent_row("rook-primus", 2, "rook", status="active"))
+        s.add(_agent_row("mason-primus", 1, "mason", status="draining"))
+        s.add(_agent_row("mason-primus", 2, "mason", status="active"))
         await s.commit()
 
         result = await s.execute(
-            select(Agent).where(Agent.name == "rook-primus").order_by(Agent.generation)
+            select(Agent).where(Agent.name == "mason-primus").order_by(Agent.generation)
         )
         rows = result.scalars().all()
         assert len(rows) == 2
@@ -74,11 +74,11 @@ async def test_duplicate_generation_rejected(sessionmaker) -> None:
     """Two rows with the same (name, generation) violate the PK."""
     async with sessionmaker() as s:
         await _make_persona(s)
-        s.add(_agent_row("rook-primus", 1, "rook"))
+        s.add(_agent_row("mason-primus", 1, "mason"))
         await s.commit()
 
     async with sessionmaker() as s:
-        s.add(_agent_row("rook-primus", 1, "rook"))
+        s.add(_agent_row("mason-primus", 1, "mason"))
         with pytest.raises(IntegrityError):
             await s.commit()
 
@@ -88,27 +88,27 @@ async def test_conversation_fk_into_agents(sessionmaker) -> None:
     """conversations.(target_agent, target_generation) must FK into agents."""
     async with sessionmaker() as s:
         await _make_persona(s)
-        s.add(_agent_row("rook-primus", 1, "rook"))
+        s.add(_agent_row("mason-primus", 1, "mason"))
         await s.commit()
 
-    # Valid: (rook-primus, 1) exists
+    # Valid: (mason-primus, 1) exists
     async with sessionmaker() as s:
         s.add(
             Conversation(
                 task_id="t-1",
-                target_agent="rook-primus",
+                target_agent="mason-primus",
                 target_generation=1,
                 state="working",
             )
         )
         await s.commit()
 
-    # Invalid: (rook-primus, 99) doesn't exist
+    # Invalid: (mason-primus, 99) doesn't exist
     async with sessionmaker() as s:
         s.add(
             Conversation(
                 task_id="t-2",
-                target_agent="rook-primus",
+                target_agent="mason-primus",
                 target_generation=99,
                 state="working",
             )
@@ -122,12 +122,12 @@ async def test_escalation_self_fk(sessionmaker) -> None:
     """cabal_escalated_from FKs back into conversations.task_id."""
     async with sessionmaker() as s:
         await _make_persona(s)
-        s.add(_agent_row("rook-primus", 1, "rook"))
+        s.add(_agent_row("mason-primus", 1, "mason"))
         await s.flush()
         s.add(
             Conversation(
                 task_id="parent",
-                target_agent="rook-primus",
+                target_agent="mason-primus",
                 target_generation=1,
                 state="completed",
             )
@@ -135,7 +135,7 @@ async def test_escalation_self_fk(sessionmaker) -> None:
         s.add(
             Conversation(
                 task_id="child",
-                target_agent="rook-primus",
+                target_agent="mason-primus",
                 target_generation=1,
                 state="working",
                 cabal_escalated_from="parent",
@@ -155,12 +155,12 @@ async def test_active_generation_lookup(sessionmaker) -> None:
     uses to resolve operator dispatches to the latest generation."""
     async with sessionmaker() as s:
         await _make_persona(s)
-        s.add(_agent_row("rook-primus", 1, "rook", status="draining"))
-        s.add(_agent_row("rook-primus", 2, "rook", status="active"))
+        s.add(_agent_row("mason-primus", 1, "mason", status="draining"))
+        s.add(_agent_row("mason-primus", 2, "mason", status="active"))
         await s.commit()
 
         result = await s.execute(
-            select(Agent).where(Agent.name == "rook-primus", Agent.status == "active")
+            select(Agent).where(Agent.name == "mason-primus", Agent.status == "active")
         )
         active = result.scalar_one()
         assert active.generation == 2
