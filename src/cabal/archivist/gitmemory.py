@@ -89,7 +89,14 @@ def sync_promote(
     author_email: str = "agent@local",
 ) -> dict:
     """The full bridge-to-git flow for one agent: pull team memory → promote this
-    agent's distilled techne knowledge into it → push. Returns a report."""
+    agent's distilled techne knowledge into it → push. Returns a report.
+
+    Soft-archived knowledge (techne `status='archived'`) is NOT promoted — see
+    `promote_techne_knowledge`. Archiving is therefore the reversible "keep this
+    local, stop sharing it" lever, which matters here because the shared corpus
+    is the one place an entry cannot be un-shared: `export_corpus` is write-only
+    and `ArchivistStore` exposes no delete.
+    """
     from cabal.archivist.promote import promote_techne_knowledge
 
     store = pull(repo_dir, local_db)
