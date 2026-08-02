@@ -47,7 +47,8 @@ jwt_aud = "limenal"
 
 # ----- Singletons (built-in personas) -----
 # Each persona declared here gets a bulletin-board row at daemon startup.
-# Personas named in PERSONA_REGISTRY (archivist, architect, librarian)
+# Personas named in PERSONA_REGISTRY (archivist, architect, librarian,
+# mason, wright)
 # also get a LocalHandler so dispatches actually reach an LLM. Personas
 # NOT in the registry register a bulletin row but error on dispatch.
 

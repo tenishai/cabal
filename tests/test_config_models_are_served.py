@@ -63,7 +63,11 @@ def _default_model(persona: str) -> str:
             f"persona {persona!r} is declared in a shipped config but absent from "
             "PERSONA_REGISTRY — it cannot resolve a handler at all"
         )
-    module = importlib.import_module(f"cabal.agents.personas.{persona}")
+    # Resolve the module from the registered class rather than assuming the
+    # registry key matches the module name. They agree for all five today, but
+    # nothing enforces it, and guessing would raise a bare ModuleNotFoundError
+    # out of a helper whose other failure paths explain themselves.
+    module = importlib.import_module(PERSONA_REGISTRY[persona].__module__)
     default = getattr(module, "DEFAULT_MODEL", None)
     if default is None:
         raise AssertionError(
@@ -83,8 +87,14 @@ def _requested(identity: dict) -> set[str]:
     """
     wanted: set[str] = set()
     for name, cfg in (identity.get("personas") or {}).items():
+        # Called unconditionally, and its result discarded when an override
+        # wins: the registry-membership check lives inside it, and short-
+        # circuiting on a truthy override silently skipped that check for any
+        # persona declaring one — making the docstring's "RAISES on an unknown
+        # persona" true only for the half without overrides (Prudence, PR #113).
+        default = _default_model(name)
         override = cfg.get("model_override")
-        wanted.add(override if override else _default_model(name))
+        wanted.add(override if override else default)
         for sub in (cfg.get("subordinates") or {}).values():
             if sub.get("model"):
                 wanted.add(sub["model"])
