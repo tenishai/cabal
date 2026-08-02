@@ -44,7 +44,7 @@ def daemon_up(
         "all",
         "--agent",
         help="'all' for solo mode (every persona local), or a single agent name "
-        "(e.g. 'rook-primus') for scale mode.",
+        "(e.g. 'mason-primus') for scale mode.",
     ),
     host: str = typer.Option("127.0.0.1", help="Bind host."),
     port: int = typer.Option(7400, help="Bind port."),
@@ -497,7 +497,7 @@ app.add_typer(primus_app, name="primus")
 @primus_app.command("rotate")
 def primus_rotate(
     persona: str = typer.Argument(
-        ..., help="Persona name (e.g. 'rook') or full agent name ('rook-primus')."
+        ..., help="Persona name (e.g. 'mason') or full agent name ('mason-primus')."
     ),
     hard: bool = typer.Option(
         False, "--hard", help="Phase L v2: cancel in-flight Tasks. Currently a stub."

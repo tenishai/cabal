@@ -155,7 +155,7 @@ async def test_two_session_keys_keep_independent_counters() -> None:
 async def test_interleaved_identical_delegations_still_block() -> None:
     """Per-key cumulative counting (cabal#59): a DIFFERENT delegation between
     repeats does NOT reset the original key's count. An interleaved
-    A, B, A, B, A loop — the shape Rook's implementer/reviewer fan-out
+    A, B, A, B, A loop — the shape Mason's implementer/reviewer fan-out
     produces — still drives A to the threshold and blocks."""
     g = DoomLoopGuardrail(threshold=3)
     ctx = _ctx()
@@ -424,7 +424,7 @@ async def test_router_doom_loop_different_payload_does_not_block(
 async def test_distinct_task_ids_without_context_id_never_block() -> None:
     """Documents the known limitation (cabal#59): without a stable shared
     session key, the detector cannot group re-delegations. Fresh task ids and
-    NO context_id — the production shape of the rook fan-out and A2A inbound
+    NO context_id — the production shape of the mason fan-out and A2A inbound
     paths — means every check is a new session, so the counter never trips."""
     g = DoomLoopGuardrail(threshold=3)
     ctx = _ctx()

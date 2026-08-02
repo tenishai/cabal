@@ -236,3 +236,43 @@ Linked feedback memory: `feedback-decision-authority`.
   for the bootstrap-code/JWT flow anyway. python-jose has a long unmaintained
   fork history; cryptography alone means we'd implement JWS framing ourselves.
 - **Lands in**: `pyproject.toml` deps.
+
+---
+
+## 2026-08-01 — primus rename (rook → mason, jackdaw → wright)
+
+### D-016: persona-scoped secrets are NOT migrated across the rename
+
+- **Question**: Renaming a persona changes the key its secrets live under.
+  Secrets are keyed `<persona>:<handler>:<KEY>` in the `secrets` table
+  (`core/secrets.py:36-38`) and mirrored by env vars
+  `CABAL_SECRET_<persona>_<handler>_<KEY>`. After `rook` → `mason`, an
+  operator's `rook:slack:TOKEN` row and their `CABAL_SECRET_rook_slack_*`
+  env vars become unreachable — silently. No error, no dangling FK
+  (`secrets.name` is a bare string PK); just an absent credential and a
+  handler that quietly does not work. Do we migrate?
+- **Options**:
+  - **Migrate the DB half** — an `UPDATE secrets SET name = replace(...)`
+    rewriting the persona prefix.
+  - **Migrate nothing; document it** — operators re-key both surfaces.
+  - **Migrate and warn** — rewrite the DB, log for the env half.
+- **Choice**: migrate nothing; document it (this entry + the PR body).
+- **Reasoning**:
+  - **The env-var half cannot be migrated at all.** It lives in the
+    operator's shell/systemd unit/k8s manifest, not in any store we own.
+  - So a DB-only migration fixes *half* the surface and leaves an
+    inconsistent state: some credentials follow the rename, others do not,
+    and the operator cannot tell which surface a given credential came from.
+    **A partial migration is worse than none** — it converts a uniform,
+    explainable break into a per-credential mystery.
+  - It would also be a rewrite of the PRIMARY KEY of encrypted credential
+    rows, with a collision mode if both old and new keys exist. High blast
+    radius, low reversibility, for tidiness.
+  - Same session, the sibling migration `b7d3f1a2c9e4` (dropping orphaned
+    `personas` rows) was written, found to orphan `agents` FK rows, and
+    dropped. The lesson generalises: prefer a documented break to a clever
+    migration when the mechanism is not fully under our control.
+- **Landed**: no migration. Operator action required on upgrade —
+  re-key DB secrets (`cbl secret set`) and rename env vars from
+  `CABAL_SECRET_rook_*` / `CABAL_SECRET_jackdaw_*` to `CABAL_SECRET_mason_*`
+  / `CABAL_SECRET_wright_*`. Raised by Prudence on PR #113.

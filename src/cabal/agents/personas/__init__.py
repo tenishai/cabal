@@ -13,25 +13,25 @@ from collections.abc import Callable
 from cabal.agents.llm_persona import LLMPersona
 from cabal.agents.personas.architect import ArchitectPersona
 from cabal.agents.personas.archivist import ArchivistPersona
-from cabal.agents.personas.jackdaw import JackdawPrimusPersona
 from cabal.agents.personas.librarian import LibrarianPersona
-from cabal.agents.personas.rook import RookPrimusPersona
+from cabal.agents.personas.mason import MasonPrimusPersona
+from cabal.agents.personas.wright import WrightPrimusPersona
 
 # name → factory that takes (llm_client, ...) and returns an LLMPersona
 PERSONA_REGISTRY: dict[str, Callable[..., LLMPersona]] = {
-    "archivist": ArchivistPersona,
     "architect": ArchitectPersona,
-    "jackdaw": JackdawPrimusPersona,
+    "archivist": ArchivistPersona,
     "librarian": LibrarianPersona,
-    "rook": RookPrimusPersona,
+    "mason": MasonPrimusPersona,
+    "wright": WrightPrimusPersona,
 }
 
 
 __all__ = [
+    "PERSONA_REGISTRY",
     "ArchitectPersona",
     "ArchivistPersona",
-    "JackdawPrimusPersona",
     "LibrarianPersona",
-    "PERSONA_REGISTRY",
-    "RookPrimusPersona",
+    "MasonPrimusPersona",
+    "WrightPrimusPersona",
 ]

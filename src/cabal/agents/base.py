@@ -1,6 +1,6 @@
 """Local-handler interface.
 
-In solo mode each agent (Rook, Architect, ...) registers an instance with
+In solo mode each agent (Mason, Architect, ...) registers an instance with
 the dispatch router at startup. In scale mode only the agent named via
 `--agent` registers; everything else is remote and the router falls back
 to HTTP.

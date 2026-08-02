@@ -100,7 +100,7 @@ class LiteLLMClient:
     breaker: CircuitBreaker = field(default_factory=CircuitBreaker)
     budget: BudgetGuard | None = None
     # cabal#11 — when wired, a budget trip or open circuit aborts the task's
-    # AbortGraph node, cancelling any still-running descendant work (e.g. Rook
+    # AbortGraph node, cancelling any still-running descendant work (e.g. Mason
     # subordinates) rather than letting them run on toward the same wall.
     abort_coordinator: AbortCoordinator | None = None
 

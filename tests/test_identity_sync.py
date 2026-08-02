@@ -45,7 +45,7 @@ async def test_primus_registered_as_persona_minus_primus(
     sessionmaker, signing_key
 ) -> None:
     cfg = _identity(
-        rook=PersonaConfig(
+        mason=PersonaConfig(
             description="Engineering", role="primus", safety_tier="strict"
         )
     )
@@ -53,8 +53,8 @@ async def test_primus_registered_as_persona_minus_primus(
     async with sessionmaker() as s:
         personas = (await s.execute(select(Persona))).scalars().all()
         agents = (await s.execute(select(Agent))).scalars().all()
-        assert [p.name for p in personas] == ["rook"]
-        assert [a.name for a in agents] == ["rook-primus"]
+        assert [p.name for p in personas] == ["mason"]
+        assert [a.name for a in agents] == ["mason-primus"]
         assert agents[0].generation == 1
         assert agents[0].status == "active"
         assert agents[0].safety_tier == "strict"
@@ -79,7 +79,7 @@ async def test_singleton_registered_under_persona_name(
 async def test_sync_is_idempotent(sessionmaker, signing_key) -> None:
     """Running sync twice doesn't duplicate persona rows or agent rows."""
     cfg = _identity(
-        rook=PersonaConfig(role="primus", safety_tier="strict"),
+        mason=PersonaConfig(role="primus", safety_tier="strict"),
         archivist=PersonaConfig(role="singleton", safety_tier="moderate"),
     )
     await sync_personas(sessionmaker, cfg, signing_key)
@@ -95,14 +95,14 @@ async def test_signed_card_stored_in_agents_row(
 ) -> None:
     """The agent_card_json is a JWS compact + parsed card dict."""
     cfg = _identity(
-        rook=PersonaConfig(role="primus", safety_tier="strict")
+        mason=PersonaConfig(role="primus", safety_tier="strict")
     )
     await sync_personas(sessionmaker, cfg, signing_key)
     async with sessionmaker() as s:
         row = (await s.execute(select(Agent))).scalar_one()
         assert "jws" in row.agent_card_json
         assert row.agent_card_json["jws"].count(".") == 2  # JWS compact
-        assert row.agent_card_json["card"]["name"] == "rook-primus"
+        assert row.agent_card_json["card"]["name"] == "mason-primus"
         assert (
-            row.agent_card_json["card"]["metadata"]["cabal_persona"] == "rook"
+            row.agent_card_json["card"]["metadata"]["cabal_persona"] == "mason"
         )

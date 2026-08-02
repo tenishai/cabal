@@ -14,11 +14,22 @@ for the per-decision rationale log.
   - `cbl chat <persona>` multi-turn interactive mode with history
   - `cbl status` lists the agent fleet + heartbeats
   - `cbl primus rotate <persona>` rotates a primus generation
-- **Four real personas**: Archivist (memory-backed via techne), Architect (opus, patterns), Librarian (citation-mandated docs), Rook (primus that fans out to implementer subordinate).
+- **Five real personas**: Archivist (memory-backed via techne), Architect (opus, patterns), Librarian (citation-mandated docs), Mason (SRE/infra primus, fans out to an implementer subordinate), Wright (software primus, likewise).
 - **A2A v1.0 JSON-RPC**: `POST /agents/{name}` with `message/send` + `tasks/get`; per-agent `/.well-known/agent-card`.
 - **Containerized**: Dockerfile + docker-compose.yml with LiteLLM proxy + Litestream sidecars.
 
 ## Build arc — what landed in each phase
+
+> Component names in this table track their **current** names, not the names in
+> use when the phase landed — it is an index of what exists, keyed by when it
+> arrived. (Phases K and P shipped the primus then called `rook`, now `mason`.)
+>
+> One rule, two consequences: *use the vocabulary that makes the sentence true
+> for what the sentence asserts.* This table asserts "the component you call
+> `mason` arrived in phase K" — true, and findable only under the current name,
+> which is what an index is for. A test docstring asserting "the code contained
+> `rook-implementer`" is false if renamed, so it keeps the old vocabulary — see
+> `tests/test_subordinate_primus_attribution.py`. Neither is a bent rule.
 
 | Phase | Topic | Tests | Highlight |
 |---|---|---|---|
@@ -40,14 +51,14 @@ for the per-decision rationale log.
 | H (16) | observability | +15 | TraceExporter + Langfuse adapter + BudgetGuard |
 | I (17) | container | (docs) | Dockerfile + docker-compose with LiteLLM + Litestream |
 | J (18) | techne memory | +7 | TechneMemoryStore wired into Archivist; recall on every dispatch |
-| K (19) | Rook primus | +5 | PLAN → DISPATCH → AGGREGATE with subordinate fan-out |
+| K (19) | Mason primus | +5 | PLAN → DISPATCH → AGGREGATE with subordinate fan-out |
 | L (20) | primus rotate | +5 | `cbl primus rotate` + admin endpoint + schema-level rotation |
 | M (21) | budget wired | +7 | BudgetGuard reserves/refunds per Task; 702 on exhaustion |
 | N (22) | cbl chat | +5 | Multi-turn interactive chat with client-side history accumulation |
 | O (23) | sibling techne | (docs) | `pip install -e ../techne` convention + Dockerfile additional_contexts |
-| P (24) | rook reviewer | +4 | Rook now runs IMPLEMENTER → REVIEWER → AGGREGATE pipeline |
+| P (24) | mason reviewer | +4 | Mason now runs IMPLEMENTER → REVIEWER → AGGREGATE pipeline |
 | Q (25) | session checkpoint | +9 | SessionTracker Protocol + TechneSessionTracker; per-Task techne sessions |
-| R (26) | persona memory | +5 | Architect, Librarian, Rook + subordinates all opt into memory + session |
+| R (26) | persona memory | +5 | Architect, Librarian, Mason + subordinates all opt into memory + session |
 | S (27) | streaming | +8 | `astream`, `astream_task`, `POST /agents/{name}/stream` SSE endpoint |
 | T (28) | streaming chat | +4 | `cbl chat` consumes SSE; prints deltas live; `--no-stream` fallback |
 | U (29) | conversations + tail | +13 | EventBus pub/sub; `/admin/conversations`, `/admin/events/stream`; `cbl conversations`, `cbl tail` |
@@ -82,13 +93,13 @@ cbl status
 
 ```bash
 cp .env.example .env                       # CABAL_MASTER_KEY, LITELLM_MASTER_KEY, ANTHROPIC_API_KEY
-cp identity.toml.example identity.toml     # archivist + architect + librarian + rook all declared
+cp identity.toml.example identity.toml     # archivist + architect + librarian + mason + wright all declared
 docker compose build && docker compose up
 docker compose logs cabal-core | grep bootstrap_code
 cbl login --code <CODE>
 cbl chat archivist                         # interactive memory-backed session
-cbl dispatch rook "write me a Python http server"   # plan + implement + aggregate
-cbl primus rotate rook                     # ratchet rook to generation 2
+cbl dispatch mason "write me a Python http server"   # plan + implement + aggregate
+cbl primus rotate mason                     # ratchet mason to generation 2
 ```
 
 ## §6.12 Dispatch Router invariants — implementation status
@@ -120,7 +131,7 @@ cbl primus rotate rook                     # ratchet rook to generation 2
 - **Operator dashboard UI**: web frontend that consumes `/admin/agents` + a future `/admin/events` SSE.
 - **session_token model**: long-running Tasks past the 5-min JWT TTL.
 - **GraphQL / Slack adapter**: still A2A-only on the wire.
-- **Rook with reviewer subordinate**: identity.toml declares it, the persona currently only uses `implementer`.
+- **Mason with reviewer subordinate**: identity.toml declares it, the persona currently only uses `implementer`.
 
 ## Pre-public-release checklist (must clear before this repo goes public)
 
@@ -144,7 +155,7 @@ repo public:
 
 ## Suggested next session focus
 
-1. **Make Rook use reviewer**: tweak Rook's pipeline to do implementer → reviewer → aggregate, and ship a one-line identity.toml change to demonstrate.
+1. **Make Mason use reviewer**: tweak Mason's pipeline to do implementer → reviewer → aggregate, and ship a one-line identity.toml change to demonstrate.
 2. **A2A streaming**: build `message/stream` SSE on top of the existing per-agent JSON-RPC route. Required for any UI that wants live token-by-token output.
 3. **techne session checkpoint**: wire `init_session_for_external_id` + `run_session_end` into LLMPersona so personas remember per-Task state, not just static knowledge.
 

@@ -322,7 +322,7 @@ async def test_budget_trip_aborts_descendants(coord: AbortCoordinator) -> None:
         abort_coordinator=coord,
     )
     coord.register("parent")
-    coord.register("child", parent_id="parent")  # e.g. a Rook subordinate
+    coord.register("child", parent_id="parent")  # e.g. a Mason subordinate
 
     with pytest.raises(LLMUnavailableError):
         await client.acompletion(model="m", messages=[], task_id="parent")

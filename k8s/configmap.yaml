@@ -37,18 +37,27 @@ data:
     role = "singleton"
     safety_tier = "moderate"
 
-    [personas.rook]
-    description = "Engineering primus"
+    [personas.mason]
+    description = "Engineering / SRE primus"
     role = "primus"
     safety_tier = "strict"
 
-    [personas.rook.subordinates.implementer]
+    [personas.mason.subordinates.implementer]
     model = "anthropic/claude-sonnet-4-6"
     max_tokens = 16384
 
-    [personas.rook.subordinates.reviewer]
+    [personas.mason.subordinates.reviewer]
     model = "anthropic/claude-opus-4-7"
     max_tokens = 8192
+
+    [personas.wright]
+    description = "Senior software engineer — general-engineering primus"
+    role = "primus"
+    safety_tier = "strict"
+
+    [personas.wright.subordinates.implementer]
+    model = "anthropic/claude-sonnet-5"
+    max_tokens = 16384
 
 ---
 apiVersion: v1
@@ -62,6 +71,16 @@ data:
       - model_name: anthropic/claude-sonnet-4-6
         litellm_params:
           model: anthropic/claude-sonnet-4-6
+          api_key: os.environ/ANTHROPIC_API_KEY
+      # wright asks for sonnet-5 — both as its primus DEFAULT_MODEL and for its
+      # implementer. cabal-core runs strictly in proxy mode (no
+      # ANTHROPIC_API_KEY in its env), so a model missing here is not a
+      # fallback: it is LLMInvalidRequestError, and the shared CircuitBreaker
+      # turns three of those into an outage for every other persona.
+      # Pinned by tests/test_config_models_are_served.py.
+      - model_name: anthropic/claude-sonnet-5
+        litellm_params:
+          model: anthropic/claude-sonnet-5
           api_key: os.environ/ANTHROPIC_API_KEY
       - model_name: anthropic/claude-opus-4-7
         litellm_params:

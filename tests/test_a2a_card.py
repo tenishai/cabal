@@ -40,8 +40,8 @@ def master_key() -> bytes:
 @pytest.fixture
 def sample_card() -> AgentCard:
     return AgentCard(
-        name="rook-primus",
-        url="http://rook-primus:7400",
+        name="mason-primus",
+        url="http://mason-primus:7400",
         version="0.1.0",
         skills=[Skill(id="review", name="Code Review")],
         metadata={"cabal_generation": 1, "cabal_safety_tier": "strict"},
@@ -80,7 +80,7 @@ async def test_sign_and_verify_card(
 
     verifier = AgentCardVerifier()
     verified: VerifiedCard = verifier.verify(token, key_set)
-    assert verified.card.name == "rook-primus"
+    assert verified.card.name == "mason-primus"
     assert verified.kid == stored.kid
 
 

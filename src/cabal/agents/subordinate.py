@@ -19,10 +19,12 @@ from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 
 # Templates, not literals: every primus owns its own subordinates, so the
 # owning primus's name is substituted at construction (see `Subordinate`).
-# Both the agent NAME and the prompt used to hard-code "rook"/"Rook", which
-# meant a second primus (jackdaw) got subordinates called `rook-implementer`
-# that were told they worked for Rook — wrong bulletin/event/trace names and a
-# wrong system prompt.
+# Both the agent NAME and the prompt used to hard-code ONE primus's identity,
+# so the second primus got subordinates named for the first and told, in their
+# own system prompt, that they worked for it — wrong bulletin/event/trace names
+# and a wrong prompt. (Historically those two were `rook` and `jackdaw`, the
+# pre-rename names; deliberately not restated as `mason`/`wright`, which did
+# not exist when the defect did.)
 #
 # `{primus}` is filled via str.format, so any LITERAL brace added to a prompt
 # below must be doubled ({{ }}).
@@ -43,7 +45,7 @@ SUBORDINATE_PROMPTS = {
 
 
 def _display(primus: str) -> str:
-    """Config keys are lowercase (`rook`, `jackdaw`); prompts address the primus
+    """Config keys are lowercase (`mason`, `wright`); prompts address the primus
     by name. Upper-cases the first character only, so an intentionally-cased
     name (`mcCarthy`) isn't flattened the way str.capitalize() would."""
     return primus[:1].upper() + primus[1:]

@@ -34,23 +34,23 @@ async def _operator_token(app: FastAPI, client: AsyncClient) -> str:
 async def test_secrets_returns_env_vars_with_matching_prefix(
     app: FastAPI, client: AsyncClient, monkeypatch
 ) -> None:
-    monkeypatch.setenv("CABAL_SECRET_rook_slack_SLACK_BOT_TOKEN", "xoxb-1")
-    monkeypatch.setenv("CABAL_SECRET_rook_slack_SLACK_APP_TOKEN", "xapp-2")
+    monkeypatch.setenv("CABAL_SECRET_mason_slack_SLACK_BOT_TOKEN", "xoxb-1")
+    monkeypatch.setenv("CABAL_SECRET_mason_slack_SLACK_APP_TOKEN", "xapp-2")
     # Different persona — must NOT leak
     monkeypatch.setenv("CABAL_SECRET_raven_slack_SLACK_BOT_TOKEN", "xoxb-raven")
     # Different handler — must NOT leak
-    monkeypatch.setenv("CABAL_SECRET_rook_github_GITHUB_TOKEN", "ghp-1")
+    monkeypatch.setenv("CABAL_SECRET_mason_github_GITHUB_TOKEN", "ghp-1")
     # Unrelated env var — must NOT leak
     monkeypatch.setenv("UNRELATED_VAR", "x")
 
     token = await _operator_token(app, client)
     r = await client.get(
-        "/admin/secrets/rook/slack",
+        "/admin/secrets/mason/slack",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["persona"] == "rook"
+    assert body["persona"] == "mason"
     assert body["handler"] == "slack"
     assert body["credentials"] == {
         "SLACK_BOT_TOKEN": "xoxb-1",
@@ -105,7 +105,7 @@ async def test_persona_with_special_chars_refused(
     refused with 400 — `persona/handler` must be [A-Za-z0-9_-]+."""
     token = await _operator_token(app, client)
     r = await client.get(
-        "/admin/secrets/rook$evil/slack",
+        "/admin/secrets/mason$evil/slack",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 400
@@ -119,7 +119,7 @@ async def test_persona_with_path_traversal_refused(
     refuses it explicitly when FastAPI passes it through."""
     token = await _operator_token(app, client)
     r = await client.get(
-        "/admin/secrets/rook/slack..",
+        "/admin/secrets/mason/slack..",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 400
@@ -148,7 +148,7 @@ async def test_secrets_requires_auth_scope(
         scope=["dispatch"],
     )
     r = await client.get(
-        "/admin/secrets/rook/slack",
+        "/admin/secrets/mason/slack",
         headers={"Authorization": f"Bearer {persona_token}"},
     )
     assert r.status_code == 403

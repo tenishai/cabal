@@ -29,7 +29,7 @@ async def test_set_then_fetch_returns_value(app: FastAPI, client: AsyncClient) -
     token = await _operator_token(app, client)
 
     r = await client.post(
-        "/admin/secrets/rook/slack",
+        "/admin/secrets/mason/slack",
         json={"key": "SLACK_BOT_TOKEN", "value": "xoxb-stored"},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -37,7 +37,7 @@ async def test_set_then_fetch_returns_value(app: FastAPI, client: AsyncClient) -
     assert r.json()["stored"] is True
 
     r2 = await client.get(
-        "/admin/secrets/rook/slack",
+        "/admin/secrets/mason/slack",
         headers={"Authorization": f"Bearer {token}"},
     )
     body = r2.json()
@@ -51,14 +51,14 @@ async def test_env_overrides_db(app: FastAPI, client: AsyncClient, monkeypatch) 
     """Same KEY in env wins over DB."""
     token = await _operator_token(app, client)
     await client.post(
-        "/admin/secrets/rook/slack",
+        "/admin/secrets/mason/slack",
         json={"key": "SLACK_BOT_TOKEN", "value": "from-db"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    monkeypatch.setenv("CABAL_SECRET_rook_slack_SLACK_BOT_TOKEN", "from-env")
+    monkeypatch.setenv("CABAL_SECRET_mason_slack_SLACK_BOT_TOKEN", "from-env")
 
     r = await client.get(
-        "/admin/secrets/rook/slack",
+        "/admin/secrets/mason/slack",
         headers={"Authorization": f"Bearer {token}"},
     )
     body = r.json()
@@ -72,7 +72,7 @@ async def test_set_rejects_bad_key_format(app: FastAPI, client: AsyncClient) -> 
     token = await _operator_token(app, client)
     for bad in ("lowercase_key", "Mixed-Case", "1STARTS_WITH_DIGIT", "spaces in key"):
         r = await client.post(
-            "/admin/secrets/rook/slack",
+            "/admin/secrets/mason/slack",
             json={"key": bad, "value": "x"},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -83,7 +83,7 @@ async def test_set_rejects_bad_key_format(app: FastAPI, client: AsyncClient) -> 
 async def test_set_rejects_empty_value(app: FastAPI, client: AsyncClient) -> None:
     token = await _operator_token(app, client)
     r = await client.post(
-        "/admin/secrets/rook/slack",
+        "/admin/secrets/mason/slack",
         json={"key": "TOKEN", "value": ""},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -97,19 +97,19 @@ async def test_set_rejects_empty_value(app: FastAPI, client: AsyncClient) -> Non
 async def test_unset_deletes_secret(app: FastAPI, client: AsyncClient) -> None:
     token = await _operator_token(app, client)
     await client.post(
-        "/admin/secrets/rook/slack",
+        "/admin/secrets/mason/slack",
         json={"key": "K", "value": "v"},
         headers={"Authorization": f"Bearer {token}"},
     )
 
     r = await client.delete(
-        "/admin/secrets/rook/slack/K",
+        "/admin/secrets/mason/slack/K",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.json()["deleted"] is True
 
     r2 = await client.get(
-        "/admin/secrets/rook/slack",
+        "/admin/secrets/mason/slack",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r2.json()["credentials"] == {}
@@ -121,7 +121,7 @@ async def test_unset_missing_returns_deleted_false(
 ) -> None:
     token = await _operator_token(app, client)
     r = await client.delete(
-        "/admin/secrets/rook/slack/NEVER_EXISTED",
+        "/admin/secrets/mason/slack/NEVER_EXISTED",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 200
@@ -137,7 +137,7 @@ async def test_list_returns_names_not_values(
 ) -> None:
     token = await _operator_token(app, client)
     await client.post(
-        "/admin/secrets/rook/slack",
+        "/admin/secrets/mason/slack",
         json={"key": "TOKEN", "value": "secret"},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -148,7 +148,7 @@ async def test_list_returns_names_not_values(
     body = r.json()
     assert len(body["entries"]) == 1
     e = body["entries"][0]
-    assert e == {"persona": "rook", "handler": "slack", "key": "TOKEN"}
+    assert e == {"persona": "mason", "handler": "slack", "key": "TOKEN"}
     # No value in response — the contract is names-only
     assert "value" not in e
     assert "secret" not in r.text
@@ -157,7 +157,7 @@ async def test_list_returns_names_not_values(
 @pytest.mark.asyncio
 async def test_list_filters_work(app: FastAPI, client: AsyncClient) -> None:
     token = await _operator_token(app, client)
-    for p in ("rook", "raven"):
+    for p in ("mason", "raven"):
         for h in ("slack", "github"):
             await client.post(
                 f"/admin/secrets/{p}/{h}",
@@ -167,20 +167,20 @@ async def test_list_filters_work(app: FastAPI, client: AsyncClient) -> None:
 
     r = await client.get(
         "/admin/secrets",
-        params={"persona": "rook"},
+        params={"persona": "mason"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    rook_only = r.json()["entries"]
-    assert {e["persona"] for e in rook_only} == {"rook"}
-    assert {e["handler"] for e in rook_only} == {"slack", "github"}
+    mason_only = r.json()["entries"]
+    assert {e["persona"] for e in mason_only} == {"mason"}
+    assert {e["handler"] for e in mason_only} == {"slack", "github"}
 
     r = await client.get(
         "/admin/secrets",
-        params={"persona": "rook", "handler": "slack"},
+        params={"persona": "mason", "handler": "slack"},
         headers={"Authorization": f"Bearer {token}"},
     )
     pair = r.json()["entries"]
-    assert pair == [{"persona": "rook", "handler": "slack", "key": "K"}]
+    assert pair == [{"persona": "mason", "handler": "slack", "key": "K"}]
 
 
 # ---- auth gates -------------------------------------------------------
@@ -200,7 +200,7 @@ async def test_set_requires_operator_scope(app: FastAPI, client: AsyncClient) ->
         signing_key=stored, sub="x", aud="cabal-core", scope=["dispatch"]
     )
     r = await client.post(
-        "/admin/secrets/rook/slack",
+        "/admin/secrets/mason/slack",
         json={"key": "K", "value": "v"},
         headers={"Authorization": f"Bearer {persona_token}"},
     )

@@ -106,10 +106,10 @@ async def test_archivist_still_works(shared_memory) -> None:
 
 @pytest.mark.asyncio
 async def test_subordinate_accepts_memory_store(shared_memory) -> None:
-    """Rook subordinates can also share the memory DB now."""
+    """Mason subordinates can also share the memory DB now."""
     client, seen = _capture_client()
     impl = Subordinate(
-        primus="rook",
+        primus="mason",
         role="implementer",
         llm_client=client,
         model="x",

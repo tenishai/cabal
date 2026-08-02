@@ -1,6 +1,6 @@
 """PrimusPersona — shared PLAN→IMPLEMENT→(REVIEW)→AGGREGATE base.
 
-All primus engineering personas (Rook, Jackdaw, …) inherit from here.
+All primus engineering personas (Mason, Wright, …) inherit from here.
 The fan-out machinery — planning, subordinate dispatch, aggregation,
 doom-loop guard, hook firing — lives entirely in this module.
 
