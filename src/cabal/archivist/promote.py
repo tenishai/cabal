@@ -120,10 +120,43 @@ def promote_techne_knowledge(
     conn = sqlite3.connect(str(techne_db))
     conn.row_factory = sqlite3.Row
     try:
+        # Honour techne's status vocabulary. The destination is WRITE-ONLY —
+        # export_corpus never deletes and ArchivistStore has no delete — so an
+        # entry published here cannot be withdrawn by any code path. Selection
+        # therefore FAILS CLOSED: an ALLOWLIST of `current`, not a denylist of
+        # `archived`.
+        #
+        # A denylist publishes every status techne adds later by default. It
+        # also already leaked one: `uncertain`, set by techne's doubt-cascade
+        # (_cascade_uncertain) when an entry's supporting knowledge is
+        # contradicted, and carrying UNCERTAIN_CONFIDENCE_PENALTY = 0.5. Those
+        # were reaching the shared corpus at FULL un-penalised importance,
+        # because the row below reads raw confidence_numeric rather than
+        # techne's effective (decayed) confidence. An entry techne itself has
+        # flagged as no-longer-trustworthy is exactly what should not be
+        # published somewhere unretractable.
+        #
+        # Probed rather than assumed: this reads an ARBITRARY agent's techne db,
+        # and `status` post-dates the original schema. A hard reference would
+        # raise OperationalError on an older peer's store, turning a best-effort
+        # sync into a hard failure — a worse outcome than promoting a superset.
+        #
+        # NULL is treated as `current`, deliberately, and it is NOT the same
+        # decision as the allowlist above. A NULL means the row predates or
+        # ignores the concept — the same situation as the absent column, which
+        # also promotes. Without this, `status = 'current'` is NULL-propagating:
+        # a store whose column was added without a default would promote NOTHING
+        # AT ALL, silently, and a silent no-op is the failure mode this whole
+        # change exists to remove. Fail closed on unknown VALUES; fail open on
+        # an absent CONCEPT.
+        has_status = any(
+            r["name"] == "status" for r in conn.execute("PRAGMA table_info(knowledge)")
+        )
+        archived_clause = " AND (status IS NULL OR status = 'current')" if has_status else ""
         rows = conn.execute(
-            """SELECT id, type, content, tags, source, confidence_numeric
+            f"""SELECT id, type, content, tags, source, confidence_numeric
                FROM knowledge
-               WHERE superseded_by IS NULL
+               WHERE superseded_by IS NULL{archived_clause}
                ORDER BY id"""
         ).fetchall()
     finally:
