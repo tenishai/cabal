@@ -135,9 +135,9 @@ resolved `AgentRow`) and sets `aud` accordingly. This is the one change outside 
 router; everything else composes.
 
 > Net: the calling agent's **home-cabal JWT** (iss = this cabal, aud = sovereign id,
-> persona/sub = the agent) is what reaches the sovereign limenal — exactly the input
+> persona/sub = the agent) is what reaches the sovereign liminal — exactly the input
 > `MultiIssuerJWKSVerifier` + `PolicyStore` expect (see
-> `limenal/docs/proposals/multi-issuer-trust-registry.md`).
+> `liminal/docs/proposals/multi-issuer-trust-registry.md`).
 
 ---
 
@@ -147,8 +147,8 @@ router; everything else composes.
   mints the sovereign service identity + audience, then calls `register_federated`
   to write the `federated` row (replacing/superseding any `member` row for that
   name), and triggers a persona-factory reload so the local handler is dropped
-  (2a). Stands up the sovereign limenal's trust registry + seeds the parent policy
-  row (that half lives in the limenal spec).
+  (2a). Stands up the sovereign liminal's trust registry + seeds the parent policy
+  row (that half lives in the liminal spec).
 - **`cbl persona absorb <name>`** → the inverse: `mark_retired` the `federated`
   row, restore the `member` registration on reload. Data re-absorption (pulling the
   techne store back) is a separate migration step, flagged in the design doc.

@@ -30,7 +30,7 @@ from cabal.core.llm.litellm_client import LiteLLMClient
 
 
 class _FakeOutcome:
-    """Minimal duck-typed ToolCallOutcome (no limenal dependency)."""
+    """Minimal duck-typed ToolCallOutcome (no liminal dependency)."""
 
     def __init__(self, text: str, *, is_error: bool = False) -> None:
         self.content = [{"type": "text", "text": text}]

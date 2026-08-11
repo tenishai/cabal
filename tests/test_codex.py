@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("limenal")
+pytest.importorskip("liminal")
 pytest.importorskip("techne")
 
-from limenal.protocol import Context  # noqa: E402
+from liminal.protocol import Context  # noqa: E402
 
 from cabal.codex import CodeRepo, RepoIndexer  # noqa: E402
 from cabal.codex.blame import (  # noqa: E402

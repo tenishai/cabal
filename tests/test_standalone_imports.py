@@ -1,7 +1,7 @@
 """Standalone-evaluation tests: cabal imports cleanly without optional extras.
 
 cabal#1 mandates that `import cabal` (and importing any cabal submodule)
-must NOT require limenal or techne to be installed. Personas with [mcp]
+must NOT require liminal or techne to be installed. Personas with [mcp]
 or [memory] config still need them, but the cabal core itself is
 backend-agnostic.
 """
@@ -16,31 +16,31 @@ import pytest
 
 
 @pytest.fixture
-def block_limenal(monkeypatch):
-    """Make any future `import limenal` fail. Existing references stay valid."""
-    # Wipe limenal from sys.modules so a fresh import is required.
+def block_liminal(monkeypatch):
+    """Make any future `import liminal` fail. Existing references stay valid."""
+    # Wipe liminal from sys.modules so a fresh import is required.
     for mod in list(sys.modules):
-        if mod == "limenal" or mod.startswith("limenal."):
+        if mod == "liminal" or mod.startswith("liminal."):
             del sys.modules[mod]
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
-        if name == "limenal" or name.startswith("limenal."):
-            raise ImportError(f"limenal blocked in test: {name}")
+        if name == "liminal" or name.startswith("liminal."):
+            raise ImportError(f"liminal blocked in test: {name}")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
 
-def test_import_cabal_without_limenal(block_limenal) -> None:
-    """`import cabal` must succeed even when limenal is not installed."""
+def test_import_cabal_without_liminal(block_liminal) -> None:
+    """`import cabal` must succeed even when liminal is not installed."""
     if "cabal" in sys.modules:
         del sys.modules["cabal"]
     importlib.import_module("cabal")
 
 
-def test_import_mcp_proxy_module_without_limenal(block_limenal) -> None:
-    """The mcp_proxy module itself must be importable even without limenal.
+def test_import_mcp_proxy_module_without_liminal(block_liminal) -> None:
+    """The mcp_proxy module itself must be importable even without liminal.
     Only the runtime helpers raise ImportError when actually invoked."""
     # Wipe + reimport so the module's top-level code re-runs under the block
     for mod in list(sys.modules):
@@ -49,7 +49,7 @@ def test_import_mcp_proxy_module_without_limenal(block_limenal) -> None:
     importlib.import_module("cabal.core.tools.mcp_proxy")
 
 
-def test_build_proxy_raises_clear_error_without_limenal(block_limenal) -> None:
+def test_build_proxy_raises_clear_error_without_liminal(block_liminal) -> None:
     """The runtime helper points operators at the right install command."""
     for mod in list(sys.modules):
         if mod.endswith("mcp_proxy"):

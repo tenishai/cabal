@@ -1,7 +1,7 @@
 """Git-backed team-memory sync (Phase 2): two agents converge through a git hub.
 
 Uses a local bare repo as the 'remote' — real git, no network. Store-level only
-(no limenal).
+(no liminal).
 """
 
 from __future__ import annotations

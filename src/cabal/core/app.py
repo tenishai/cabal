@@ -249,7 +249,7 @@ def create_app(
 
         # Agent data-root: where cabal-owned, provisioned resources live. Relative
         # cabal.data_dir anchors at the identity.toml dir (agent root != user home,
-        # techne#441). Resolved in core so it holds with or without limenal.
+        # techne#441). Resolved in core so it holds with or without liminal.
         data_dir = resolve_data_dir(identity, config_path_obj)
         _app.state.data_dir = data_dir
         log.info("cabal.data_dir", path=str(data_dir))
@@ -342,22 +342,22 @@ def create_app(
             litellm_client.abort_coordinator = dispatch_router.abort_coordinator
             _app.state.litellm_client = litellm_client
 
-            # If [limenal] is configured, build a shared httpx.AsyncClient
+            # If [liminal] is configured, build a shared httpx.AsyncClient
             # for outbound MCP calls and pre-fetch the active signing key
             # so persona_factory can mint per-persona JWTs.
             mcp_http_client: httpx.AsyncClient | None = None
             stored_signing_key = None
-            if identity.limenal.url:
-                # Fail fast at startup if limenal is missing — beats a
+            if identity.liminal.url:
+                # Fail fast at startup if liminal is missing — beats a
                 # confusing error on first dispatch hours later.
                 try:
-                    import limenal  # noqa: F401  # availability check
+                    import liminal  # noqa: F401  # availability check
                 except ImportError as exc:
                     raise RuntimeError(
-                        "identity.toml configures `[limenal] url = "
-                        f"{identity.limenal.url!r}` but the limenal package "
+                        "identity.toml configures `[liminal] url = "
+                        f"{identity.liminal.url!r}` but the liminal package "
                         "is not installed. Run `pip install cabal[mcp]` "
-                        "(or `pip install -e ../limenal` for the "
+                        "(or `pip install -e ../liminal` for the "
                         "sibling-checkout dev layout)."
                     ) from exc
                 mcp_http_client = httpx.AsyncClient(timeout=httpx.Timeout(60.0))
@@ -367,7 +367,7 @@ def create_app(
                         session, master_key=master_key
                     )
                 _app.state.mcp_signing_key = stored_signing_key
-                log.info("limenal.wired", url=identity.limenal.url)
+                log.info("liminal.wired", url=identity.liminal.url)
 
             from cabal.core.persona_factory import register_personas_from_identity
 

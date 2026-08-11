@@ -1,6 +1,6 @@
 """patterns — Architect's pattern-corpus read interface.
 
-Cabal-shipped limenal handler. Exposes the techne Architect pattern
+Cabal-shipped liminal handler. Exposes the techne Architect pattern
 store (`architect.db`, techne#87/#137) as MCP tools any agent (the
 Architect persona, Claude Code via MCP, third-party clients) can call.
 
@@ -16,7 +16,7 @@ Tools:
 
 Lazy-imports techne — handler module loads without techne installed;
 dispatch fails with a structured "techne not installed" message when
-the user calls a tool. Same shape as limenal/handlers/memory.py.
+the user calls a tool. Same shape as liminal/handlers/memory.py.
 
 Configured per-persona via `ctx.extra["patterns.db_path"]` (point it at
 architect.db). Falls back to `default_config.db_path` (operator-set)
@@ -33,7 +33,7 @@ from typing import Any
 
 import anyio
 import structlog
-from limenal.protocol import Context, Handler, ToolResult, ToolSpec
+from liminal.protocol import Context, Handler, ToolResult, ToolSpec
 
 log = structlog.get_logger(__name__)
 
@@ -108,7 +108,7 @@ class PatternsHandler:
                 name="record",
                 description=(
                     "Record a new architectural pattern. Operator scope required "
-                    "(checked by the limenal route layer)."
+                    "(checked by the liminal route layer)."
                 ),
                 input_schema={
                     "type": "object",
@@ -276,7 +276,7 @@ def get_handler() -> Handler:
     """Entry-point factory for the patterns handler.
 
     Reads ``CABAL_ARCHITECT_DB`` from the environment (if set) to wire the
-    served handler's fallback corpus path, so ``limenal serve`` can point at
+    served handler's fallback corpus path, so ``liminal serve`` can point at
     a fixed ``architect.db`` without every caller supplying it per-call. A
     per-persona ``ctx.extra['patterns.db_path']`` still overrides it.
     """

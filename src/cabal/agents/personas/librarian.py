@@ -1,7 +1,7 @@
 """Librarian — external-documentation lookup singleton.
 
 System prompt for fetching, summarizing, and citing external docs.
-Phase 1 answers from training data; Phase 2 adds WebFetch via limenal so
+Phase 1 answers from training data; Phase 2 adds WebFetch via liminal so
 Librarian's answers carry real citations and current information.
 """
 

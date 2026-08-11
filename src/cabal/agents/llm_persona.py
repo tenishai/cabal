@@ -713,7 +713,7 @@ def _extend_with_tool_calls(
 
 
 def _outcome_to_chat_content(outcome: Any) -> str:
-    """Turn a limenal ToolCallOutcome into a single string the model
+    """Turn a liminal ToolCallOutcome into a single string the model
     can read in the tool-result message slot."""
     import json as _json
 

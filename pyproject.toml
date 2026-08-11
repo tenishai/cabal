@@ -29,18 +29,18 @@ dependencies = [
     "httpx>=0.27",
     "structlog>=24.4",
     "tomli>=2.0;python_version<'3.13'",
-    # techne + limenal are optional extras (see [project.optional-dependencies]
+    # techne + liminal are optional extras (see [project.optional-dependencies]
     # below: `mcp`, `memory`, `full`). Neither is on a public index; the concrete
     # git sources are pinned in `requirements-sources.txt` for clean-machine
-    # installs. Dev/CI keep editable sibling checkouts (`-e ../techne -e ../limenal`; D-008).
+    # installs. Dev/CI keep editable sibling checkouts (`-e ../techne -e ../liminal`; D-008).
 ]
 
 [project.optional-dependencies]
-# `mcp` pulls in limenal so personas with `[mcp].enabled = true` in
-# identity.toml can connect to a limenal gateway. Without this extra,
+# `mcp` pulls in liminal so personas with `[mcp].enabled = true` in
+# identity.toml can connect to a liminal gateway. Without this extra,
 # cabal still runs — personas without an [mcp] block work fine; personas
 # with one fail at first dispatch with a clear "install cabal[mcp]" error.
-mcp = ["limenal>=0.1"]
+mcp = ["liminal>=0.1"]
 tui = ["textual>=1.0"]
 
 # `memory` pulls in techne for the Archivist persona + any persona that
@@ -49,7 +49,7 @@ tui = ["textual>=1.0"]
 memory = ["techne>=0.9.0"]
 
 # Everything wired together, for the canonical platform install.
-full = ["limenal>=0.1", "techne>=0.9.0"]
+full = ["liminal>=0.1", "techne>=0.9.0"]
 
 dev = [
     "pytest>=8.3",
@@ -70,11 +70,11 @@ dev = [
 cbl = "cabal.cli.main:app"
 cabal = "cabal.tui.main:app"
 
-# Cabal-shipped MCP handlers — limenal discovers them via this entry-point
-# group when limenal is installed alongside cabal. Each handler exposes a
+# Cabal-shipped MCP handlers — liminal discovers them via this entry-point
+# group when liminal is installed alongside cabal. Each handler exposes a
 # slice of cabal's substrate (Architect's patterns corpus today, more
-# personas to follow) through limenal's standard wire protocol.
-[project.entry-points."limenal.handlers"]
+# personas to follow) through liminal's standard wire protocol.
+[project.entry-points."liminal.handlers"]
 patterns = "cabal.handlers.patterns:get_handler"
 documents = "cabal.handlers.documents:get_handler"
 code = "cabal.handlers.code:get_handler"

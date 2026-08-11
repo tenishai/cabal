@@ -1,7 +1,7 @@
 """Phase II — `POST /admin/token/mint-service` + `cbl token mint-service` CLI.
 
 The endpoint mints a long-lived JWT operators give to a peer service
-(limenal is the canonical first consumer) so it can call back into Cabal
+(liminal is the canonical first consumer) so it can call back into Cabal
 for credential resolution.
 """
 
@@ -39,7 +39,7 @@ async def test_mint_service_returns_a_verifiable_jwt(
     r = await client.post(
         "/admin/token/mint-service",
         json={
-            "sub": "service:limenal",
+            "sub": "service:liminal",
             "scope": ["secrets-fetch"],
             "aud": "cabal-core",
             "ttl_days": 30,
@@ -48,16 +48,16 @@ async def test_mint_service_returns_a_verifiable_jwt(
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["sub"] == "service:limenal"
+    assert body["sub"] == "service:liminal"
     assert body["scope"] == ["secrets-fetch"]
     assert body["aud"] == "cabal-core"
     assert "access_token" in body
 
     # Verify against the active JWKS so the operator can be confident the
-    # token is valid against the same surface limenal will check.
+    # token is valid against the same surface liminal will check.
     key_set = app.state.jwks_provider()
     decoded = jwt.decode(body["access_token"], key_set)
-    assert decoded.claims["sub"] == "service:limenal"
+    assert decoded.claims["sub"] == "service:liminal"
     assert decoded.claims["cabal_scope"] == ["secrets-fetch"]
     # 30 days from now-ish
     now = int(time.time())
@@ -77,7 +77,7 @@ async def test_minted_service_token_passes_secrets_endpoint_auth(
     mint_r = await client.post(
         "/admin/token/mint-service",
         json={
-            "sub": "service:limenal",
+            "sub": "service:liminal",
             "scope": ["secrets-fetch"],
             "aud": "cabal-core",
             "ttl_days": 7,
@@ -116,7 +116,7 @@ async def test_mint_service_requires_operator_scope(
     r = await client.post(
         "/admin/token/mint-service",
         json={
-            "sub": "service:limenal",
+            "sub": "service:liminal",
             "scope": ["secrets-fetch"],
             "aud": "cabal-core",
             "ttl_days": 30,

@@ -34,16 +34,16 @@ host = "https://cloud.langfuse.com"
 public_key_env = "LANGFUSE_PUBLIC_KEY"
 secret_key_env = "LANGFUSE_SECRET_KEY"
 
-# ----- MCP gateway (limenal, optional) -----
+# ----- MCP gateway (liminal, optional) -----
 # When url is set AND a persona has [personas.NAME.mcp].enabled=true,
-# that persona's handler arrives with an MCPToolProxy wired to limenal.
+# that persona's handler arrives with an MCPToolProxy wired to liminal.
 # Cabal mints a per-request JWT signed with its active signing key;
-# limenal verifies against /.well-known/jwks.json on cabal-core.
+# liminal verifies against /.well-known/jwks.json on cabal-core.
 
-[limenal]
-url = "http://limenal:9100"
+[liminal]
+url = "http://liminal:9100"
 token_ttl_seconds = 3600
-jwt_aud = "limenal"
+jwt_aud = "liminal"
 
 # ----- Singletons (built-in personas) -----
 # Each persona declared here gets a bulletin-board row at daemon startup.
@@ -57,27 +57,27 @@ description = "Memory and search"
 role = "singleton"
 safety_tier = "moderate"
 
-# Archivist opts into limenal's tool surface (memory lookups, web fetch,
-# files, etc. — whatever limenal's registry serves). With [limenal]
+# Archivist opts into liminal's tool surface (memory lookups, web fetch,
+# files, etc. — whatever liminal's registry serves). With [liminal]
 # configured above AND this enabled flag, the archivist handler is wired
 # with a MCPToolProxy at startup; subsequent LLM calls get tools=... and
-# the persona can issue tool_calls that route through limenal.
+# the persona can issue tool_calls that route through liminal.
 [personas.archivist.mcp]
 enabled = true
 # max_steps = 4  # uncomment to override LLMPersona's default tool-use cap
-# Which limenal handlers this persona can see + call. Omit (or set to
-# null) for "unrestricted" (every handler limenal serves is reachable).
+# Which liminal handlers this persona can see + call. Omit (or set to
+# null) for "unrestricted" (every handler liminal serves is reachable).
 # An empty list `[]` is meaningful too: revokes all tool access without
-# disabling mcp.enabled. Folds into cabal_tool_extras["limenal.allowed_handlers"]
-# at JWT-mint time; limenal filters tools/list AND refuses tools/call
+# disabling mcp.enabled. Folds into cabal_tool_extras["liminal.allowed_handlers"]
+# at JWT-mint time; liminal filters tools/list AND refuses tools/call
 # accordingly.
 allowed_handlers = ["memory", "notify"]
 
-# Per-persona scoping config forwarded to limenal as Context.extra. The
+# Per-persona scoping config forwarded to liminal as Context.extra. The
 # key names are the handler-author's contract (web reads
 # `web.allowed_hosts`, files reads `files.allowed_paths`, memory reads
 # `memory.db_path`). Anything in this table flows verbatim into the JWT
-# `cabal_tool_extras` claim limenal extracts.
+# `cabal_tool_extras` claim liminal extracts.
 [personas.archivist.mcp.tool_extras]
 "web.allowed_hosts" = ["docs.python.org", "*.example.com"]
 # "files.allowed_paths" = ["~/notes/archivist"]

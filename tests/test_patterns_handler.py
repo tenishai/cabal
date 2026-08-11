@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("limenal")
+pytest.importorskip("liminal")
 pytest.importorskip("techne")
 
-from limenal.protocol import Context  # noqa: E402
+from liminal.protocol import Context  # noqa: E402
 
 from cabal.handlers.patterns import PatternsHandler  # noqa: E402
 
@@ -237,7 +237,7 @@ def test_get_handler_factory_returns_patterns_handler() -> None:
 def test_get_handler_reads_env_db_path(monkeypatch, tmp_path: Path) -> None:
     """CABAL_ARCHITECT_DB seeds default_config.db_path; unset/empty → None.
 
-    This is the env-config branch that lets `limenal serve` point the patterns
+    This is the env-config branch that lets `liminal serve` point the patterns
     handler at a fixed architect.db — the reason the commit exists (Prudence #101).
     """
     from cabal.handlers.patterns import get_handler

@@ -10,7 +10,7 @@ Librarian orchestrates ingest into the techne knowledge corpus under
 Ships with the filesystem adapter today. Future adapters (GitHub repo
 walks, Confluence REST, Jira REST) drop in by implementing the
 SourceAdapter protocol and registering via entry-point — same shape
-as limenal handlers.
+as liminal handlers.
 
 Read interface: cabal.handlers.documents (the MCP handler).
 """

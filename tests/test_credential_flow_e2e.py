@@ -1,6 +1,6 @@
 """Phase OO — cross-service credential flow end-to-end.
 
-Cabal stores a secret → limenal resolver fetches it → handler gets it.
+Cabal stores a secret → liminal resolver fetches it → handler gets it.
 
 Both services run in-process via httpx.ASGITransport — zero real network
 calls, but the full HTTP path runs: cabal route → DB decrypt → JSON body
@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-pytest.importorskip("limenal")
+pytest.importorskip("liminal")
 
 from typing import Any
 
@@ -45,7 +45,7 @@ async def _mint_service_token(
     r = await client.post(
         "/admin/token/mint-service",
         json={
-            "sub": "service:limenal",
+            "sub": "service:liminal",
             "scope": scope,
             "aud": "cabal-core",
             "ttl_days": 1,
@@ -63,14 +63,14 @@ async def _mint_service_token(
 async def test_secret_flows_from_cabal_to_handler(
     app: FastAPI, client: AsyncClient
 ) -> None:
-    """Full round-trip: secret stored in Cabal → fetched by limenal resolver
+    """Full round-trip: secret stored in Cabal → fetched by liminal resolver
     → arrives in handler's ctx.credentials."""
-    from limenal.protocol import Context, ToolResult, ToolSpec
-    from limenal.registry import Registry
-    from limenal.registry.discover import register_explicit
-    from limenal.server import StaticKeySetVerifier
-    from limenal.server import create_app as limenal_create_app
-    from limenal.server.credentials import CabalCoreCredentialResolver
+    from liminal.protocol import Context, ToolResult, ToolSpec
+    from liminal.registry import Registry
+    from liminal.registry.discover import register_explicit
+    from liminal.server import StaticKeySetVerifier
+    from liminal.server import create_app as liminal_create_app
+    from liminal.server.credentials import CabalCoreCredentialResolver
 
     from cabal.core.auth.jwt import mint as _mint_jwt
     from cabal.core.auth.keys import load_active_signing_key
@@ -85,7 +85,7 @@ async def test_secret_flows_from_cabal_to_handler(
     )
     assert r.status_code == 200, r.text
 
-    # 2. Mint a secrets-fetch service token for limenal.
+    # 2. Mint a secrets-fetch service token for liminal.
     svc_token = await _mint_service_token(client, op_token, scope=["secrets-fetch"])
 
     # 3. Wire CabalCoreCredentialResolver to in-process cabal.
@@ -108,12 +108,12 @@ async def test_secret_flows_from_cabal_to_handler(
     dispatch_token = _mint_jwt(
         signing_key=stored_key,
         sub="archivist",
-        aud="limenal",
+        aud="liminal",
         persona="archivist",
         scope=["dispatch"],
     )
 
-    # 5. Build a limenal app with an echo handler that returns ctx.credentials.
+    # 5. Build a liminal app with an echo handler that returns ctx.credentials.
     class _EchoCreds:
         name = "echo-creds"
 
@@ -136,18 +136,18 @@ async def test_secret_flows_from_cabal_to_handler(
 
     registry = Registry()
     register_explicit(registry, "echo-creds", _EchoCreds())
-    limenal_app = limenal_create_app(
+    liminal_app = liminal_create_app(
         jwt_verifier=StaticKeySetVerifier(key_set=app.state.jwks_provider()),
         registry=registry,
         credential_resolver=resolver.fetch,
     )
 
-    # 6. Call tools/call through limenal.
-    limenal_transport = ASGITransport(app=limenal_app)
+    # 6. Call tools/call through liminal.
+    liminal_transport = ASGITransport(app=liminal_app)
     async with httpx.AsyncClient(
-        transport=limenal_transport, base_url="http://limenal-test"
-    ) as limenal_client:
-        r = await limenal_client.post(
+        transport=liminal_transport, base_url="http://liminal-test"
+    ) as liminal_client:
+        r = await liminal_client.post(
             "/mcp",
             json={
                 "jsonrpc": "2.0",
@@ -173,12 +173,12 @@ async def test_multiple_secrets_all_flow_through(
     app: FastAPI, client: AsyncClient
 ) -> None:
     """All keys stored for (persona, handler) arrive together in ctx.credentials."""
-    from limenal.protocol import Context, ToolResult, ToolSpec
-    from limenal.registry import Registry
-    from limenal.registry.discover import register_explicit
-    from limenal.server import StaticKeySetVerifier
-    from limenal.server import create_app as limenal_create_app
-    from limenal.server.credentials import CabalCoreCredentialResolver
+    from liminal.protocol import Context, ToolResult, ToolSpec
+    from liminal.registry import Registry
+    from liminal.registry.discover import register_explicit
+    from liminal.server import StaticKeySetVerifier
+    from liminal.server import create_app as liminal_create_app
+    from liminal.server.credentials import CabalCoreCredentialResolver
 
     from cabal.core.auth.jwt import mint as _mint_jwt
     from cabal.core.auth.keys import load_active_signing_key
@@ -216,7 +216,7 @@ async def test_multiple_secrets_all_flow_through(
     dispatch_token = _mint_jwt(
         signing_key=stored_key,
         sub="mason-primus",
-        aud="limenal",
+        aud="liminal",
         persona="mason",
         scope=["dispatch"],
     )
@@ -239,17 +239,17 @@ async def test_multiple_secrets_all_flow_through(
 
     registry = Registry()
     register_explicit(registry, "echo-creds", _EchoCreds())
-    limenal_app = limenal_create_app(
+    liminal_app = liminal_create_app(
         jwt_verifier=StaticKeySetVerifier(key_set=app.state.jwks_provider()),
         registry=registry,
         credential_resolver=resolver.fetch,
     )
 
-    limenal_transport = ASGITransport(app=limenal_app)
+    liminal_transport = ASGITransport(app=liminal_app)
     async with httpx.AsyncClient(
-        transport=limenal_transport, base_url="http://limenal-test"
-    ) as limenal_client:
-        r = await limenal_client.post(
+        transport=liminal_transport, base_url="http://liminal-test"
+    ) as liminal_client:
+        r = await liminal_client.post(
             "/mcp",
             json={
                 "jsonrpc": "2.0",
@@ -274,12 +274,12 @@ async def test_persona_isolation_different_personas_different_creds(
 ) -> None:
     """mason/notify and archivist/notify have separate credential sets; each
     persona's token only retrieves its own secrets."""
-    from limenal.protocol import Context, ToolResult, ToolSpec
-    from limenal.registry import Registry
-    from limenal.registry.discover import register_explicit
-    from limenal.server import StaticKeySetVerifier
-    from limenal.server import create_app as limenal_create_app
-    from limenal.server.credentials import CabalCoreCredentialResolver
+    from liminal.protocol import Context, ToolResult, ToolSpec
+    from liminal.registry import Registry
+    from liminal.registry.discover import register_explicit
+    from liminal.server import StaticKeySetVerifier
+    from liminal.server import create_app as liminal_create_app
+    from liminal.server.credentials import CabalCoreCredentialResolver
 
     from cabal.core.auth.jwt import mint as _mint_jwt
     from cabal.core.auth.keys import load_active_signing_key
@@ -333,7 +333,7 @@ async def test_persona_isolation_different_personas_different_creds(
 
     registry = Registry()
     register_explicit(registry, "echo-creds", _EchoCreds())
-    limenal_app = limenal_create_app(
+    liminal_app = liminal_create_app(
         jwt_verifier=StaticKeySetVerifier(key_set=app.state.jwks_provider()),
         registry=registry,
         credential_resolver=resolver.fetch,
@@ -343,13 +343,13 @@ async def test_persona_isolation_different_personas_different_creds(
         token = _mint_jwt(
             signing_key=stored_key,
             sub=sub,
-            aud="limenal",
+            aud="liminal",
             persona=persona,
             scope=["dispatch"],
         )
-        limenal_transport = ASGITransport(app=limenal_app)
+        liminal_transport = ASGITransport(app=liminal_app)
         async with httpx.AsyncClient(
-            transport=limenal_transport, base_url="http://limenal-test"
+            transport=liminal_transport, base_url="http://liminal-test"
         ) as lc:
             r = await lc.post(
                 "/mcp",
@@ -379,12 +379,12 @@ async def test_cabal_unreachable_yields_empty_creds_not_error(
     app: FastAPI, client: AsyncClient
 ) -> None:
     """If Cabal Core is unreachable the handler gets {} not an exception."""
-    from limenal.protocol import Context, ToolResult, ToolSpec
-    from limenal.registry import Registry
-    from limenal.registry.discover import register_explicit
-    from limenal.server import StaticKeySetVerifier
-    from limenal.server import create_app as limenal_create_app
-    from limenal.server.credentials import CabalCoreCredentialResolver
+    from liminal.protocol import Context, ToolResult, ToolSpec
+    from liminal.registry import Registry
+    from liminal.registry.discover import register_explicit
+    from liminal.server import StaticKeySetVerifier
+    from liminal.server import create_app as liminal_create_app
+    from liminal.server.credentials import CabalCoreCredentialResolver
 
     from cabal.core.auth.jwt import mint as _mint_jwt
     from cabal.core.auth.keys import load_active_signing_key
@@ -411,7 +411,7 @@ async def test_cabal_unreachable_yields_empty_creds_not_error(
     dispatch_token = _mint_jwt(
         signing_key=stored_key,
         sub="archivist",
-        aud="limenal",
+        aud="liminal",
         persona="archivist",
         scope=["dispatch"],
     )
@@ -434,17 +434,17 @@ async def test_cabal_unreachable_yields_empty_creds_not_error(
 
     registry = Registry()
     register_explicit(registry, "echo-creds", _EchoCreds())
-    limenal_app = limenal_create_app(
+    liminal_app = liminal_create_app(
         jwt_verifier=StaticKeySetVerifier(key_set=app.state.jwks_provider()),
         registry=registry,
         credential_resolver=resolver.fetch,
     )
 
-    limenal_transport = ASGITransport(app=limenal_app)
+    liminal_transport = ASGITransport(app=liminal_app)
     async with httpx.AsyncClient(
-        transport=limenal_transport, base_url="http://limenal-test"
-    ) as limenal_client:
-        r = await limenal_client.post(
+        transport=liminal_transport, base_url="http://liminal-test"
+    ) as liminal_client:
+        r = await liminal_client.post(
             "/mcp",
             json={
                 "jsonrpc": "2.0",
@@ -468,14 +468,14 @@ async def test_cabal_unreachable_yields_empty_creds_not_error(
 async def test_resolver_cache_hit_reuses_value(
     app: FastAPI, client: AsyncClient
 ) -> None:
-    """Two limenal calls for the same (persona, handler) only fetch from
+    """Two liminal calls for the same (persona, handler) only fetch from
     Cabal once (TTL has not expired)."""
-    from limenal.protocol import Context, ToolResult, ToolSpec
-    from limenal.registry import Registry
-    from limenal.registry.discover import register_explicit
-    from limenal.server import StaticKeySetVerifier
-    from limenal.server import create_app as limenal_create_app
-    from limenal.server.credentials import CabalCoreCredentialResolver
+    from liminal.protocol import Context, ToolResult, ToolSpec
+    from liminal.registry import Registry
+    from liminal.registry.discover import register_explicit
+    from liminal.server import StaticKeySetVerifier
+    from liminal.server import create_app as liminal_create_app
+    from liminal.server.credentials import CabalCoreCredentialResolver
 
     from cabal.core.auth.jwt import mint as _mint_jwt
     from cabal.core.auth.keys import load_active_signing_key
@@ -530,7 +530,7 @@ async def test_resolver_cache_hit_reuses_value(
 
     registry = Registry()
     register_explicit(registry, "echo-creds", _EchoCreds())
-    limenal_app = limenal_create_app(
+    liminal_app = liminal_create_app(
         jwt_verifier=StaticKeySetVerifier(key_set=app.state.jwks_provider()),
         registry=registry,
         credential_resolver=resolver.fetch,
@@ -540,13 +540,13 @@ async def test_resolver_cache_hit_reuses_value(
         token = _mint_jwt(
             signing_key=stored_key,
             sub="archivist",
-            aud="limenal",
+            aud="liminal",
             persona="archivist",
             scope=["dispatch"],
         )
-        limenal_transport = ASGITransport(app=limenal_app)
+        liminal_transport = ASGITransport(app=liminal_app)
         async with httpx.AsyncClient(
-            transport=limenal_transport, base_url="http://limenal-test"
+            transport=liminal_transport, base_url="http://liminal-test"
         ) as lc:
             r = await lc.post(
                 "/mcp",

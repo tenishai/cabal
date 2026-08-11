@@ -60,7 +60,7 @@ Have each activity entry carry `{id, parentId}` (parent = the previous entry in 
 
 ### B3 — Hook veto/mutate protocol — **medium; enables in-process tool policy**
 
-cabal's hooks are pure side-effects today; no hook can veto or mutate a tool call (harness map §4). Borrow pi's `tool_call` return protocol: let a `TOOL_USE` (pre) handler return `{block, reason}` or a patched-args object; let a post handler patch the result. **Independence angle:** this lets cabal gate/redact/dry-run tools *in-process, without limenal* — defense-in-depth alongside limenal's server-side JWT `allowed_handlers`, and a working tool-policy story when cabal runs standalone. Requires giving `registry.fire()` a return-value contract (currently returns `None`).
+cabal's hooks are pure side-effects today; no hook can veto or mutate a tool call (harness map §4). Borrow pi's `tool_call` return protocol: let a `TOOL_USE` (pre) handler return `{block, reason}` or a patched-args object; let a post handler patch the result. **Independence angle:** this lets cabal gate/redact/dry-run tools *in-process, without liminal* — defense-in-depth alongside liminal's server-side JWT `allowed_handlers`, and a working tool-policy story when cabal runs standalone. Requires giving `registry.fire()` a return-value contract (currently returns `None`).
 
 ### B4 — Token + cost on every `llm_call` record — **cheap, high-value for accounting**
 

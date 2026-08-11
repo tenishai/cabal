@@ -42,7 +42,7 @@ graph TB
     %% ===== Per-agent substrate =====
     subgraph PerAgent["Per-agent substrate (inside every persona)"]
         direction TB
-        LIM["limenal<br/>MCP gateway + tool scoping"]
+        LIM["liminal<br/>MCP gateway + tool scoping"]
         TEC[("techne<br/>memory + session checkpoints")]
         LLMCLI["LiteLLM client<br/>circuit breaker + budget"]
     end
@@ -131,7 +131,7 @@ faces: A2A for synthesis dispatches and MCP for cheap shallow retrieval that
 bypasses the LLM.
 
 **Per-agent substrate.** Every persona container (and the solo-mode in-process
-equivalent) ships the same three pieces: **limenal** as the MCP gateway and
+equivalent) ships the same three pieces: **liminal** as the MCP gateway and
 tool-scoping runtime, **techne** as agent-local memory + session checkpoints,
 and the **LiteLLM client** wrapper with a single-probe circuit breaker and
 budget reservation. Identical inside project personas and singleton personas.

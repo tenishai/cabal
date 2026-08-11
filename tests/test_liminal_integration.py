@@ -1,14 +1,14 @@
-"""End-to-end: Cabal persona uses limenal MCP gateway.
+"""End-to-end: Cabal persona uses liminal MCP gateway.
 
-Spins up a real limenal FastAPI app (in-process via httpx.ASGITransport),
+Spins up a real liminal FastAPI app (in-process via httpx.ASGITransport),
 wires Cabal's MCPToolProxy to it with a token_provider that mints JWTs
 using Cabal's own active signing key, dispatches through an LLMPersona
 that returns a tool_use intent on its first response and a final answer
 on its second.
 
 This is the proof that the whole platform works: a persona on Cabal's
-side gets a tool call routed through limenal, executes against
-limenal's scratchpad handler, and the result lands back in the LLM
+side gets a tool call routed through liminal, executes against
+liminal's scratchpad handler, and the result lands back in the LLM
 conversation.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
-pytest.importorskip("limenal")
+pytest.importorskip("liminal")
 from cryptography.hazmat.primitives import serialization
 from joserfc.jwk import KeySet, RSAKey
 
@@ -35,7 +35,7 @@ from cabal.core.tools.mcp_proxy import MCPToolProxy, build_proxy
 
 @pytest.fixture
 def cabal_signing_key() -> StoredKey:
-    """A signing key Cabal mints with, exported as a KeySet so limenal
+    """A signing key Cabal mints with, exported as a KeySet so liminal
     can verify against it."""
     priv, _pub = generate_rsa_keypair()
     pem = priv.private_bytes(
@@ -53,53 +53,53 @@ def cabal_signing_key() -> StoredKey:
 
 
 @pytest.fixture
-def limenal_keyset(cabal_signing_key) -> KeySet:
+def liminal_keyset(cabal_signing_key) -> KeySet:
     return KeySet.import_key_set({"keys": [cabal_signing_key.public_jwk]})
 
 
 @pytest.fixture
-def limenal_app(limenal_keyset):
-    """A real limenal FastAPI app verifying against Cabal's signing key."""
-    from limenal.handlers.scratchpad import ScratchpadHandler
-    from limenal.registry import Registry
-    from limenal.registry.discover import register_explicit
-    from limenal.server import StaticKeySetVerifier, create_app
+def liminal_app(liminal_keyset):
+    """A real liminal FastAPI app verifying against Cabal's signing key."""
+    from liminal.handlers.scratchpad import ScratchpadHandler
+    from liminal.registry import Registry
+    from liminal.registry.discover import register_explicit
+    from liminal.server import StaticKeySetVerifier, create_app
 
     registry = Registry()
     register_explicit(registry, "scratchpad", ScratchpadHandler())
-    verifier = StaticKeySetVerifier(key_set=limenal_keyset)
+    verifier = StaticKeySetVerifier(key_set=liminal_keyset)
     return create_app(jwt_verifier=verifier, registry=registry)
 
 
 @pytest_asyncio.fixture
-async def limenal_http_client(limenal_app):
-    """httpx.AsyncClient pointing at the in-process limenal app via ASGI."""
-    transport = httpx.ASGITransport(app=limenal_app)
+async def liminal_http_client(liminal_app):
+    """httpx.AsyncClient pointing at the in-process liminal app via ASGI."""
+    transport = httpx.ASGITransport(app=liminal_app)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://limenal-test"
+        transport=transport, base_url="http://liminal-test"
     ) as c:
         yield c
 
 
 @pytest.fixture
-def tool_proxy(cabal_signing_key, limenal_http_client) -> MCPToolProxy:
-    """Cabal-side proxy talking to the in-process limenal."""
+def tool_proxy(cabal_signing_key, liminal_http_client) -> MCPToolProxy:
+    """Cabal-side proxy talking to the in-process liminal."""
     def token_provider() -> str:
         return mint_jwt(
             signing_key=cabal_signing_key,
             sub="archivist",
-            aud="limenal",
+            aud="liminal",
             persona="archivist",
             scope=["dispatch"],
             ttl_seconds=300,
         )
 
     return build_proxy(
-        base_url="http://limenal-test",
+        base_url="http://liminal-test",
         persona="archivist",
         agent_name="archivist",
         token_provider=token_provider,
-        http_client=limenal_http_client,
+        http_client=liminal_http_client,
     )
 
 
@@ -160,7 +160,7 @@ async def test_persona_loops_through_tool_use_and_returns_final_text(
     tool_proxy,
 ) -> None:
     """The big one: persona dispatches, LLM asks for a tool call,
-    proxy executes via limenal, LLM is re-invoked with the result,
+    proxy executes via liminal, LLM is re-invoked with the result,
     persona returns the final text."""
     fn = _llm_emits_tool_call_then_final(
         set_args={"key": "favorite_color", "value": "purple"},
