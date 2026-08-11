@@ -13,4 +13,4 @@
 #
 # Bump a pinned tag when you want consumers to pick up a new release.
 techne @ git+https://github.com/tenishai/techne.git@v0.9.0
-liminal @ git+https://github.com/tenishai/liminal.git@v0.1.0
+liminal @ git+https://github.com/tenishai/liminal.git@v0.2.0
