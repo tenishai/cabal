@@ -228,6 +228,20 @@ def register_personas_from_identity(
                 persona=persona_name,
                 liminal_url=identity.liminal.url,
             )
+        elif persona_cfg.mcp.enabled:
+            # The persona asked for a tool surface and did not get one. Without
+            # this branch the miss is silent: `_Open` is extra="allow", so an
+            # identity.toml still carrying the old misspelled `[limenal]`
+            # section is absorbed as an unknown key, `[liminal].url` falls back
+            # to None, and every persona comes up toolless with nothing in the
+            # logs. Report which precondition was missing.
+            log.warning(
+                "personas.mcp_skipped",
+                persona=persona_name,
+                liminal_url_set=bool(identity.liminal.url),
+                signing_key_set=signing_key is not None,
+                http_client_set=mcp_http_client is not None,
+            )
 
         dispatch_router.register_local(handler)
         # Register capability tags so cabal#3 late-binding dispatch can
