@@ -76,7 +76,7 @@ def mint(
 ) -> str:
     """Mint a JWT signed by `signing_key`.
 
-    `tool_extras` becomes the `cabal_tool_extras` claim — limenal forwards
+    `tool_extras` becomes the `cabal_tool_extras` claim — liminal forwards
     it into Context.extra so handlers can read per-persona scoping
     config. Defaults to None / omitted from payload when not provided.
     """

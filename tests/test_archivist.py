@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("limenal")
+pytest.importorskip("liminal")
 
-from limenal.protocol import Context  # noqa: E402
+from liminal.protocol import Context  # noqa: E402
 
 from cabal.archivist import ArchivistStore, Entry  # noqa: E402
 from cabal.handlers.archivist import ArchivistConfig, ArchivistHandler  # noqa: E402

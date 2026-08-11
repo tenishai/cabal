@@ -6,7 +6,7 @@ view from it, promotes its own learnings in, and pushes. Because entries are
 content-addressed files and supersession is append-only markers, git merges are pure
 unions — no conflicts — so N people share one converging brain.
 
-Uses the `git` CLI via subprocess; no extra deps. Limenal-free.
+Uses the `git` CLI via subprocess; no extra deps. Liminal-free.
 
     ensure_clone(remote, repo_dir)                clone the memory repo if absent
     pull(repo_dir, local_db)            -> store  fetch+merge, rebuild local SQLite

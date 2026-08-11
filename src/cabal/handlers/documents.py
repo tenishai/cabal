@@ -1,6 +1,6 @@
 """documents — Librarian's institutional-knowledge read interface.
 
-Cabal-shipped limenal handler. Exposes the Librarian's techne-backed
+Cabal-shipped liminal handler. Exposes the Librarian's techne-backed
 document corpus as MCP tools:
 
   documents.search(query, source?, kind?, top_k?)
@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from limenal.protocol import Context, Handler, ToolResult, ToolSpec
+from liminal.protocol import Context, Handler, ToolResult, ToolSpec
 
 from cabal.librarian import LibrarianStore, SourceAdapter
 
@@ -195,7 +195,7 @@ class DocumentsHandler:
             # Also accept operator scope conveyed via credentials map (fallback)
             if "operator" not in scope:
                 # No scope info available; tolerate when ctx is bare (library/test usage).
-                # In production this is enforced at the limenal route layer, which
+                # In production this is enforced at the liminal route layer, which
                 # rejects non-operator tokens before reaching here.
                 pass
         source_name = payload.get("source_name") or None

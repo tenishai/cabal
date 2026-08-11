@@ -16,10 +16,10 @@ hygiene pass. The end-to-end demo (`make demo`) runs cleanly with Docker Compose
 - **Full A2A dispatch loop** — submit a task via HTTP or CLI, get a completed
   Task back. In-process local dispatch and HTTP remote dispatch both work.
 - **JWT trust boundary** — audience + scope + RS256 algorithm pin enforced on
-  every inbound call. Operator tokens cannot impersonate limenal service tokens
+  every inbound call. Operator tokens cannot impersonate liminal service tokens
   and vice versa. `allow_dev_master_key` defaults to `False`.
-- **limenal integration** — personas that have `[mcp]` wired in their identity.toml
-  persona block get a `tool_proxy` that dispatches to limenal over JSON-RPC. The
+- **liminal integration** — personas that have `[mcp]` wired in their identity.toml
+  persona block get a `tool_proxy` that dispatches to liminal over JSON-RPC. The
   credential flow (`cbl secret set` → `/admin/secrets` → `ctx.credentials` in the
   handler) is complete and tested end-to-end.
 - **LLM personas** — `LLMPersona` wraps LiteLLM acompletion with tool-use loop,
@@ -27,7 +27,7 @@ hygiene pass. The end-to-end demo (`make demo`) runs cleanly with Docker Compose
 - **CLI** — `cbl` covers daemon, login, dispatch, token mint/list, secret set,
   persona reload, agent status.
 - **Docker Compose dev stack** — `make up / bootstrap / demo` runs the full
-  cabal + limenal stack; `make demo` is a 6-step smoke test that passes reliably.
+  cabal + liminal stack; `make demo` is a 6-step smoke test that passes reliably.
 
 ## Layout
 
@@ -49,21 +49,45 @@ compose/          identity.dev.toml, litellm-config.yaml, litestream.yml
 
 ## Quickstart (development)
 
-**Prerequisite**: clone `dimartin/techne` and `dimartin/limenal` as siblings:
+**Prerequisite**: clone `tenishai/techne` and `tenishai/liminal` as siblings:
 
 ```
 parent/
 ├── cabal/        # this repo
-├── limenal/      # github.com/dimartin/limenal
-└── techne/       # github.com/dimartin/techne
+├── liminal/      # github.com/tenishai/liminal
+└── techne/       # github.com/tenishai/techne
 ```
+
+> **Upgrading across the `limenal` → `liminal` rename**
+>
+> The gateway was previously misspelled `limenal`. If your checkout predates
+> the rename:
+>
+> 1. `pip uninstall limenal` before reinstalling. The distribution *name*
+>    changed, so pip treats the two as unrelated projects and leaves the old
+>    one in place — a stale editable finder pointing at the deleted
+>    `src/limenal/`, plus a `limenal` console script that now fails with an
+>    import traceback rather than "command not found". Fresh CI runners are
+>    unaffected, which is exactly why this bites only developer machines.
+> 2. Rename the sibling directory to `liminal` — `docker-compose.yml` builds
+>    it by path (`context: ../liminal`).
+> 3. Rename `[limenal]` to `[liminal]` in your **untracked** `identity.toml`.
+>    Nothing in the repo can do this for you, and the config model allows
+>    unknown keys, so a stale section is absorbed silently: `[liminal].url`
+>    falls back to `None` and every persona comes up with no tool surface.
+>    Since this PR that miss at least logs `personas.mcp_skipped`.
+> 4. `LIMENAL_*` environment variables are now `LIMINAL_*`. There is no
+>    back-compat shim — a stale `.env` fails loudly on a missing variable
+>    instead of silently reading a name nothing sets. Note that
+>    `LIMINAL_SECRET_GUARD=0` set under the old spelling means the guard
+>    comes back **on** until you rename it.
 
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 pip install -e ../techne
-pip install -e ../limenal
+pip install -e ../liminal
 
 # Generate a master key
 export CABAL_MASTER_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
@@ -84,13 +108,13 @@ pytest -q
 
 ```bash
 make up
-make bootstrap           # mints operator + limenal service token, restarts limenal
+make bootstrap           # mints operator + liminal service token, restarts liminal
 make demo                # 6-step smoke test: healthz → mint → init → tools/list → set → get
 ```
 
 Logs: `make logs`. Tear down: `make down`.
 
-The dev stack (`docker-compose.dev.yml`) includes cabal + limenal only. The
+The dev stack (`docker-compose.dev.yml`) includes cabal + liminal only. The
 production stack (`docker-compose.yml`) adds a LiteLLM proxy and Litestream
 sidecar replicating the SQLite DB.
 

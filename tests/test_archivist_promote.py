@@ -1,7 +1,7 @@
 """techne -> Archivist promotion bridge (cabal Phase 1).
 
 Builds a minimal techne `knowledge` table via raw SQL (no techne dep needed)
-and promotes it into a local Archivist. Store-level only — no limenal.
+and promotes it into a local Archivist. Store-level only — no liminal.
 """
 
 from __future__ import annotations

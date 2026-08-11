@@ -1,17 +1,17 @@
-"""Phase FF — identity.toml `tool_extras` → JWT → limenal Context.extra → handler.
+"""Phase FF — identity.toml `tool_extras` → JWT → liminal Context.extra → handler.
 
 Proves the full chain: an operator declares
 `[personas.archivist.mcp].tool_extras = { "web.allowed_hosts" = [...] }`
 in identity.toml, Cabal embeds it as the `cabal_tool_extras` JWT claim
-at every dispatch token mint, limenal extracts it into Context.extra,
-and limenal's web handler refuses URLs that aren't on the tightened
+at every dispatch token mint, liminal extracts it into Context.extra,
+and liminal's web handler refuses URLs that aren't on the tightened
 per-persona allowlist.
 """
 from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("limenal")
+pytest.importorskip("liminal")
 
 import json
 import os
@@ -30,15 +30,15 @@ from cabal.core.models import BootstrapCode
 
 
 @pytest_asyncio.fixture
-async def limenal_app():
-    """A real limenal app with scratchpad + web handlers + an empty
+async def liminal_app():
+    """A real liminal app with scratchpad + web handlers + an empty
     keyset to swap in cabal's signing key once it boots."""
-    from limenal.handlers.scratchpad import ScratchpadHandler
-    from limenal.handlers.web import WebConfig, WebHandler
-    from limenal.registry import Registry
-    from limenal.registry.discover import register_explicit
-    from limenal.server import StaticKeySetVerifier
-    from limenal.server import create_app as create_limenal_app
+    from liminal.handlers.scratchpad import ScratchpadHandler
+    from liminal.handlers.web import WebConfig, WebHandler
+    from liminal.registry import Registry
+    from liminal.registry.discover import register_explicit
+    from liminal.server import StaticKeySetVerifier
+    from liminal.server import create_app as create_liminal_app
 
     # Web handler with a permissive default but no DNS surprises
     def fake_dns(host: str) -> list[str]:
@@ -66,14 +66,14 @@ async def limenal_app():
     register_explicit(registry, "web", web)
 
     verifier = StaticKeySetVerifier(key_set=KeySet([]))
-    app = create_limenal_app(jwt_verifier=verifier, registry=registry)
+    app = create_liminal_app(jwt_verifier=verifier, registry=registry)
     return app, verifier
 
 
 @pytest_asyncio.fixture
-async def cabal_app_with_persona_allowlist(tmp_path, limenal_app):
+async def cabal_app_with_persona_allowlist(tmp_path, liminal_app):
     """Cabal app with archivist's web allowlist tightened to one host."""
-    lim_app, lim_verifier = limenal_app
+    lim_app, lim_verifier = liminal_app
 
     # Stub LLM emits a single web__fetch tool_call then a final answer.
     state = {"step": 0}
@@ -107,8 +107,8 @@ async def cabal_app_with_persona_allowlist(tmp_path, limenal_app):
 
     identity_body = dedent(
         """
-        [limenal]
-        url = "http://limenal-test"
+        [liminal]
+        url = "http://liminal-test"
 
         [personas.archivist]
         role = "singleton"
@@ -130,7 +130,7 @@ async def cabal_app_with_persona_allowlist(tmp_path, limenal_app):
         acompletion_fn=fn,
     )
     async with fastapi_app.router.lifespan_context(fastapi_app):
-        # Hand cabal's public key to limenal so the JWT verifies.
+        # Hand cabal's public key to liminal so the JWT verifies.
         from cabal.core.auth.keys import load_active_signing_key
         from cabal.core.db import open_session
 
@@ -142,11 +142,11 @@ async def cabal_app_with_persona_allowlist(tmp_path, limenal_app):
         public_jwk["kid"] = stored.kid
         lim_verifier.key_set = KeySet.import_key_set({"keys": [public_jwk]})
 
-        # Re-target cabal's outbound MCP at the in-process limenal app
+        # Re-target cabal's outbound MCP at the in-process liminal app
         # and rebuild archivist's proxy with the tightened token_provider.
         lim_transport = httpx.ASGITransport(app=lim_app)
         new_mcp_client = httpx.AsyncClient(
-            transport=lim_transport, base_url="http://limenal-test"
+            transport=lim_transport, base_url="http://liminal-test"
         )
         await fastapi_app.state.mcp_http_client.aclose()
         fastapi_app.state.mcp_http_client = new_mcp_client
@@ -164,7 +164,7 @@ async def cabal_app_with_persona_allowlist(tmp_path, limenal_app):
             return mint_jwt(
                 signing_key=stored,
                 sub="archivist",
-                aud="limenal",
+                aud="liminal",
                 persona="archivist",
                 scope=["dispatch"],
                 tool_extras={"web.allowed_hosts": ["docs.python.org"]},
@@ -172,7 +172,7 @@ async def cabal_app_with_persona_allowlist(tmp_path, limenal_app):
             )
 
         archivist.tool_proxy = build_proxy(
-            base_url="http://limenal-test",
+            base_url="http://liminal-test",
             persona="archivist",
             agent_name="archivist",
             token_provider=token_provider,
@@ -193,7 +193,7 @@ async def test_per_persona_allowlist_via_identity_toml_blocks_other_hosts(
     cabal_app_with_persona_allowlist, cabal_client
 ) -> None:
     """The LLM tries to fetch malicious.test; the per-persona allowlist
-    only allows docs.python.org; limenal's web handler refuses; the
+    only allows docs.python.org; liminal's web handler refuses; the
     final answer flows back without the agent reaching the blocked host."""
 
     async with cabal_app_with_persona_allowlist.state.sessionmaker() as s:
@@ -265,7 +265,7 @@ async def test_tool_extras_claim_present_in_minted_jwt() -> None:
     token = mint(
         signing_key=stored,
         sub="archivist",
-        aud="limenal",
+        aud="liminal",
         persona="archivist",
         scope=["dispatch"],
         tool_extras={
@@ -312,7 +312,7 @@ async def test_mint_without_tool_extras_omits_claim() -> None:
     token = mint(
         signing_key=stored,
         sub="x",
-        aud="limenal",
+        aud="liminal",
         persona="x",
         scope=["dispatch"],
     )

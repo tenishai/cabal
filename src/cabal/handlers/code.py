@@ -1,6 +1,6 @@
 """code — Codex's code-corpus interface.
 
-Cabal-shipped limenal handler. Three tools:
+Cabal-shipped liminal handler. Three tools:
 
   code.search(query, language?, repo?, top_k?)
     Hybrid recall over indexed code files (techne knowledge entries
@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from limenal.protocol import Context, Handler, ToolResult, ToolSpec
+from liminal.protocol import Context, Handler, ToolResult, ToolSpec
 
 from cabal.codex import BlameError, CodeRepo, RepoIndexer, blame_line, blame_summary
 

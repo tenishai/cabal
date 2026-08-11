@@ -7,7 +7,7 @@ supersession (`ArchivistStore.publish(..., supersede=True)`) so the store
 converges instead of accumulating contradictions (agent-model design §5/§5e;
 cabal Phase 1).
 
-Store-direct + limenal-free: depends only on `cabal.archivist` and the
+Store-direct + liminal-free: depends only on `cabal.archivist` and the
 stdlib. techne knowledge is read via raw SQL to avoid coupling to techne
 internals (the knowledge table schema is stable: id/type/content/tags/
 confidence_numeric/source/created_at).

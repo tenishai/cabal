@@ -5,7 +5,7 @@ End-to-end:
   2. Configure FilesystemAdapter pointing at it
   3. LibrarianStore.refresh() ingests everything into a techne knowledge DB
   4. LibrarianStore.search() returns matching documents
-  5. DocumentsHandler exposes the same surface through the limenal Handler protocol
+  5. DocumentsHandler exposes the same surface through the liminal Handler protocol
 """
 
 from __future__ import annotations
@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("limenal")
+pytest.importorskip("liminal")
 pytest.importorskip("techne")
 
-from limenal.protocol import Context  # noqa: E402
+from liminal.protocol import Context  # noqa: E402
 
 from cabal.handlers.documents import DocumentsConfig, DocumentsHandler  # noqa: E402
 from cabal.librarian import FilesystemAdapter, LibrarianStore  # noqa: E402

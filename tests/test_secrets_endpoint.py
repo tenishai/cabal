@@ -2,7 +2,7 @@
 
 Source of credentials: environment variables of the form
 `CABAL_SECRET_<persona>_<handler>_<KEY>`. The endpoint returns the
-matching key/value pairs as a dict so limenal can hand them to its
+matching key/value pairs as a dict so liminal can hand them to its
 handler at dispatch time.
 """
 
@@ -159,7 +159,7 @@ async def test_secrets_requires_auth_scope(
 async def test_secrets_accepts_secrets_fetch_scope(
     app: FastAPI, client: AsyncClient, monkeypatch
 ) -> None:
-    """A token with `secrets-fetch` scope (the limenal-service token) is
+    """A token with `secrets-fetch` scope (the liminal-service token) is
     accepted even without operator scope."""
     from cabal.core.auth.jwt import mint
     from cabal.core.auth.keys import load_active_signing_key
@@ -173,8 +173,8 @@ async def test_secrets_accepts_secrets_fetch_scope(
         )
     service_token = mint(
         signing_key=stored,
-        sub="service:limenal",
-        aud="limenal",
+        sub="service:liminal",
+        aud="liminal",
         scope=["secrets-fetch"],
     )
     r = await client.get(

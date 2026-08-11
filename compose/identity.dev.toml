@@ -2,14 +2,14 @@
 # Mounted read-only into the cabal container at /app/identity.toml.
 #
 # No LiteLLM URL — the dev stack has no proxy. Dispatch to persona LLM
-# endpoints won't work, but the MCP layer (limenal tools) works fine.
+# endpoints won't work, but the MCP layer (liminal tools) works fine.
 
 [cabal]
 operator_id = "dev"
 
-[limenal]
-url = "http://limenal:9100"
-# limenal validates tokens against cabal's JWKS; cabal mints tokens for
+[liminal]
+url = "http://liminal:9100"
+# liminal validates tokens against cabal's JWKS; cabal mints tokens for
 # persona dispatch. No extra config needed for the basic flow.
 
 [personas.demo]

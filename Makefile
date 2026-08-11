@@ -7,7 +7,7 @@ COMPOSE := docker compose -f docker-compose.dev.yml
 	@python3 -c \
 	  "import base64, os; \
 	   print('CABAL_MASTER_KEY=' + base64.urlsafe_b64encode(os.urandom(32)).decode())" > .env
-	@echo "LIMENAL_CABAL_TOKEN=" >> .env
+	@echo "LIMINAL_CABAL_TOKEN=" >> .env
 	@echo "Created .env — CABAL_MASTER_KEY auto-generated."
 
 ## up: build images (if needed) and start the dev stack in the background.
@@ -33,11 +33,11 @@ rebuild: .env
 logs:
 	$(COMPOSE) logs -f
 
-## bootstrap: exchange the cabal bootstrap code for tokens and wire limenal.
+## bootstrap: exchange the cabal bootstrap code for tokens and wire liminal.
 bootstrap:
 	@bash scripts/bootstrap.sh
 
-## demo: end-to-end smoke test — scratchpad write + read via limenal.
+## demo: end-to-end smoke test — scratchpad write + read via liminal.
 demo:
 	@bash scripts/demo.sh
 

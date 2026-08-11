@@ -17,7 +17,7 @@ iff some marker targets its content hash. So supersession survives a git merge o
 three contributors without mutating any entry file — the CRDT-ish property that
 makes a git hub work.
 
-Limenal-free: SQLite + json + files only.
+Liminal-free: SQLite + json + files only.
 
 export_corpus(store, dir)         SQLite -> files (entries + markers).
 materialize_corpus(dir, db_path)  files -> a fresh local SQLite (status derived).

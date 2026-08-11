@@ -44,18 +44,18 @@ services:
     networks:
       - cabal
 
-  limenal:
+  liminal:
     build:
-      context: ../limenal
+      context: ../liminal
       dockerfile: Dockerfile
       additional_contexts:
         techne: ../techne
-    container_name: cabal-limenal
+    container_name: cabal-liminal
     restart: unless-stopped
     environment:
-      LIMENAL_CABAL_TOKEN: ${LIMENAL_CABAL_TOKEN:?LIMENAL_CABAL_TOKEN must be set — run `cbl token mint-service --scope secrets-fetch`}
+      LIMINAL_CABAL_TOKEN: ${LIMINAL_CABAL_TOKEN:?LIMINAL_CABAL_TOKEN must be set — run `cbl token mint-service --scope secrets-fetch`}
     command:
-      - limenal
+      - liminal
       - serve
       - --host=0.0.0.0
       - --port=9100

@@ -1,6 +1,6 @@
 """Deterministic same-resource supersession in the Archivist (agent-model §5e).
 
-Store-level only — no limenal import, so these run in the no-siblings CI job.
+Store-level only — no liminal import, so these run in the no-siblings CI job.
 """
 
 from __future__ import annotations
