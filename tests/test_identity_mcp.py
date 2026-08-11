@@ -1,6 +1,6 @@
 """Phase AA — identity.toml-driven MCP wiring.
 
-Verifies the end-to-end path: an identity.toml with [limenal] + a
+Verifies the end-to-end path: an identity.toml with [liminal] + a
 persona that has [personas.NAME.mcp].enabled=true makes that persona's
 handler arrive with a real, working tool_proxy without anyone wiring it
 manually.
@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-pytest.importorskip("limenal")
+pytest.importorskip("liminal")
 import os
 from pathlib import Path
 from textwrap import dedent
@@ -32,28 +32,28 @@ def _write_identity(tmp_path: Path, body: str) -> Path:
 
 
 @pytest_asyncio.fixture
-async def limenal_app():
-    """Real limenal FastAPI app with a static-keyset verifier we'll
+async def liminal_app():
+    """Real liminal FastAPI app with a static-keyset verifier we'll
     populate post-cabal-startup (so cabal's signing key matches)."""
-    from limenal.handlers.scratchpad import ScratchpadHandler
-    from limenal.registry import Registry
-    from limenal.registry.discover import register_explicit
-    from limenal.server import StaticKeySetVerifier
-    from limenal.server import create_app as create_limenal_app
+    from liminal.handlers.scratchpad import ScratchpadHandler
+    from liminal.registry import Registry
+    from liminal.registry.discover import register_explicit
+    from liminal.server import StaticKeySetVerifier
+    from liminal.server import create_app as create_liminal_app
 
     registry = Registry()
     register_explicit(registry, "scratchpad", ScratchpadHandler())
     # Empty keyset to start; we'll swap in cabal's keyset below
     verifier = StaticKeySetVerifier(key_set=KeySet([]))
-    app = create_limenal_app(jwt_verifier=verifier, registry=registry)
+    app = create_liminal_app(jwt_verifier=verifier, registry=registry)
     return app, verifier
 
 
 @pytest_asyncio.fixture
-async def cabal_app_with_mcp(tmp_path, limenal_app):
+async def cabal_app_with_mcp(tmp_path, liminal_app):
     """Build a Cabal app whose lifespan auto-wires a tool_proxy for
-    archivist against the in-process limenal app."""
-    lim_app, lim_verifier = limenal_app
+    archivist against the in-process liminal app."""
+    lim_app, lim_verifier = liminal_app
 
     # Stub LLM that issues a tool_call then a final answer
     state = {"step": 0}
@@ -87,10 +87,10 @@ async def cabal_app_with_mcp(tmp_path, limenal_app):
 
     identity_body = dedent(
         """
-        [limenal]
-        url = "http://limenal-cabal-test"
+        [liminal]
+        url = "http://liminal-cabal-test"
         token_ttl_seconds = 300
-        jwt_aud = "limenal"
+        jwt_aud = "liminal"
 
         [personas.archivist]
         role = "singleton"
@@ -115,8 +115,8 @@ async def cabal_app_with_mcp(tmp_path, limenal_app):
 
     async with fastapi_app.router.lifespan_context(fastapi_app):
         # Cabal lifespan has now minted its signing key into the DB. Pull it
-        # out and load into limenal's verifier so JWTs Cabal mints will be
-        # accepted by limenal.
+        # out and load into liminal's verifier so JWTs Cabal mints will be
+        # accepted by liminal.
         from cabal.core.auth.keys import load_active_signing_key
         from cabal.core.db import open_session
 
@@ -130,13 +130,13 @@ async def cabal_app_with_mcp(tmp_path, limenal_app):
         lim_verifier.key_set = KeySet.import_key_set({"keys": [public_jwk]})
 
         # Now swap Cabal's outbound MCP client to route to the in-process
-        # limenal app. Replace BOTH the http client and the proxy's client.
+        # liminal app. Replace BOTH the http client and the proxy's client.
         lim_transport = httpx.ASGITransport(app=lim_app)
         new_mcp_client = httpx.AsyncClient(
-            transport=lim_transport, base_url="http://limenal-cabal-test"
+            transport=lim_transport, base_url="http://liminal-cabal-test"
         )
         # Close the original client so we don't leak connections, then
-        # rebuild the archivist proxy against the in-process limenal.
+        # rebuild the archivist proxy against the in-process liminal.
         await fastapi_app.state.mcp_http_client.aclose()
         fastapi_app.state.mcp_http_client = new_mcp_client
 
@@ -150,14 +150,14 @@ async def cabal_app_with_mcp(tmp_path, limenal_app):
             return mint_jwt(
                 signing_key=stored,
                 sub="archivist",
-                aud="limenal",
+                aud="liminal",
                 persona="archivist",
                 scope=["dispatch"],
                 ttl_seconds=300,
             )
 
         archivist.tool_proxy = build_proxy(
-            base_url="http://limenal-cabal-test",
+            base_url="http://liminal-cabal-test",
             persona="archivist",
             agent_name="archivist",
             token_provider=token_provider,
@@ -188,18 +188,18 @@ async def test_archivist_gets_tool_proxy_from_identity_toml(
 @pytest.mark.asyncio
 async def test_architect_does_not_get_tool_proxy(cabal_app_with_mcp) -> None:
     """Without [personas.architect.mcp].enabled the handler keeps
-    tool_proxy=None even though [limenal] is configured."""
+    tool_proxy=None even though [liminal] is configured."""
     router = cabal_app_with_mcp.state.dispatch_router
     architect = router._local["architect"]  # type: ignore[attr-defined]
     assert architect.tool_proxy is None
 
 
 @pytest.mark.asyncio
-async def test_archivist_dispatches_through_limenal_end_to_end(
+async def test_archivist_dispatches_through_liminal_end_to_end(
     cabal_app_with_mcp, cabal_client
 ) -> None:
     """Operator dispatches an archivist task → LLM emits scratchpad__set
-    via tool_call → MCPToolProxy routes through the in-process limenal app
+    via tool_call → MCPToolProxy routes through the in-process liminal app
     → scratchpad handler executes → cross-verify via direct call."""
     from sqlalchemy import select
 
@@ -252,7 +252,7 @@ async def test_max_steps_override_from_identity(tmp_path) -> None:
     """[personas.NAME.mcp].max_steps overrides LLMPersona's default 4."""
     identity_body = dedent(
         """
-        [limenal]
+        [liminal]
         url = "http://nowhere"
 
         [personas.archivist]

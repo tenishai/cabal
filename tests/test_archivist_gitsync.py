@@ -1,6 +1,6 @@
 """Git-syncable Archivist corpus (Phase 2): export <-> materialize, conflict-free merge.
 
-Store-level only — no limenal (runs in the no-siblings CI job).
+Store-level only — no liminal (runs in the no-siblings CI job).
 """
 
 from __future__ import annotations

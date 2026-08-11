@@ -238,7 +238,7 @@ Once the TUI is shipping, the same back-end (existing SSE + EventBus + per-perso
 |---|---|
 | **VSCode / VSCodium plugin** | Sidebar showing one or two Primus panes; operator types in the sidebar to `POST /agents/{name}` (existing). Activity bar badge for mailbox unread count via `/admin/events/stream`. Useful for "I'm coding; let me ask Rook-Primus a quick thing without leaving the IDE." |
 | **openwebui-style web UI** | Browser app consuming the same SSE endpoints. Operator picks a persona per chat, can split-view multiple chats. |
-| **iPhone Claude.app via MCP** | Limenal bridges MCP → cabal personas (already wired via `MCPToolProxy`). iPhone gets one Primus at a time. Push notifications for mailbox additions via APNs. |
+| **iPhone Claude.app via MCP** | Liminal bridges MCP → cabal personas (already wired via `MCPToolProxy`). iPhone gets one Primus at a time. Push notifications for mailbox additions via APNs. |
 | **Home Assistant dashboard widget** | Subscribe-only; reads `/admin/events/stream` + the mailbox MCP tools (PR-E). Ambient awareness of the colony. |
 | **Slack/Telegram bot** | Bot service subscribes to a persona's SSE stream; relays operator's DMs to the persona via `POST /agents/{name}`. The "remote persona" pattern. |
 
@@ -286,7 +286,7 @@ Today `cbl daemon up` + `cbl login --code <CODE>` is the bootstrap sequence. For
   **Note — the 2026-06-14 survey missed the IRC-client lineage**, which is arguably the more apt prior art for this proposal. WeeChat's **relay plugin** is a decade-old production implementation of exactly the "broker is the API; the TUI is one client" split described in §7: WeeChat runs headless and exposes a documented WebSocket/TCP relay protocol; multiple thin clients — Glowing Bear (web), weechat-android, various iOS apps — attach and detach without disrupting the running sessions. This directly validates the §7 multi-client roadmap. Three concrete patterns from that lineage are now recorded in the architect.db pattern store:
   1. **Per-client (resource × category) sync-subscription bitmask** — a sharper spec for how the EventBus "named channels (PR-F)" work should handle per-client filtering of event categories.
   2. **Hotlist priority tiers as an ordered attention queue** (highlight > message > private > low) — the model for the roster/unread-badge design: not a simple count but a priority-ordered queue that drives focus.
-  3. **Named observe-vs-intercept hook tiers** (MODIFIER hooks mutate data in-flight; SIGNAL hooks observe without side-effects) — directly relevant to limenal's interception pipeline design.
+  3. **Named observe-vs-intercept hook tiers** (MODIFIER hooks mutate data in-flight; SIGNAL hooks observe without side-effects) — directly relevant to liminal's interception pipeline design.
 - **cmux as the window manager.** Could sit *under* the TUI (GPU-accelerated pane rendering on macOS), but not load-bearing. Operator can use any terminal they want.
 - **A web UI in V1.** openwebui-style web UI is a future addition once the TUI shape is validated.
 - **Multi-operator scenarios.** Single-user platform. Per-operator JWT auth (already shipping via `cbl login`) is enough.

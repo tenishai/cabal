@@ -2,7 +2,7 @@ name: test
 
 # unit runs on every push/PR — no private deps, no secret required.
 # integration runs on workflow_dispatch and pushes to main — requires
-# GH_PAT_REPOS to clone the private techne and limenal sibling repos.
+# GH_PAT_REPOS to clone the private techne and liminal sibling repos.
 on:
   push:
     branches: [main]
@@ -74,12 +74,12 @@ jobs:
           token: ${{ secrets.GH_PAT_REPOS }}
           path: techne
 
-      - name: Checkout limenal
+      - name: Checkout liminal
         uses: actions/checkout@v4
         with:
-          repository: dimartin/limenal
+          repository: dimartin/liminal
           token: ${{ secrets.GH_PAT_REPOS }}
-          path: limenal
+          path: liminal
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -93,7 +93,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e "../techne"
-          pip install -e "../limenal"
+          pip install -e "../liminal"
           pip install -e ".[dev]"
 
       - name: Pytest (full suite)

@@ -5,8 +5,8 @@
 #   1. Waits for cabal to be healthy.
 #   2. Extracts the bootstrap code from cabal container logs.
 #   3. Exchanges the code for an operator JWT (saved to ~/.cabal/token).
-#   4. Mints a secrets-fetch service token and writes it to LIMENAL_CABAL_TOKEN in .env.
-#   5. Restarts limenal so it picks up the new token.
+#   4. Mints a secrets-fetch service token and writes it to LIMINAL_CABAL_TOKEN in .env.
+#   5. Restarts liminal so it picks up the new token.
 #
 # Prereqs: docker, curl, python3 (any modern version), jq (optional — falls back to python3).
 set -euo pipefail
@@ -67,22 +67,22 @@ echo "$OP_TOKEN" > ~/.cabal/token
 chmod 600 ~/.cabal/token
 echo "Operator token saved → ~/.cabal/token"
 
-echo "==> Minting secrets-fetch service token for limenal..."
+echo "==> Minting secrets-fetch service token for liminal..."
 SVC_TOKEN=$(curl -sf -X POST "$CABAL_URL/admin/token/mint-service" \
     -H "Authorization: Bearer $OP_TOKEN" \
     -H "Content-Type: application/json" \
-    -d '{"sub":"service:limenal","scope":["secrets-fetch"],"aud":"cabal-core","ttl_days":365}' \
+    -d '{"sub":"service:liminal","scope":["secrets-fetch"],"aud":"cabal-core","ttl_days":365}' \
     | _json_field access_token)
 
-echo "==> Writing LIMENAL_CABAL_TOKEN to $ENV_FILE ..."
+echo "==> Writing LIMINAL_CABAL_TOKEN to $ENV_FILE ..."
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' "s|^LIMENAL_CABAL_TOKEN=.*|LIMENAL_CABAL_TOKEN=$SVC_TOKEN|" "$ENV_FILE"
+    sed -i '' "s|^LIMINAL_CABAL_TOKEN=.*|LIMINAL_CABAL_TOKEN=$SVC_TOKEN|" "$ENV_FILE"
 else
-    sed -i "s|^LIMENAL_CABAL_TOKEN=.*|LIMENAL_CABAL_TOKEN=$SVC_TOKEN|" "$ENV_FILE"
+    sed -i "s|^LIMINAL_CABAL_TOKEN=.*|LIMINAL_CABAL_TOKEN=$SVC_TOKEN|" "$ENV_FILE"
 fi
 
-echo "==> Restarting limenal with new token..."
-docker compose -f "$COMPOSE_FILE" restart limenal
+echo "==> Restarting liminal with new token..."
+docker compose -f "$COMPOSE_FILE" restart liminal
 
 echo ""
 echo "Bootstrap complete."

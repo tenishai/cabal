@@ -19,10 +19,10 @@ from typing import Any
 import pytest
 
 # Booting Cabal core in-process registers the archivist persona, which needs the
-# sibling techne/limenal packages — auto-skip when they're absent (e.g. CI's
+# sibling techne/liminal packages — auto-skip when they're absent (e.g. CI's
 # no-siblings unit job), matching the convention in test_patterns_handler.py.
 pytest.importorskip("techne")
-pytest.importorskip("limenal")
+pytest.importorskip("liminal")
 
 from cabal.tui.client.base import BrokerClient, BrokerError  # noqa: E402
 from cabal.tui.client.inprocess import InProcessBrokerClient  # noqa: E402

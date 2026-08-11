@@ -5,7 +5,7 @@ patterns from a curated corpus, weighs tradeoffs, recommends approaches.
 
 In Phase 1 Architect's pattern-search MCP is not yet wired; the persona
 answers from its training data + the conversation context. Phase 2 wires
-the pattern-toolbox MCP gateway via limenal.
+the pattern-toolbox MCP gateway via liminal.
 """
 
 from __future__ import annotations

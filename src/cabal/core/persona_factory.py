@@ -167,11 +167,11 @@ def register_personas_from_identity(
         agent_name = f"{persona_name}-primus" if persona_cfg.role == "primus" else persona_name
         handler.name = agent_name
 
-        # MCP tool surface: wire iff [limenal].url is set AND this persona
+        # MCP tool surface: wire iff [liminal].url is set AND this persona
         # opted in via [personas.NAME.mcp].enabled. Without both, the
         # handler keeps tool_proxy=None and the tool-use loop is skipped.
         if (
-            identity.limenal.url
+            identity.liminal.url
             and persona_cfg.mcp.enabled
             and signing_key is not None
             and mcp_http_client is not None
@@ -187,10 +187,10 @@ def register_personas_from_identity(
             # First-class persona_cfg.mcp.allowed_handlers folds into the
             # tool_extras dict here. Explicit None means "unrestricted"
             # and is omitted; an explicit list (including the empty list)
-            # is forwarded so limenal can refuse everything if the
+            # is forwarded so liminal can refuse everything if the
             # operator wants that.
             if persona_cfg.mcp.allowed_handlers is not None:
-                _tool_extras_dict["limenal.allowed_handlers"] = list(
+                _tool_extras_dict["liminal.allowed_handlers"] = list(
                     persona_cfg.mcp.allowed_handlers
                 )
             _tool_extras = _tool_extras_dict if _tool_extras_dict else None
@@ -200,8 +200,8 @@ def register_personas_from_identity(
                 _ag=_agent,
                 _per=_persona,
                 _extras=_tool_extras,
-                _ttl=identity.limenal.token_ttl_seconds,
-                _aud=identity.limenal.jwt_aud,
+                _ttl=identity.liminal.token_ttl_seconds,
+                _aud=identity.liminal.jwt_aud,
             ) -> str:
                 return _mint_jwt(
                     signing_key=_key,
@@ -214,7 +214,7 @@ def register_personas_from_identity(
                 )
 
             proxy = build_proxy(
-                base_url=identity.limenal.url,
+                base_url=identity.liminal.url,
                 persona=persona_name,
                 agent_name=agent_name,
                 token_provider=_token_provider,
@@ -226,7 +226,21 @@ def register_personas_from_identity(
             log.info(
                 "personas.mcp_wired",
                 persona=persona_name,
-                limenal_url=identity.limenal.url,
+                liminal_url=identity.liminal.url,
+            )
+        elif persona_cfg.mcp.enabled:
+            # The persona asked for a tool surface and did not get one. Without
+            # this branch the miss is silent: `_Open` is extra="allow", so an
+            # identity.toml still carrying the old misspelled `[limenal]`
+            # section is absorbed as an unknown key, `[liminal].url` falls back
+            # to None, and every persona comes up toolless with nothing in the
+            # logs. Report which precondition was missing.
+            log.warning(
+                "personas.mcp_skipped",
+                persona=persona_name,
+                liminal_url_set=bool(identity.liminal.url),
+                signing_key_set=signing_key is not None,
+                http_client_set=mcp_http_client is not None,
             )
 
         dispatch_router.register_local(handler)

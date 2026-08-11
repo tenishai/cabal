@@ -34,7 +34,7 @@ KNOWN_TOP_LEVEL = {
     "secrets",
     "langfuse",
     "techne",
-    "limenal",
+    "liminal",
     "guardrails",
 }
 
@@ -77,13 +77,13 @@ class PersonaCheckpointingConfig(_Open):
 class PersonaMCPConfig(_Open):
     """Per-persona MCP tool surface settings.
 
-    Even if `[limenal]` is configured at the top level, a persona only
+    Even if `[liminal]` is configured at the top level, a persona only
     gets a tool_proxy when its `mcp.enabled = true`. This keeps
     operators in control — Architect-the-thinker probably doesn't want
     tools, Mason-the-engineer probably does.
 
     `tool_extras` is a dict of arbitrary scoping config forwarded to
-    limenal as `Context.extra`. The handler-author's contract decides
+    liminal as `Context.extra`. The handler-author's contract decides
     the shape — e.g. for the web handler the operator writes
     `tool_extras = { "web.allowed_hosts" = ["docs.python.org"] }`.
     """
@@ -93,9 +93,9 @@ class PersonaMCPConfig(_Open):
     tool_extras: dict[str, Any] = Field(default_factory=dict)
     # First-class shortcut for the most common scoping choice — which
     # handlers this persona can see + call. Folded into tool_extras as
-    # `limenal.allowed_handlers` at JWT-mint time. Operators who'd
+    # `liminal.allowed_handlers` at JWT-mint time. Operators who'd
     # rather put it directly in tool_extras can; both paths land in the
-    # same claim. None means "unrestricted" (every handler limenal
+    # same claim. None means "unrestricted" (every handler liminal
     # serves is reachable).
     allowed_handlers: list[str] | None = None
 
@@ -143,12 +143,12 @@ class TechneConfig(_Open):
     use_vectors: bool = False
 
 
-class LimenalConfig(_Open):
-    """Cabal's connection settings for a limenal MCP gateway."""
+class LiminalConfig(_Open):
+    """Cabal's connection settings for a liminal MCP gateway."""
 
-    url: str | None = None  # e.g. http://limenal:9100
+    url: str | None = None  # e.g. http://liminal:9100
     token_ttl_seconds: int = 60 * 60  # JWT TTL for per-request mints
-    jwt_aud: str = "limenal"
+    jwt_aud: str = "liminal"
 
 
 class GuardrailsConfig(_Open):
@@ -190,7 +190,7 @@ class IdentityConfig(_Open):
     litellm: LiteLLMConfig = Field(default_factory=LiteLLMConfig)
     langfuse: LangfuseConfig = Field(default_factory=LangfuseConfig)
     techne: TechneConfig = Field(default_factory=TechneConfig)
-    limenal: LimenalConfig = Field(default_factory=LimenalConfig)
+    liminal: LiminalConfig = Field(default_factory=LiminalConfig)
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     hooks: dict[str, Any] = Field(default_factory=dict)
 
@@ -225,8 +225,8 @@ def resolve_data_dir(identity: IdentityConfig | None, config_path: str | Path) -
     a bare default this coincides with a CWD-relative root; pass a config path
     with a directory to anchor elsewhere.
 
-    Pure + dependency-free (no limenal/techne import) so it resolves the same
-    whether or not limenal is wired — cabal works standalone.
+    Pure + dependency-free (no liminal/techne import) so it resolves the same
+    whether or not liminal is wired — cabal works standalone.
     """
     raw = (identity.cabal.data_dir if identity is not None else CabalConfig().data_dir) or "data"
     d = Path(raw).expanduser()

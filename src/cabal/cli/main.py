@@ -717,9 +717,9 @@ def token_mint() -> None:
 @token_app.command("mint-service")
 def token_mint_service(
     sub: str = typer.Option(
-        "service:limenal",
+        "service:liminal",
         "--sub",
-        help="`sub` claim. Default 'service:limenal' for the canonical use case.",
+        help="`sub` claim. Default 'service:liminal' for the canonical use case.",
     ),
     scope: list[str] = typer.Option(
         ["secrets-fetch"],
@@ -741,19 +741,19 @@ def token_mint_service(
         "--persona",
         help=(
             "Optional `cabal_persona` claim. Set to a persona name when minting "
-            "a dispatch token for limenal (e.g. `--persona demo --scope dispatch "
-            "--aud limenal`). Omit for secrets-fetch service tokens."
+            "a dispatch token for liminal (e.g. `--persona demo --scope dispatch "
+            "--aud liminal`). Omit for secrets-fetch service tokens."
         ),
     ),
 ) -> None:
-    """Mint a long-lived service JWT for limenal (or any peer service).
+    """Mint a long-lived service JWT for liminal (or any peer service).
 
     Prints the JWT to stdout. The operator copies it into the peer's
-    env (limenal expects `LIMENAL_CABAL_TOKEN` by default; configurable
-    via `limenal serve --cabal-token-env <NAME>`).
+    env (liminal expects `LIMINAL_CABAL_TOKEN` by default; configurable
+    via `liminal serve --cabal-token-env <NAME>`).
 
     To mint a persona dispatch token for the demo:
-        cbl token mint-service --persona demo --scope dispatch --aud limenal --ttl-days 1
+        cbl token mint-service --persona demo --scope dispatch --aud liminal --ttl-days 1
 
     Requires an active daemon — this command hits an admin endpoint
     that signs with the daemon's active signing key.

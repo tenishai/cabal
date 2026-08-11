@@ -1,6 +1,6 @@
 """archivist — Archivist's team-consensus knowledge interface.
 
-Cabal-shipped limenal handler. Four tools:
+Cabal-shipped liminal handler. Four tools:
 
   archivist.publish(resource_name, summary, entry_type, ...)
     Write an entry through the dedup pipeline. Returns the entry id
@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from limenal.protocol import Context, Handler, ToolResult, ToolSpec
+from liminal.protocol import Context, Handler, ToolResult, ToolSpec
 
 from cabal.archivist import ArchivistStore, Entry
 

@@ -95,6 +95,6 @@ enforcement points), same worktree-isolation + verify + Prudence loop.
 
 - **Hooks stay side-effect-only.** `ActivityLogger` (#49) is untouched;
   guardrails never route through `HookRegistry.fire()`.
-- **limenal authz still stands.** In-process guardrails are defense-in-depth +
+- **liminal authz still stands.** In-process guardrails are defense-in-depth +
   a standalone tool-policy story (independence principle), not a replacement
-  for limenal's server-side JWT `allowed_handlers`.
+  for liminal's server-side JWT `allowed_handlers`.

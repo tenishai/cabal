@@ -33,9 +33,9 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 # Audience constants — must match what bootstrap / mint-service produce.
 # Operator tokens: aud="cabal-core" (minted in routes/auth.py bootstrap).
-# Limenal service tokens: aud="limenal" (minted by `cbl token mint-service`).
+# Liminal service tokens: aud="liminal" (minted by `cbl token mint-service`).
 _AUD_OPERATOR = "cabal-core"
-_AUD_LIMENAL = "limenal"
+_AUD_LIMINAL = "liminal"
 
 
 def _require_operator_claims(request: Request, raw_token: str) -> dict[str, Any]:
@@ -632,7 +632,7 @@ def _make_default_session_tracker():
     return NoOpSessionTracker()
 
 
-# ---- secrets endpoint for limenal (Phase GG) ------------------------
+# ---- secrets endpoint for liminal (Phase GG) ------------------------
 
 
 @router.get("/secrets/{persona}/{handler_name}")
@@ -654,9 +654,9 @@ async def get_secrets(
 
     Auth: operator-scope OR a token scoped specifically for
     `secrets-fetch`. The operator gate is fine for solo; team-scale
-    deployments will mint a dedicated limenal-service token with
+    deployments will mint a dedicated liminal-service token with
     `secrets-fetch` scope so the operator isn't typing operator JWTs
-    on every limenal restart.
+    on every liminal restart.
     """
     import os as _os
     import re
@@ -814,11 +814,11 @@ def _normalize(s: str) -> str:
 
 def _require_secrets_fetch(request: Request, raw_token: str) -> dict[str, Any]:
     """Like _require_operator_claims, but also accepts tokens whose scope
-    contains 'secrets-fetch' (the dedicated limenal service scope).
+    contains 'secrets-fetch' (the dedicated liminal service scope).
 
     Accepted audiences:
       - "cabal-core" — operator token (full operator access)
-      - "limenal"    — limenal service token (secrets-fetch scope only)
+      - "liminal"    — liminal service token (secrets-fetch scope only)
     A token minted for any other audience is rejected regardless of scope.
     """
     try:
@@ -831,7 +831,7 @@ def _require_secrets_fetch(request: Request, raw_token: str) -> dict[str, Any]:
         raise HTTPException(401, detail=str(exc)) from exc
 
     aud = claims.get("aud")
-    if aud not in {_AUD_OPERATOR, _AUD_LIMENAL}:
+    if aud not in {_AUD_OPERATOR, _AUD_LIMINAL}:
         raise HTTPException(401, detail="invalid_audience")
 
     scope = claims.get("cabal_scope") or []
@@ -867,8 +867,8 @@ async def mint_service_token(
     """Operator-only: mint a long-lived JWT for a peer service.
 
     The canonical use case is `cbl token mint-service --scope secrets-fetch`
-    which the operator copies into limenal's `LIMENAL_CABAL_TOKEN` env so
-    limenal can fetch credentials from `GET /admin/secrets/{persona}/{handler}`.
+    which the operator copies into liminal's `LIMINAL_CABAL_TOKEN` env so
+    liminal can fetch credentials from `GET /admin/secrets/{persona}/{handler}`.
 
     Service tokens are operator-rotated; we don't track them in a DB or
     revocation list. Operator restarts the daemon with a new signing key

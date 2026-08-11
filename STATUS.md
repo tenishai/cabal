@@ -66,9 +66,9 @@ for the per-decision rationale log.
 | W (31) | memory accumulation | +8 | LLMPersona opt-in `commit_to_memory`; Archivist defaults true; Q&A pairs flow into the techne knowledge corpus on every successful dispatch (sync + streaming) |
 | X (32) | persona overrides | +5 | `system_prompt_override`, `model_override`, `max_tokens_override`, `commit_to_memory` per persona in identity.toml — operator tunes behavior without editing Python |
 | Y (33) | identity hot reload | +5 | `POST /admin/reload/identity` + `cbl reload identity`; rebuilds persona handlers without restarting; LiteLLMClient (breaker + budget state) preserved |
-| Z (34) | limenal integration | +6 | `cabal.core.tools.MCPToolProxy` + persona tool-use loop; end-to-end Cabal persona → limenal MCP gateway → handler with real JWT auth |
-| AA (35) | identity-driven MCP | +4 | `[limenal]` block + per-persona `[personas.X.mcp].enabled` auto-wires tool_proxy at lifespan; hot-reload preserves shared httpx + signing key |
-| BB (36) | tool_extras forwarding | +3 | `[personas.X.mcp.tool_extras]` → JWT `cabal_tool_extras` claim → limenal `Context.extra` → handler reads per-persona allowlist. End-to-end: archivist's web allowlist tightened to one host |
+| Z (34) | liminal integration | +6 | `cabal.core.tools.MCPToolProxy` + persona tool-use loop; end-to-end Cabal persona → liminal MCP gateway → handler with real JWT auth |
+| AA (35) | identity-driven MCP | +4 | `[liminal]` block + per-persona `[personas.X.mcp].enabled` auto-wires tool_proxy at lifespan; hot-reload preserves shared httpx + signing key |
+| BB (36) | tool_extras forwarding | +3 | `[personas.X.mcp.tool_extras]` → JWT `cabal_tool_extras` claim → liminal `Context.extra` → handler reads per-persona allowlist. End-to-end: archivist's web allowlist tightened to one host |
 | CC (37) | secrets endpoint | +8 | `GET /admin/secrets/{persona}/{handler}` returns credentials from `CABAL_SECRET_<persona>_<handler>_*` env vars. Operator OR `secrets-fetch` scope; per-persona/per-handler isolation enforced |
 
 **Total: 258 tests, 44 commits.**
@@ -126,7 +126,7 @@ cbl primus rotate mason                     # ratchet mason to generation 2
 
 - **A2A streaming**: `message/stream` + `tasks/resubscribe` (SSE).
 - **techne run_session_start/end integration**: Personas don't yet checkpoint Task state to techne sessions; only recall is wired.
-- **MCP gateway (limenal)**: tool_use hooks fire from the MCP path once wired.
+- **MCP gateway (liminal)**: tool_use hooks fire from the MCP path once wired.
 - **K8s manifests**: only docker-compose for now.
 - **Operator dashboard UI**: web frontend that consumes `/admin/agents` + a future `/admin/events` SSE.
 - **session_token model**: long-running Tasks past the 5-min JWT TTL.

@@ -6,7 +6,7 @@
 | **Authors** | Richard DiMartino + Raven (AI) |
 | **Created** | 2026-07-02 |
 | **Extends** | `docs/cabal.md` (Singleton personas, Q10; Two deployment modes) |
-| **Relates to** | techne#507 (federated fleets), limenal (JWKS verify + scope), `docs/cabal.md` open question §735 (team-scale bootstrap creds) |
+| **Relates to** | techne#507 (federated fleets), liminal (JWKS verify + scope), `docs/cabal.md` open question §735 (team-scale bootstrap creds) |
 
 ---
 
@@ -31,7 +31,7 @@ JWT; the sovereign service verifies it against that cabal's published JWKS and m
 service-issued credential; every cabal stays sovereign over its own agents'
 identities, and the sovereign persona is sovereign only over *policy*.
 
-Most of the machinery already exists (limenal JWKS verification + per-(persona,agent)
+Most of the machinery already exists (liminal JWKS verification + per-(persona,agent)
 scope, the techne `→archivist` outbox seam, the bulletin-board remote-resolution
 router). What's new is the **graduation boundary**, the **parent principal**, and a
 **multi-issuer trust registry**.
@@ -115,7 +115,7 @@ a separate **admin plane** (§4), not as a data-plane bypass.
 
 ### 3. Trust model A — federated JWKS
 
-The sovereign persona runs its **own limenal gate** in front of its techne store +
+The sovereign persona runs its **own liminal gate** in front of its techne store +
 LiteLLM brain. Its trust config has two parts:
 
 **(a) Issuer registry** — the cabals it federates with:
@@ -154,7 +154,7 @@ presenting its **normal home-cabal JWT** (RS256, minted by shaz's Cabal Core, wi
 
 No caller holds an Archivist-issued credential. Each cabal remains its own IdP;
 the sovereign persona is sovereign over **policy**, not over identity. This reuses
-limenal's `URLJWKSVerifier` and its per-(persona,agent) scope almost as-is; the new
+liminal's `URLJWKSVerifier` and its per-(persona,agent) scope almost as-is; the new
 piece is that verification is **multi-issuer** (a registry of JWKS URLs) rather than
 single-cabal.
 
@@ -208,8 +208,8 @@ authenticating with the home-cabal JWT.
 ## What exists vs. what's new
 
 **Reuse (already built):**
-- limenal `URLJWKSVerifier` — JWT verification against a JWKS URL.
-- limenal per-(persona,agent) **scope** — becomes the policy table.
+- liminal `URLJWKSVerifier` — JWT verification against a JWKS URL.
+- liminal per-(persona,agent) **scope** — becomes the policy table.
 - techne outbox `→archivist` adapter seam — retarget to the sovereign endpoint.
 - Bulletin-board remote resolution + router local-vs-remote (`core/broker/router.py`).
 - Per-target inter-agent token minting with `aud` (cabal D-010).
@@ -218,7 +218,7 @@ authenticating with the home-cabal JWT.
 
 **New:**
 1. **Multi-issuer trust registry** in the sovereign service (set of `{issuer id → JWKS URL}`),
-   where limenal today assumes a single cabal.
+   where liminal today assumes a single cabal.
 2. **Parent principal** — the graduation record, the permanent `admin:*` root row,
    and the remote **admin surface** (`cbl` subcommands operating against a sovereign service).
 3. **Graduation / absorption lifecycle** — the `member ↔ sovereign` state transition,
@@ -310,7 +310,7 @@ Richard's own rook uses the identical path (home JWT, scoped), plus the separate
 - **Federated JWKS (A) over service-issued creds (B):** keeps each cabal sovereign
   over its own agents' identities; the sovereign persona is sovereign only over
   policy. No second identity per agent, no per-cabal onboarding handshake beyond
-  publishing a JWKS URL. Reuses limenal's existing verifier.
+  publishing a JWKS URL. Reuses liminal's existing verifier.
 - **Parent as guardian, not owner:** answers the operator's requirement directly —
   graduation must not orphan. Root stays with the graduating cabal; day-to-day
   third-party operation is delegated to the service's own policy. Separating the

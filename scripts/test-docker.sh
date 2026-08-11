@@ -10,12 +10,12 @@
 #   bash scripts/test-docker.sh
 #   make test-docker
 #
-# Prereqs: Docker running, cabal/limenal/techne cloned as siblings.
+# Prereqs: Docker running, cabal/liminal/techne cloned as siblings.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CABAL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-LIMENAL_DIR="$(cd "$CABAL_DIR/../limenal" && pwd)"
+LIMINAL_DIR="$(cd "$CABAL_DIR/../liminal" && pwd)"
 TECHNE_DIR="$(cd "$CABAL_DIR/../techne" && pwd)"
 
 # Bail early if the dev stack is already up — container names would conflict.
@@ -27,7 +27,7 @@ fi
 
 echo "==> Docker smoke test"
 echo "    cabal:   $CABAL_DIR"
-echo "    limenal: $LIMENAL_DIR"
+echo "    liminal: $LIMINAL_DIR"
 echo "    techne:  $TECHNE_DIR"
 echo ""
 
@@ -35,7 +35,7 @@ docker run --rm \
     --name "cabal-smoke-$$" \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "$CABAL_DIR":/workspace/cabal \
-    -v "$LIMENAL_DIR":/workspace/limenal \
+    -v "$LIMINAL_DIR":/workspace/liminal \
     -v "$TECHNE_DIR":/workspace/techne \
     -e HOST_CABAL_DIR="$CABAL_DIR" \
     -w /workspace/cabal \
@@ -56,16 +56,16 @@ docker run --rm \
         make up
 
         # localhost:7400 from inside this container hits our loopback, not the
-        # HOST. Use the cabal/limenal container IPs directly — reachable from
+        # HOST. Use the cabal/liminal container IPs directly — reachable from
         # any container on the same Docker host/VM without port mapping.
         _ip() { docker inspect "$1" | python3 -c \
           "import sys,json; n=json.load(sys.stdin)[0]['\''NetworkSettings'\'']['\''Networks'\'']; print(list(n.values())[0]['\''IPAddress'\''])"; }
         CABAL_IP=$(_ip cabal-dev)
-        LIMENAL_IP=$(_ip limenal-dev)
+        LIMINAL_IP=$(_ip liminal-dev)
         echo "  cabal IP:   $CABAL_IP"
-        echo "  limenal IP: $LIMENAL_IP"
+        echo "  liminal IP: $LIMINAL_IP"
         export CABAL_URL="http://$CABAL_IP:7400"
-        export LIMENAL_URL="http://$LIMENAL_IP:9100"
+        export LIMINAL_URL="http://$LIMINAL_IP:9100"
 
         echo "--- [3/5] make bootstrap ---"
         make bootstrap

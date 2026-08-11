@@ -32,7 +32,7 @@ from cabal.core.observability.activity_logger import ActivityLogger
 
 
 class _FakeOutcome:
-    """Minimal duck-typed ToolCallOutcome for tests (no limenal dep)."""
+    """Minimal duck-typed ToolCallOutcome for tests (no liminal dep)."""
 
     def __init__(self, text: str, *, is_error: bool = False) -> None:
         self.content = [{"type": "text", "text": text}]

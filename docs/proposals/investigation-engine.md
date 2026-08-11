@@ -46,7 +46,7 @@ A short tour of cabal's current state, citing actual file paths. This is the bas
 | Memory integration via techne | **Built** | `cabal/core/memory/techne_store.py` |
 | Per-persona system prompt / model overrides | **Built** (Phase X) | `identity.toml` schema + `LLMPersona` |
 | Hot reload of identity | **Built** (Phase Y) | `POST /admin/reload/identity` + `cbl reload identity` |
-| Limenal MCP integration + tool_extras forwarding | **Built** (Phases Z/AA/BB) | `cabal/core/tools/MCPToolProxy` |
+| Liminal MCP integration + tool_extras forwarding | **Built** (Phases Z/AA/BB) | `cabal/core/tools/MCPToolProxy` |
 | Secrets table (encrypted at rest) | **Built** (Phase GG) | `cabal/core/secrets.py` |
 
 The platform is much further along than the conversation context usually suggests. Most "investigation engine" concerns are solved or partially solved. This proposal targets only the gaps.
@@ -71,7 +71,7 @@ These shaped the broader design and remain unchanged.
 
 ### Q1 — Hybrid MCP front door, Skills back of house
 
-Operators reach personas over MCP via limenal (already shipping — Phases Z/AA/BB). When a persona does work (kubectl, observability, AWS, etc.), those are Skills (markdown + scripts loaded via Bash) — *not* yet built. The existing `MCPToolProxy` is the MCP adapter; a parallel SKILL.md adapter is part of the sub-agent role library extension (item 4).
+Operators reach personas over MCP via liminal (already shipping — Phases Z/AA/BB). When a persona does work (kubectl, observability, AWS, etc.), those are Skills (markdown + scripts loaded via Bash) — *not* yet built. The existing `MCPToolProxy` is the MCP adapter; a parallel SKILL.md adapter is part of the sub-agent role library extension (item 4).
 
 ### Q2 — LLM-agnostic via the existing LLMClient + LiteLLM proxy
 

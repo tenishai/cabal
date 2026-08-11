@@ -144,6 +144,108 @@ def test_factory_attributes_each_primus_its_own_subordinates() -> None:
     assert "Wright's" in by_name["wright-primus"].subordinates["implementer"].system_prompt
 
 
+def test_persona_wanting_mcp_but_getting_none_says_so() -> None:
+    """A persona that opted into MCP and got no tool surface must log why.
+
+    `_Open` is extra="allow", so an identity.toml still carrying the old
+    misspelled `[limenal]` section is absorbed as an unknown key rather than
+    rejected: `[liminal].url` falls back to None and every persona comes up
+    toolless. Before `personas.mcp_skipped` existed there was no `else` on the
+    wiring guard and `personas.mcp_wired` only fired on success, so that
+    failure was completely silent — the operator saw healthy startup logs and
+    personas with no tools.
+    """
+    import structlog
+
+    from cabal.config.identity import (
+        IdentityConfig,
+        PersonaConfig,
+        PersonaMCPConfig,
+        SubordinateConfig,
+    )
+    from cabal.core.abort import AbortCoordinator
+    from cabal.core.memory.session_tracker import NoOpSessionTracker
+    from cabal.core.memory.store import NoOpMemoryStore
+    from cabal.core.persona_factory import register_personas_from_identity
+
+    class _StubRouter:
+        abort_coordinator = AbortCoordinator()
+
+        def register_local(self, handler: Any) -> None:
+            pass
+
+        def register_capabilities(self, agent_name: str, caps: list[str]) -> None:
+            pass
+
+    # Wants tools; no [liminal].url configured — the stale-section scenario.
+    identity = IdentityConfig(
+        personas={
+            "mason": PersonaConfig(
+                role="primus",
+                subordinates={"implementer": SubordinateConfig(model="m")},
+                mcp=PersonaMCPConfig(enabled=True),
+            )
+        }
+    )
+
+    with structlog.testing.capture_logs() as logs:
+        register_personas_from_identity(
+            dispatch_router=_StubRouter(),  # type: ignore[arg-type]
+            identity=identity,
+            litellm_client=_client(),
+            memory_store=NoOpMemoryStore(),
+            session_tracker=NoOpSessionTracker(),
+            hook_registry=HookRegistry(),
+        )
+
+    skipped = [e for e in logs if e.get("event") == "personas.mcp_skipped"]
+    assert skipped, f"expected personas.mcp_skipped; got {[e.get('event') for e in logs]}"
+    assert skipped[0]["liminal_url_set"] is False
+    assert not [e for e in logs if e.get("event") == "personas.mcp_wired"]
+
+
+def test_persona_not_wanting_mcp_stays_quiet() -> None:
+    """No warning when the persona never asked for tools — silence is correct
+    there, and a warning on every tool-less persona would train operators to
+    ignore the one that matters."""
+    import structlog
+
+    from cabal.config.identity import IdentityConfig, PersonaConfig, SubordinateConfig
+    from cabal.core.abort import AbortCoordinator
+    from cabal.core.memory.session_tracker import NoOpSessionTracker
+    from cabal.core.memory.store import NoOpMemoryStore
+    from cabal.core.persona_factory import register_personas_from_identity
+
+    class _StubRouter:
+        abort_coordinator = AbortCoordinator()
+
+        def register_local(self, handler: Any) -> None:
+            pass
+
+        def register_capabilities(self, agent_name: str, caps: list[str]) -> None:
+            pass
+
+    identity = IdentityConfig(
+        personas={
+            "mason": PersonaConfig(
+                role="primus", subordinates={"implementer": SubordinateConfig(model="m")}
+            )
+        }
+    )
+
+    with structlog.testing.capture_logs() as logs:
+        register_personas_from_identity(
+            dispatch_router=_StubRouter(),  # type: ignore[arg-type]
+            identity=identity,
+            litellm_client=_client(),
+            memory_store=NoOpMemoryStore(),
+            session_tracker=NoOpSessionTracker(),
+            hook_registry=HookRegistry(),
+        )
+
+    assert not [e for e in logs if e.get("event") == "personas.mcp_skipped"]
+
+
 def test_prompt_templates_carry_no_hardcoded_primus_name() -> None:
     """Guards the class of bug rather than one instance: a future prompt edit
     that bakes in a name would pass the tests above for that name and fail here."""
