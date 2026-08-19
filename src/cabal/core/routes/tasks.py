@@ -4,10 +4,10 @@ POST /a2a/tasks — accept a Task, hand it to the dispatch router, return
 the response Task.
 
 Caller-token semantics:
-    - If the inbound bearer is an OPERATOR token (scope contains
-      "operator", aud="cabal-core"), the endpoint mints a fresh per-target
-      JWT internally and uses it for the dispatch. Operators don't have to
-      pre-mint per-target tokens.
+    - If the inbound bearer carries "operator" or "colleague" scope
+      (aud="cabal-core"), the endpoint mints a fresh per-target JWT
+      internally and uses it for the dispatch. Neither has to pre-mint
+      per-target tokens.
     - If the inbound bearer is already aimed at the target (aud matches),
       we forward it as-is to the dispatch router.
 
@@ -49,7 +49,9 @@ async def _resolve_dispatch_token(
     """Decide which token to hand the dispatch router.
 
     Returns the same token if it's already aimed at `target`; else, if the
-    inbound token is an operator token, mints a fresh per-target JWT.
+    inbound token carries "operator" or "colleague" scope, mints a fresh
+    per-target JWT (sub passed through unchanged, so a colleague's
+    "agent:<name>" sub lands in the re-minted token too).
     Raises HTTPException on any auth failure.
     """
     jwks_provider = request.app.state.jwks_provider
@@ -86,14 +88,18 @@ async def _resolve_dispatch_token(
             return raw_token
 
         scope = claims.get("cabal_scope") or []
-        if "operator" not in scope:
+        if not ({"operator", "colleague"} & set(scope)):
             raise HTTPException(
                 status_code=403,
-                detail=f"token aud={claims.get('aud')!r} cannot dispatch to {target!r}",
+                detail=(
+                    f"token aud={claims.get('aud')!r} cannot dispatch to {target!r} "
+                    "(requires operator or colleague scope)"
+                ),
             )
 
-        # Operator → re-mint as a per-target token aimed at `audience`. Only now
-        # do we need the signing key, so load it lazily within this session.
+        # Operator or colleague → re-mint as a per-target token aimed at
+        # `audience`. Only now do we need the signing key, so load it lazily
+        # within this session.
         stored = await load_active_signing_key(session, master_key=master_key)
 
     if stored is None:
