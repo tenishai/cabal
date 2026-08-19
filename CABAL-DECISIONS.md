@@ -276,3 +276,16 @@ Linked feedback memory: `feedback-decision-authority`.
   re-key DB secrets (`cbl secret set`) and rename env vars from
   `CABAL_SECRET_rook_*` / `CABAL_SECRET_jackdaw_*` to `CABAL_SECRET_mason_*`
   / `CABAL_SECRET_wright_*`. Raised by Prudence on PR #113.
+
+## D-016: authenticated-but-wrong-audience is 403, uniformly
+
+- **Context**: consolidating the admin guards into `_require_scope`
+  (colleague-scope work) surfaced an untested edge: a validly signed
+  token presented to a guard whose audience it does not match
+  previously fell out as 401 on the two pre-existing guards.
+- **Landed**: 403 for every authenticated-but-wrong-realm case, on
+  all guards. The rule is now: no or invalid signature is 401;
+  authenticated but wrong scope OR wrong audience is 403. Nothing in
+  the repo branched on the old 401 (CLI and TUI use blanket 4xx
+  handling); the dispatch gate already said 403 for its mismatched
+  cases.
