@@ -10,6 +10,12 @@ Caller-token semantics:
       pre-mint per-target tokens.
     - If the inbound bearer is already aimed at the target (aud matches),
       we forward it as-is to the dispatch router.
+    - If the inbound bearer's sub is "agent:<name>" (not yet aimed at the
+      target), the endpoint consults the room-synced `dispatch_pairs`
+      table (Task C3): an allowed (caller, target) pair re-mints the same
+      way an operator token does; a missing pair is a 403 naming both
+      sides. An empty table means every such request is allowed --
+      enforcement only begins once the room syncs its first set.
 
 Phase 1 surface — A2A v1.0 JSON-RPC envelope lands in Phase 2 with
 streaming + tasks/get + resubscribe.
@@ -20,6 +26,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
+from cabal.core import dispatch_pairs
 from cabal.core.a2a.types import Task
 from cabal.core.auth.jwt import JWTError, extract_bearer, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
@@ -49,7 +56,8 @@ async def _resolve_dispatch_token(
     """Decide which token to hand the dispatch router.
 
     Returns the same token if it's already aimed at `target`; else, if the
-    inbound token is an operator token, mints a fresh per-target JWT.
+    inbound token is an operator token, or an "agent:<name>" token the
+    room's dispatch_pairs allow (Task C3), mints a fresh per-target JWT.
     Raises HTTPException on any auth failure.
     """
     jwks_provider = request.app.state.jwks_provider
@@ -86,14 +94,35 @@ async def _resolve_dispatch_token(
             return raw_token
 
         scope = claims.get("cabal_scope") or []
+        sub = claims.get("sub") or ""
         if "operator" not in scope:
-            raise HTTPException(
-                status_code=403,
-                detail=f"token aud={claims.get('aud')!r} cannot dispatch to {target!r}",
-            )
+            # Room-owned policy (Task C3): a caller whose sub is
+            # "agent:<name>" is asking to be re-minted toward a NEW
+            # target. Whether that's allowed is decided by the flat
+            # dispatch_pairs table the room syncs via
+            # PUT /admin/dispatch-pairs -- an empty table means every
+            # such request is open (enforcement starts at the first
+            # sync). Operators never reach this branch (checked above).
+            # Any other sub (a persona/service token, not an agent) gets
+            # the same plain rejection it always has.
+            if sub.startswith("agent:"):
+                if not await dispatch_pairs.is_allowed(session, caller=sub, target=target):
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            f"{sub} is not a colleague of {target} yet. "
+                            "Ask in the room."
+                        ),
+                    )
+            else:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"token aud={claims.get('aud')!r} cannot dispatch to {target!r}",
+                )
 
-        # Operator → re-mint as a per-target token aimed at `audience`. Only now
-        # do we need the signing key, so load it lazily within this session.
+        # Operator or an allowed colleague → re-mint as a per-target token
+        # aimed at `audience`. Only now do we need the signing key, so
+        # load it lazily within this session.
         stored = await load_active_signing_key(session, master_key=master_key)
 
     if stored is None:

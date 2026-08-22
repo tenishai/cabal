@@ -231,6 +231,27 @@ class SigningKey(Base):
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+# ---------- dispatch_pairs ---------------------------------------------------
+
+
+class DispatchPair(Base):
+    """Flat caller -> target allow pair for agent-to-agent dispatch.
+
+    Room-owned policy (kobo decides who may call whom); cabal just stores
+    the pairs and enforces them at the dispatch re-mint step
+    (`routes/tasks.py::_resolve_dispatch_token`). An EMPTY table means
+    every dispatch is allowed -- see CABAL-DECISIONS.md D-017.
+    """
+
+    __tablename__ = "dispatch_pairs"
+
+    caller: Mapped[str] = mapped_column(String, primary_key=True)
+    target: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
+    )
+
+
 # ---------- bootstrap_codes --------------------------------------------------
 
 

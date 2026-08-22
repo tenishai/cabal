@@ -276,3 +276,76 @@ Linked feedback memory: `feedback-decision-authority`.
   re-key DB secrets (`cbl secret set`) and rename env vars from
   `CABAL_SECRET_rook_*` / `CABAL_SECRET_jackdaw_*` to `CABAL_SECRET_mason_*`
   / `CABAL_SECRET_wright_*`. Raised by Prudence on PR #113.
+
+## 2026-08-22 — dispatch pairs: the switchboard checks who may call whom
+
+### D-017: dispatch_pairs is a flat allow-list, room-owned, empty means open
+
+- **Question**: agent-to-agent dispatch (a caller whose JWT `sub` is
+  `agent:<name>` re-minting toward a target via `POST /a2a/tasks`, see
+  D-010) had no policy layer at all beyond "does a signing key exist for
+  this token". Once more than a couple of agents can reach each other,
+  something has to decide which pairs are allowed. Where does that
+  decision live, and what does cabal store?
+- **Options**:
+  - A. Cabal computes the policy itself (roles, capability tags, graph
+    rules) and exposes an admin UI for it.
+  - B. Cabal stores nothing; the caller re-mint path stays wide open for
+    any `agent:` sub and policy is enforced upstream, before the request
+    ever reaches cabal.
+  - C. Cabal stores a flat, opaque `(caller, target)` allow-list it does
+    not interpret, synced wholesale by an external owner, and enforces
+    it at the one re-mint chokepoint it already owns.
+- **Choice**: C
+- **Reasoning**: Cabal has no model of "teams", "trust levels", or
+  anything else that would let it *compute* an allow-list — that
+  knowledge lives in the room (kobo) that actually assembles and
+  supervises agents. Option A would duplicate that model badly inside
+  cabal and get it wrong. Option B leaves the one place that can
+  actually enforce anything (the re-mint chokepoint every agent-to-agent
+  dispatch passes through) doing nothing, which only works as long as
+  nobody malicious or buggy ever gets a JWT. Option C keeps cabal dumb
+  on purpose: it stores exactly the pairs it's told, replaces the whole
+  set atomically on every sync (`PUT /admin/dispatch-pairs`, operator
+  scope), and answers exactly one question at dispatch time — "is
+  (caller, target) in the set" — without ever knowing *why* a pair
+  exists.
+- **Empty table means open, by design**: a table with zero rows is not
+  an error state or "misconfigured" — it's the default, and it means
+  every `agent:` caller may reach every target. This is what makes the
+  feature deploy-safe: the migration ships and rolls out with an empty
+  table, dispatch behavior is unchanged, and enforcement only begins the
+  first time the room performs its first sync (even syncing an empty set
+  explicitly is different from never having synced — see caveat below).
+  The alternative (empty-means-closed, or a separate "enforcement
+  enabled" flag) would make the migration itself a breaking change: every
+  agent-to-agent dispatch in flight at deploy time would start failing
+  the instant the table exists, with no coordinated cutover possible.
+- **Atomic replace, not incremental add/remove**: `PUT` deletes every
+  existing pair and inserts the new set inside a single transaction
+  (`dispatch_pairs.replace_all`, one `open_session` block). This is not
+  just tidiness — because empty means open, a non-atomic replace (delete
+  everything, *then* insert, as two visible steps) would create a real
+  window where the table is briefly empty and every dispatch is
+  momentarily open again. Proven in `tests/test_dispatch_pairs.py` by
+  literally interleaving a paused writer with a reader on a separate
+  connection.
+- **Caveat carried over from D-015's lesson**: the room is expected to
+  push its full current policy on every sync, not deltas. Cabal does not
+  track "has anyone ever synced" as a separate bit from "the table has
+  rows" — an operator (or the room, mid-incident) manually clearing the
+  table with an empty `PUT` re-opens dispatch exactly like a fresh
+  install would. That's intentional (matches "empty means open"
+  uniformly) but worth knowing before reaching for it as a kill switch.
+- **What this does NOT do**: gate on any JWT scope claim (e.g. a
+  `colleague` scope). The enforcement point keys purely on the `sub`
+  prefix (`agent:`) plus the pairs table, deliberately independent of
+  how a given agent-sub token came to exist. This repo's colleague-scope
+  work (PR #124, `feat/colleague-scope`) was still open/unmerged as of
+  this entry — this feature does not depend on it landing first, and
+  will keep working unchanged once it does (a `colleague`-scoped
+  `agent:` token hits the exact same gate as any other `agent:` token).
+- **Lands in**: `core/models.py::DispatchPair`,
+  `core/dispatch_pairs.py`, `core/routes/tasks.py::_resolve_dispatch_token`,
+  `core/routes/admin.py::get_dispatch_pairs / put_dispatch_pairs`,
+  migration `c4f0a2b18e77`.

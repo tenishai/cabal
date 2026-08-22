@@ -908,3 +908,67 @@ async def mint_service_token(
         "expires_at": expires_at,
         "kid": stored.kid,
     }
+
+
+# ---- dispatch pairs: the switchboard checks who may call whom (Task C3) --
+
+
+class DispatchPairsRequest(BaseModel):
+    """`pairs` is a flat list of [caller, target] pairs, e.g.
+    `[["agent:sizing-agent", "pricing-agent"], ...]`. Each pair must be
+    exactly two strings -- anything else is a 422."""
+
+    pairs: list[tuple[str, str]]
+
+
+@router.get("/dispatch-pairs")
+async def get_dispatch_pairs(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Inspect the room-synced caller->target allow pairs. Operator scope.
+
+    An empty list means the switchboard is currently open: every
+    agent-to-agent dispatch is allowed until the room syncs a set here.
+    """
+    from cabal.core import dispatch_pairs
+
+    _require_operator_claims(request, extract_bearer(authorization))
+    async with open_session(request.app.state.sessionmaker) as session:
+        pairs = await dispatch_pairs.list_all(session)
+    return {"pairs": [[caller, target] for caller, target in pairs]}
+
+
+@router.put("/dispatch-pairs")
+async def put_dispatch_pairs(
+    req: DispatchPairsRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Replace the whole caller->target allow set, atomically. Operator scope.
+
+    kobo (the room) owns this policy end to end -- it decides which agent
+    may dispatch to which, and pushes the full set here on every change.
+    Cabal just stores the flat pairs and enforces them at dispatch
+    re-mint time (`routes/tasks.py`). The replace is delete-all-then-
+    insert inside a single transaction, so a reader never observes the
+    table briefly empty (which would read as "open") between the two
+    steps -- see `dispatch_pairs.replace_all`.
+
+    An empty `pairs` list is valid and means "close everything": once any
+    non-empty set has been synced, an agent with no listed pair for a
+    target is refused.
+    """
+    from cabal.core import dispatch_pairs
+
+    _require_operator_claims(request, extract_bearer(authorization))
+    if len(req.pairs) > dispatch_pairs.MAX_PAIRS:
+        raise HTTPException(
+            422,
+            detail=(
+                f"refusing {len(req.pairs)} pairs; cap is {dispatch_pairs.MAX_PAIRS}"
+            ),
+        )
+    async with open_session(request.app.state.sessionmaker) as session:
+        await dispatch_pairs.replace_all(session, req.pairs)
+    return {"pairs": [[caller, target] for caller, target in req.pairs], "count": len(req.pairs)}

@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 from cabal.core.models import Base
 
@@ -36,6 +36,48 @@ def test_alembic_upgrade_head_matches_metadata(tmp_path: Path, monkeypatch) -> N
     expected = set(Base.metadata.tables.keys())
     assert expected.issubset(tables), f"missing tables: {expected - tables}"
     assert "alembic_version" in tables
+
+
+# ---- dispatch_pairs: additive migration (Task C3) --------------------------
+
+
+def test_dispatch_pairs_migration_is_additive(tmp_path: Path, monkeypatch) -> None:
+    """Upgrading past the dispatch_pairs revision must not disturb rows
+    already sitting in unrelated tables -- it only adds one new, empty
+    table. Seeds a row on the immediately-prior revision, upgrades the
+    rest of the way to head, and checks nothing was lost."""
+    db_file = tmp_path / "dispatch_pairs_additive.db"
+    db_url = f"sqlite:///{db_file}"
+    monkeypatch.setenv("CABAL_DB_URL", db_url)
+
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+
+    # The revision immediately before dispatch_pairs was introduced.
+    command.upgrade(cfg, "a1b2c3d4e5f6")
+
+    engine = create_engine(db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO personas (name, config_json, created_at) "
+                "VALUES ('probe', '{}', CURRENT_TIMESTAMP)"
+            )
+        )
+
+    command.upgrade(cfg, "head")
+
+    inspector = inspect(engine)
+    assert "dispatch_pairs" in inspector.get_table_names()
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT name FROM personas WHERE name = 'probe'")
+        ).fetchone()
+        assert row is not None, "pre-existing row was lost across the dispatch_pairs migration"
+
+        count = conn.execute(text("SELECT COUNT(*) FROM dispatch_pairs")).scalar()
+        assert count == 0
 
 
 # ---- Bare-metal first-boot: DB dir created (cabal#77) -----------------------
