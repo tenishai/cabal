@@ -226,6 +226,85 @@ async def test_put_replaces_whole_set(app: FastAPI, client: AsyncClient) -> None
 
 
 @pytest.mark.asyncio
+async def test_put_dedupes_duplicate_pair_in_body(app: FastAPI, client: AsyncClient) -> None:
+    """A body containing the same (caller, target) pair twice is not a
+    client error -- it's the same statement stated twice. The pair must
+    be de-duplicated before insert (which would otherwise hit the
+    composite primary key), and the response count reflects the
+    de-duplicated total."""
+    token = await _operator_token(app, client)
+    resp = await client.put(
+        "/admin/dispatch-pairs",
+        json={"pairs": [["agent:a", "b"], ["agent:a", "b"]]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"count": 1}
+
+    get_resp = await client.get(
+        "/admin/dispatch-pairs", headers={"Authorization": f"Bearer {token}"}
+    )
+    pairs = {tuple(p) for p in get_resp.json()["pairs"]}
+    assert pairs == {("agent:a", "b")}
+
+
+@pytest.mark.asyncio
+async def test_put_response_is_count_only(app: FastAPI, client: AsyncClient) -> None:
+    """The PUT response is trimmed to {"count": N} -- the caller already
+    has its list; GET remains the surface for inspecting what's stored."""
+    token = await _operator_token(app, client)
+    resp = await client.put(
+        "/admin/dispatch-pairs",
+        json={"pairs": [["agent:a", "b"], ["agent:c", "d"]]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"count": 2}
+
+
+@pytest.mark.asyncio
+async def test_put_integrity_error_becomes_422_with_readable_body(
+    app: FastAPI, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Belt-and-braces: de-dupe should already prevent a composite-PK
+    collision from reaching the database, but if one gets through anyway
+    (e.g. a future bug in de-dupe, or some other constraint), the route
+    must translate it into a 422 with a readable body instead of letting
+    an unhandled IntegrityError surface as a 500."""
+    from sqlalchemy.exc import IntegrityError
+
+    from cabal.core import dispatch_pairs as dispatch_pairs_module
+
+    async def _boom(session, pairs):
+        raise IntegrityError("INSERT", {}, Exception("UNIQUE constraint failed"))
+
+    # admin.py does `from cabal.core import dispatch_pairs` locally inside
+    # each route function, so patching the module's attribute (rather than
+    # any name bound in admin.py) is what the route actually calls.
+    monkeypatch.setattr(dispatch_pairs_module, "replace_all", _boom)
+
+    token = await _operator_token(app, client)
+    resp = await client.put(
+        "/admin/dispatch-pairs",
+        json={"pairs": [["agent:a", "b"]]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail
+    assert "—" not in detail  # no em dashes in user-facing copy
+
+
+def test_dedupe_pairs_is_order_preserving() -> None:
+    from cabal.core import dispatch_pairs
+
+    result = dispatch_pairs.dedupe_pairs(
+        [("agent:a", "b"), ("agent:c", "d"), ("agent:a", "b"), ("agent:e", "f")]
+    )
+    assert result == [("agent:a", "b"), ("agent:c", "d"), ("agent:e", "f")]
+
+
+@pytest.mark.asyncio
 async def test_put_rejects_malshaped_pairs(app: FastAPI, client: AsyncClient) -> None:
     token = await _operator_token(app, client)
     # A 3-element "pair" is not a (str, str) pair.

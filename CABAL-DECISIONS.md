@@ -345,6 +345,32 @@ Linked feedback memory: `feedback-decision-authority`.
   this entry — this feature does not depend on it landing first, and
   will keep working unchanged once it does (a `colleague`-scoped
   `agent:` token hits the exact same gate as any other `agent:` token).
+- **Revocation lag**: revoking a pair does not revoke a token already in
+  a caller's hand. `_resolve_dispatch_token`'s fast path — a token whose
+  `aud` already matches the target — returns that token as-is without
+  ever consulting `dispatch_pairs` (see the top of the function). So a
+  caller that re-minted a per-target token *before* the room removed its
+  pair keeps dispatching against that target for the rest of the token's
+  TTL (`DEFAULT_TTL_SECONDS` in `core/auth/jwt.py`, five minutes by
+  default), even though a fresh re-mint attempt would now be refused.
+  This is a property of re-mint tokens generally, not something this
+  feature could close without re-checking pairs on every single request
+  (which would defeat the point of re-minting at all). The room's UI
+  should say so wherever it shows a pair as "revoked" — the effective cut
+  over can lag up to one token TTL behind the sync.
+- **Empty-resync blast radius**: because empty means open, a `PUT` with
+  `pairs: []` does not "lock everything down" — it does the opposite,
+  reopening dispatch for every `agent:` caller against every target, same
+  as a table that was never synced. Shrinking a large policy down to
+  `[]` (a bug in the room's diffing logic, a bad merge, an accidental
+  full clear) is indistinguishable to cabal from a deliberate "open
+  everything back up" instruction — cabal stores what it's told and
+  nothing more. The room-side client that owns this sync is expected to
+  guard against sending `[]` unintentionally (e.g. treat a sync that
+  would shrink the set to zero as suspicious and require confirmation)
+  and to log loudly whenever it does send one, since cabal itself has no
+  way to tell "the room meant to reopen everything" apart from "the
+  room's policy computation returned nothing by mistake".
 - **Lands in**: `core/models.py::DispatchPair`,
   `core/dispatch_pairs.py`, `core/routes/tasks.py::_resolve_dispatch_token`,
   `core/routes/admin.py::get_dispatch_pairs / put_dispatch_pairs`,

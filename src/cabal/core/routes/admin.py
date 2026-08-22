@@ -20,6 +20,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import desc, select
+from sqlalchemy.exc import IntegrityError
 
 from cabal.core.a2a.card import sign_card
 from cabal.core.a2a.types import AgentCapabilities, AgentCard, Skill, Task
@@ -955,9 +956,24 @@ async def put_dispatch_pairs(
     table briefly empty (which would read as "open") between the two
     steps -- see `dispatch_pairs.replace_all`.
 
-    An empty `pairs` list is valid and means "close everything": once any
-    non-empty set has been synced, an agent with no listed pair for a
-    target is refused.
+    An empty `pairs` list is a valid body, and per "empty means open"
+    (CABAL-DECISIONS.md D-017) it reopens dispatch entirely -- with zero
+    rows in the table, every caller may reach every target again, exactly
+    like a fresh install. Once any non-empty set has been synced, an
+    agent with no listed pair for a target is refused; syncing `[]`
+    undoes that. This is a wide blast radius for one PUT body; callers
+    should guard against sending it by accident.
+
+    A duplicate (caller, target) pair in the body is not an error -- it's
+    the same statement made twice, so it's de-duplicated (order-
+    preserving) before insert; the response `count` reflects the
+    de-duplicated total. Belt-and-braces: if a constraint violation still
+    reaches the database anyway, it comes back as 422 with a readable
+    body instead of an unhandled 500.
+
+    Response is `{"count": N}` -- the caller already has its own copy of
+    the list it sent; GET /admin/dispatch-pairs remains the surface for
+    inspecting what is actually stored.
     """
     from cabal.core import dispatch_pairs
 
@@ -970,5 +986,15 @@ async def put_dispatch_pairs(
             ),
         )
     async with open_session(request.app.state.sessionmaker) as session:
-        await dispatch_pairs.replace_all(session, req.pairs)
-    return {"pairs": [[caller, target] for caller, target in req.pairs], "count": len(req.pairs)}
+        try:
+            stored = await dispatch_pairs.replace_all(session, req.pairs)
+        except IntegrityError as exc:
+            raise HTTPException(
+                422,
+                detail=(
+                    "could not store dispatch pairs: a (caller, target) pair "
+                    "still collided on the primary key after de-duplication; "
+                    "check the pairs list for a caller/target mismatch and retry"
+                ),
+            ) from exc
+    return {"count": len(stored)}

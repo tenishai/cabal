@@ -46,7 +46,27 @@ async def list_all(session: AsyncSession) -> list[tuple[str, str]]:
     return [(row.caller, row.target) for row in rows]
 
 
-async def replace_all(session: AsyncSession, pairs: list[tuple[str, str]]) -> None:
+def dedupe_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Order-preserving de-duplication of (caller, target) pairs.
+
+    A sync body listing the same pair twice is not a client error -- it's
+    the same statement made twice. Keep the first occurrence and drop the
+    rest so `replace_all` never asks the database to insert the same
+    composite primary key twice.
+    """
+    seen: set[tuple[str, str]] = set()
+    deduped: list[tuple[str, str]] = []
+    for pair in pairs:
+        if pair in seen:
+            continue
+        seen.add(pair)
+        deduped.append(pair)
+    return deduped
+
+
+async def replace_all(
+    session: AsyncSession, pairs: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
     """Delete every existing pair and insert `pairs`, atomically.
 
     Atomicity comes from the caller's transaction: this function only
@@ -58,7 +78,15 @@ async def replace_all(session: AsyncSession, pairs: list[tuple[str, str]]) -> No
     enforcement gate depends on: a momentarily-empty table would read as
     OPEN, so a non-atomic replace would be a real, if brief, security
     hole.
+
+    `pairs` is de-duplicated first (order-preserving, see `dedupe_pairs`)
+    -- a body with the same (caller, target) pair twice is not an error,
+    and inserting it twice would hit the composite primary key. Returns
+    the de-duplicated list that was actually staged, so a caller can
+    report an accurate count without keeping its own copy in sync.
     """
+    deduped = dedupe_pairs(pairs)
     await session.execute(delete(DispatchPair))
-    session.add_all([DispatchPair(caller=caller, target=target) for caller, target in pairs])
+    session.add_all([DispatchPair(caller=caller, target=target) for caller, target in deduped])
     await session.flush()
+    return deduped
