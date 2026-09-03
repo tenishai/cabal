@@ -23,7 +23,12 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPubl
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cabal.core.auth.master_key import MasterKeyMismatchError, get_fernet
+from cabal.core.auth.master_key import (
+    EncryptedRowDamagedError,
+    MasterKeyMismatchError,
+    get_fernet,
+    is_wellformed_fernet_token,
+)
 from cabal.core.models import SigningKey
 
 KID_PREFIX = "cabal-"
@@ -114,11 +119,18 @@ async def load_active_signing_key(
     try:
         pem = get_fernet(master_key).decrypt(row.private_key_pem_encrypted)
     except InvalidToken as exc:
-        # The key is well-formed (resolve_master_key validated it) but is not
-        # the one that encrypted this row. Raising the bare InvalidToken here
-        # is what bricked cabal in cabal#92: it names no cause and no remedy,
-        # and the caller cannot tell it apart from a corrupt row. The CALLER
-        # adds the DB path and key source, which it alone knows.
+        # `InvalidToken` means EITHER wrong key OR damaged ciphertext, and the
+        # remedies point opposite ways: restore a key, or accept the row is
+        # gone. Check the envelope, which needs no key — a malformed one is
+        # damage, full stop. A well-formed one is probably a wrong key, but
+        # body-only damage looks identical, so that message names both rather
+        # than promising the operator a key that may not exist (cabal#92).
+        if not is_wellformed_fernet_token(row.private_key_pem_encrypted):
+            raise EncryptedRowDamagedError(
+                f"the stored ciphertext for signing key {row.kid!r} is not a "
+                "well-formed Fernet token — the row is damaged, and no master "
+                "key will decrypt it"
+            ) from exc
         raise MasterKeyMismatchError(
             f"master key cannot decrypt signing key {row.kid!r}"
         ) from exc

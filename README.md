@@ -155,8 +155,10 @@ the port:
 
 Three ways out, cheapest first:
 
-1. **Restore the original key.** Nothing is lost — the data was never damaged,
-   only unreadable.
+1. **Restore the original key.** If the key is the problem, nothing is lost —
+   the data was never damaged, only unreadable. (If the log says
+   `cabal.encrypted_row_damaged` instead, the stored ciphertext itself is
+   malformed and no key will decrypt it: restore from a backup, or reset.)
 2. **Point somewhere else**: `CABAL_DB_URL=sqlite+aiosqlite:///data-new/cabal.db`
    leaves the old database untouched for a later recovery.
 3. **`cbl reset-auth`** — backs the database up, deletes the undecryptable

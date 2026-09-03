@@ -20,17 +20,23 @@ operator's credentials are different acts and should not share a default.
 from __future__ import annotations
 
 import sqlite3
+import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
 
+from cabal.core.models import Secret, SigningKey
+
 log = structlog.get_logger(__name__)
 
-#: Tables this module knows how to clear, in the order it clears them.
-_SIGNING_KEYS = "signing_keys"
-_SECRETS = "secrets"
+# Table names come FROM THE MODELS, not from string literals. Prudence caught
+# the drift reviewing #92: hardcoding "signing_keys" here means a __tablename__
+# rename breaks the recovery command while tests that hand-rolled the same
+# strings stay green.
+_SIGNING_KEYS = SigningKey.__tablename__
+_SECRETS = Secret.__tablename__
 
 
 class ResetError(RuntimeError):
@@ -65,6 +71,24 @@ def sqlite_path_from_url(db_url: str) -> Path:
     )
 
 
+def _unclaimed_path(preferred: Path) -> Path:
+    """*preferred*, or the first free `-2`, `-3`, … beside it.
+
+    The stamp is second-resolution and `sqlite3.backup` overwrites its
+    destination wholesale, so two resets inside one second left the second
+    one's snapshot — of the ALREADY-RESET database — where the only copy of the
+    deleted rows had been. Interactively the confirm prompt costs more than a
+    second; `--yes` in a script does not.
+    """
+    if not preferred.exists():
+        return preferred
+    for n in range(2, 1000):
+        candidate = preferred.with_name(f"{preferred.name}-{n}")
+        if not candidate.exists():
+            return candidate
+    raise ResetError(f"cannot find a free backup path beside {preferred}")
+
+
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
@@ -86,7 +110,7 @@ def backup_database(db_path: Path, *, now: datetime | None = None) -> Path:
     backup that is missing exactly the rows the operator is about to delete.
     """
     stamp = (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = db_path.with_name(f"{db_path.name}.bak-{stamp}")
+    backup_path = _unclaimed_path(db_path.with_name(f"{db_path.name}.bak-{stamp}"))
     src = sqlite3.connect(db_path)
     try:
         dst = sqlite3.connect(backup_path)
@@ -96,6 +120,15 @@ def backup_database(db_path: Path, *, now: datetime | None = None) -> Path:
             dst.close()
     finally:
         src.close()
+    # INHERIT THE SOURCE'S MODE. sqlite3 creates the file under the process
+    # umask — 0644 beside a database the operator had chmodded to 0600. The
+    # Fernet columns stay encrypted, but conversations, events and personas are
+    # plaintext, so the recovery tool would widen access to the whole
+    # operational corpus at the moment the operator is already exposed.
+    try:
+        backup_path.chmod(stat.S_IMODE(db_path.stat().st_mode))
+    except OSError:  # pragma: no cover - platform-dependent
+        backup_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     return backup_path
 
 
@@ -128,6 +161,17 @@ def reset_auth(
         if purge_secrets and _table_exists(conn, _SECRETS):
             secrets_purged = conn.execute(f"DELETE FROM {_SECRETS}").rowcount
         conn.commit()
+    except sqlite3.Error as exc:
+        # Both DELETEs share one implicit transaction, so a failure rolls back
+        # cleanly and leaves no partial state — the integrity is fine. What is
+        # not fine is a raw OperationalError traceback on the command an
+        # already-confused operator reached for. The overwhelmingly likely
+        # cause is a running daemon holding the write lock, so say so.
+        raise ResetError(
+            f"could not modify {db_path}: {exc}. "
+            "Stop the cabal daemon and try again — reset-auth edits the "
+            "database directly and needs exclusive access."
+        ) from exc
     finally:
         conn.close()
 

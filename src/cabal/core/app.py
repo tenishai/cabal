@@ -41,6 +41,7 @@ from cabal.core.auth.bootstrap_codes import issue_operator_code
 from cabal.core.auth.jwks_provider import RefreshingJWKSProvider
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.auth.master_key import (
+    EncryptedRowDamagedError,
     MasterKeyMismatchError,
     describe_master_key_source,
     resolve_master_key,
@@ -197,6 +198,12 @@ def create_app(
                 started = True
                 yield
         except MasterKeyMismatchError:
+            # `started` here for the same reason as below: nothing in the
+            # shutdown path decrypts today, so this is unreachable rather than
+            # wrong — but the invariant should hold structurally, not by luck
+            # about what `finally` happens to call.
+            if started:
+                raise
             # The one startup failure with a known remedy, so it gets a real
             # message instead of a traceback (cabal#92).
             log.error(
@@ -204,16 +211,38 @@ def create_app(
                 db_url=db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL,
                 key_source=describe_master_key_source(),
                 msg=(
-                    "The master key does not match the encrypted data in this "
-                    "database. Restore the CABAL_MASTER_KEY that wrote it, point "
-                    "CABAL_DB_URL at a different database, or run `cbl reset-auth` "
-                    "to back up the database and regenerate the signing key."
+                    "Could not decrypt this database's signing key: either the "
+                    "master key is not the one that wrote it, or the stored row "
+                    "is damaged. Restore the CABAL_MASTER_KEY that wrote it, "
+                    "point CABAL_DB_URL at a different database, or run "
+                    "`cbl reset-auth` to back up the database and regenerate "
+                    "the signing key."
+                ),
+            )
+            raise
+        except EncryptedRowDamagedError:
+            if started:
+                raise
+            log.error(
+                "cabal.encrypted_row_damaged",
+                db_url=db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL,
+                msg=(
+                    "The stored signing key is not well-formed ciphertext, so "
+                    "no master key will decrypt it. Restore the database from a "
+                    "backup, or run `cbl reset-auth` to regenerate the signing "
+                    "key. Do NOT go looking for a different CABAL_MASTER_KEY."
                 ),
             )
             raise
         except Exception:
             if not started:
                 log.exception("cabal.startup_failed")
+            else:
+                # Suppressing the misleading `startup_failed` must not mean
+                # saying nothing: an unlogged shutdown exception goes back to
+                # uvicorn, which is the swallowing this whole wrapper exists to
+                # end, just relocated to the other end of the lifespan.
+                log.exception("cabal.shutdown_failed")
             raise
 
     @asynccontextmanager
