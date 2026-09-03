@@ -161,6 +161,20 @@ def build_router_input_guardrails(identity: IdentityConfig | None) -> list[Guard
     return guardrails
 
 
+#: The operator-facing text for a key that cannot decrypt the database.
+#: A MODULE CONSTANT because the README quotes it: round 2 of #92's review
+#: found the code hedged ("either ... or ...") while the README still asserted
+#: a single cause, which is the exact case the hedge exists for. Named here so
+#: test_readme_quotes_the_current_mismatch_message can hold the two together.
+MASTER_KEY_MISMATCH_MSG = (
+    "Could not decrypt this database's signing key: either the master key is "
+    "not the one that wrote it, or the stored row is damaged. Restore the "
+    "CABAL_MASTER_KEY that wrote it, point CABAL_DB_URL at a different "
+    "database, or run `cbl reset-auth` to back up the database and regenerate "
+    "the signing key."
+)
+
+
 def create_app(
     *,
     agent: str = "all",
@@ -210,14 +224,7 @@ def create_app(
                 "cabal.master_key_mismatch",
                 db_url=db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL,
                 key_source=describe_master_key_source(),
-                msg=(
-                    "Could not decrypt this database's signing key: either the "
-                    "master key is not the one that wrote it, or the stored row "
-                    "is damaged. Restore the CABAL_MASTER_KEY that wrote it, "
-                    "point CABAL_DB_URL at a different database, or run "
-                    "`cbl reset-auth` to back up the database and regenerate "
-                    "the signing key."
-                ),
+                msg=MASTER_KEY_MISMATCH_MSG,
             )
             raise
         except EncryptedRowDamagedError:

@@ -150,15 +150,19 @@ the port:
 
 ```
 [error] cabal.master_key_mismatch  db_url=... key_source='the CABAL_MASTER_KEY environment variable'
-        msg='The master key does not match the encrypted data in this database. ...'
+        msg='Could not decrypt this database's signing key: either the master key is
+             not the one that wrote it, or the stored row is damaged. ...'
 ```
 
 Three ways out, cheapest first:
 
-1. **Restore the original key.** If the key is the problem, nothing is lost —
-   the data was never damaged, only unreadable. (If the log says
-   `cabal.encrypted_row_damaged` instead, the stored ciphertext itself is
-   malformed and no key will decrypt it: restore from a backup, or reset.)
+1. **Restore the original key** — if the key is what is wrong. Then nothing is
+   lost: the data was never damaged, only unreadable. The message says *either
+   the key or a damaged row* because cabal genuinely cannot always tell: a
+   malformed ciphertext envelope is detected and reported separately as
+   `cabal.encrypted_row_damaged`, but damage inside the encrypted body is
+   indistinguishable from a wrong key without the key itself. If restoring the
+   key does not work, assume the row is damaged and go to 2 or 3.
 2. **Point somewhere else**: `CABAL_DB_URL=sqlite+aiosqlite:///data-new/cabal.db`
    leaves the old database untouched for a later recovery.
 3. **`cbl reset-auth`** — backs the database up, deletes the undecryptable

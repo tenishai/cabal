@@ -111,6 +111,12 @@ def backup_database(db_path: Path, *, now: datetime | None = None) -> Path:
     """
     stamp = (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%SZ")
     backup_path = _unclaimed_path(db_path.with_name(f"{db_path.name}.bak-{stamp}"))
+    # CREATE IT LOCKED, THEN WIDEN. Narrowing the mode after `src.backup(dst)`
+    # left the file at the umask's 0644 for the whole copy — and a descriptor
+    # opened in that window keeps reading after the chmod, since chmod does not
+    # revoke an open fd. sqlite3.connect preserves an existing file's mode, so
+    # touching it first closes the window entirely (Prudence, #92 round 2).
+    backup_path.touch(mode=stat.S_IRUSR | stat.S_IWUSR)
     src = sqlite3.connect(db_path)
     try:
         dst = sqlite3.connect(backup_path)
@@ -120,15 +126,20 @@ def backup_database(db_path: Path, *, now: datetime | None = None) -> Path:
             dst.close()
     finally:
         src.close()
-    # INHERIT THE SOURCE'S MODE. sqlite3 creates the file under the process
-    # umask — 0644 beside a database the operator had chmodded to 0600. The
-    # Fernet columns stay encrypted, but conversations, events and personas are
-    # plaintext, so the recovery tool would widen access to the whole
-    # operational corpus at the moment the operator is already exposed.
+    # Then match the source exactly. Best-effort by design: the file is already
+    # 0600 from the touch above, so a failure here is a cosmetic mismatch, not
+    # an exposure — which is why it logs instead of raising. The previous
+    # fallback retried the same chmod that had just failed on the same path and
+    # let a raw PermissionError escape past the CLI's ResetError handler.
     try:
         backup_path.chmod(stat.S_IMODE(db_path.stat().st_mode))
-    except OSError:  # pragma: no cover - platform-dependent
-        backup_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except OSError as exc:  # pragma: no cover - platform-dependent
+        log.warning(
+            "auth.backup_mode_not_matched",
+            backup=str(backup_path),
+            error=str(exc),
+            msg="backup kept at 0600; could not copy the source file's mode",
+        )
     return backup_path
 
 
@@ -152,6 +163,9 @@ def reset_auth(
     backup_path = backup_database(db_path)
 
     conn = sqlite3.connect(db_path)
+    # A reset that fails leaves no backup behind: three locked-out retries left
+    # three full database copies, and on a large store that is real disk for an
+    # operator who has not succeeded at anything yet (Prudence, #92 round 2).
     try:
         secrets_before = _count(conn, _SECRETS)
         signing_deleted = 0
@@ -162,6 +176,7 @@ def reset_auth(
             secrets_purged = conn.execute(f"DELETE FROM {_SECRETS}").rowcount
         conn.commit()
     except sqlite3.Error as exc:
+        backup_path.unlink(missing_ok=True)
         # Both DELETEs share one implicit transaction, so a failure rolls back
         # cleanly and leaves no partial state — the integrity is fine. What is
         # not fine is a raw OperationalError traceback on the command an

@@ -11,6 +11,7 @@ import sqlite3
 import stat
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import pytest_asyncio
@@ -307,7 +308,7 @@ def test_locked_database_gives_a_remedy_not_a_traceback(tmp_path) -> None:
         holder.close()
 
 
-def test_damaged_row_is_not_reported_as_a_wrong_key(sessionmaker) -> None:
+def test_damaged_row_is_not_reported_as_a_wrong_key() -> None:
     """FINDING 4, the one that touched the PR's central claim.
 
     Fernet raises InvalidToken for a wrong key AND for damaged ciphertext. The
@@ -387,3 +388,62 @@ def test_reset_uses_the_models_table_names(tmp_path) -> None:
 
     assert reset_mod._SIGNING_KEYS == SigningKey.__tablename__
     assert reset_mod._SECRETS == Secret.__tablename__
+
+
+def test_backup_is_never_world_readable_even_mid_copy(tmp_path) -> None:
+    """ROUND 2, FINDING 1. Narrowing the mode AFTER the copy left the file at
+    the umask for the copy's whole duration, and a descriptor opened in that
+    window survives the chmod. The mode is now correct from creation."""
+    db = tmp_path / "cabal.db"
+    _make_db(db, secrets=2)
+    db.chmod(0o600)
+
+    seen: list[int] = []
+    real_connect = sqlite3.connect
+
+    def spy(target, *a, **kw):
+        # Fires while the destination exists but before backup() has run.
+        p = Path(str(target))
+        if p.name.startswith("cabal.db.bak-") and p.exists():
+            seen.append(stat.S_IMODE(p.stat().st_mode))
+        return real_connect(target, *a, **kw)
+
+    with mock.patch("sqlite3.connect", side_effect=spy):
+        backup = backup_database(db)
+
+    assert seen, "expected to observe the destination during the copy"
+    assert all(m == 0o600 for m in seen), f"exposed mid-copy: {[oct(m) for m in seen]}"
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+
+
+def test_failed_reset_leaves_no_backup_behind(tmp_path) -> None:
+    """ROUND 2, NIT 3. Each locked-out retry left a full database copy."""
+    db = tmp_path / "cabal.db"
+    _make_db(db)
+    holder = sqlite3.connect(db, isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")
+    try:
+        for _ in range(3):
+            with pytest.raises(ResetError):
+                reset_auth(f"sqlite:///{db}")
+    finally:
+        holder.close()
+
+    assert list(tmp_path.glob("*.bak-*")) == []
+
+
+def test_readme_quotes_the_current_mismatch_message() -> None:
+    """ROUND 2, FINDING 2. The README quoted round 1's message — the version
+    that asserted one cause — while the code had been changed to name two.
+
+    The operator-facing text is the product here, and drift between the code
+    and its documentation is invisible without an assertion holding them
+    together.
+    """
+    from cabal.core.app import MASTER_KEY_MISMATCH_MSG
+
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    first_sentence = MASTER_KEY_MISMATCH_MSG.split(".")[0]
+    # The README wraps the quote across lines, so compare on collapsed
+    # whitespace rather than requiring a verbatim single-line match.
+    assert " ".join(first_sentence.split()) in " ".join(readme.split())
