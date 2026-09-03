@@ -40,7 +40,11 @@ from cabal.core.auth.bootstrap import ensure_signing_key
 from cabal.core.auth.bootstrap_codes import issue_operator_code
 from cabal.core.auth.jwks_provider import RefreshingJWKSProvider
 from cabal.core.auth.keys import load_active_signing_key
-from cabal.core.auth.master_key import resolve_master_key
+from cabal.core.auth.master_key import (
+    MasterKeyMismatchError,
+    describe_master_key_source,
+    resolve_master_key,
+)
 from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.broker.heartbeat import HeartbeatScheduler
 from cabal.core.broker.router import DispatchRouter
@@ -174,6 +178,46 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        """Startup, with the failure made VISIBLE.
+
+        #77 already found that uvicorn exits on a startup exception without the
+        traceback reaching the terminal, and wrapped ONE step (migrations) in a
+        log-and-reraise. Everything after it stayed mute: a mismatched master
+        key exited with status 3 and a log that simply stopped, which is most of
+        why cabal#92 took DB surgery to diagnose. This wrapper covers the whole
+        sequence instead of another single step.
+
+        `started` keeps the diagnosis honest — once the body has yielded, a
+        later exception is a SHUTDOWN failure and must not be reported as a
+        startup one.
+        """
+        started = False
+        try:
+            async with _startup(_app):
+                started = True
+                yield
+        except MasterKeyMismatchError:
+            # The one startup failure with a known remedy, so it gets a real
+            # message instead of a traceback (cabal#92).
+            log.error(
+                "cabal.master_key_mismatch",
+                db_url=db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL,
+                key_source=describe_master_key_source(),
+                msg=(
+                    "The master key does not match the encrypted data in this "
+                    "database. Restore the CABAL_MASTER_KEY that wrote it, point "
+                    "CABAL_DB_URL at a different database, or run `cbl reset-auth` "
+                    "to back up the database and regenerate the signing key."
+                ),
+            )
+            raise
+        except Exception:
+            if not started:
+                log.exception("cabal.startup_failed")
+            raise
+
+    @asynccontextmanager
+    async def _startup(_app: FastAPI) -> AsyncIterator[None]:
         log.info("cabal.startup", version=__version__, agent=agent, config=config_path)
 
         master_key = resolve_master_key(allow_dev_fallback=allow_dev_master_key)

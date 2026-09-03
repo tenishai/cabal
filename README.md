@@ -142,6 +142,35 @@ public_key_env = "LANGFUSE_PUBLIC_KEY"
 secret_key_env = "LANGFUSE_SECRET_KEY"
 ```
 
+## Recovering a lost master key
+
+`CABAL_MASTER_KEY` encrypts the `signing_keys` and `secrets` tables. Start cabal
+against a database written under a *different* key and it stops before binding
+the port:
+
+```
+[error] cabal.master_key_mismatch  db_url=... key_source='the CABAL_MASTER_KEY environment variable'
+        msg='The master key does not match the encrypted data in this database. ...'
+```
+
+Three ways out, cheapest first:
+
+1. **Restore the original key.** Nothing is lost — the data was never damaged,
+   only unreadable.
+2. **Point somewhere else**: `CABAL_DB_URL=sqlite+aiosqlite:///data-new/cabal.db`
+   leaves the old database untouched for a later recovery.
+3. **`cbl reset-auth`** — backs the database up, deletes the undecryptable
+   signing keys, and drops the cached operator token they signed. The next
+   `cbl daemon up` mints a fresh key and prints a new bootstrap code.
+
+`reset-auth` keeps your `secrets` rows by default. They stay encrypted under the
+key you no longer have, so they are unreadable until it comes back — but they are
+also the only thing here that cannot be regenerated, which is why deleting them
+takes an explicit `--purge-secrets`.
+
+If the daemon starts but dispatch fails with `No key for kid`, the saved token
+was signed by a key that no longer exists: run `cbl login --code <CODE>` again.
+
 ## Modes
 
 - **Solo (default)**: one process, all personas as local handlers, dispatch router
