@@ -31,7 +31,7 @@ just implement this Protocol; persona code does not change.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any, Protocol, runtime_checkable
 
 __all__ = ["LLMClient"]
@@ -77,6 +77,7 @@ class LLMClient(Protocol):
         trace_id: str | None = None,
         span_id: str | None = None,
         task_id: str | None = None,
+        on_finish: Callable[[str | None], None] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Streaming completion. Yields text deltas as they arrive.
@@ -84,5 +85,12 @@ class LLMClient(Protocol):
         Same cross-cutting requirements as `acompletion`. Budget refund
         uses an approximate token count derived from the total streamed
         text length when usage metadata is not surfaced mid-stream.
+
+        `on_finish` receives the stream's terminal `finish_reason` once the
+        stream ends. DECLARED HERE RATHER THAN ABSORBED BY **kwargs because
+        truncation detection on the streaming path is load-bearing on it
+        (cabal#136): a conforming client that quietly dropped the callback
+        would turn an empty stream into an LLMTruncatedError instead of a
+        clean completion. That makes it a contract, not a coincidence.
         """
         ...
