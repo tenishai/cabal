@@ -29,6 +29,7 @@ from cabal.agents.llm_persona import LLMPersona, _message_to_chat
 from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.codes import (
     CODE_BUDGET_EXHAUSTED,
+    CODE_ESCALATION,
     CODE_POLICY_VIOLATION,
     CabalReason,
     annotate,
@@ -251,14 +252,26 @@ class PrimusPersona(LLMPersona):
             ),
             return_exceptions=True,
         )
+        # A LEG FAILURE MUST NOT OUTRANK A SIBLING'S ABORT. Results are in
+        # insertion order, so raising the first BaseException would let leg 1's
+        # _LegFailedError win over leg 2's TaskAborted and report an operator
+        # cancellation as a budget failure. Both deferred kinds are held back
+        # until every real exception has had its chance to propagate. Latent
+        # today — no shipped identity configures two concurrent legs — and a
+        # live bug the day one does.
         doom: _DoomLoopError | None = None
+        leg_failed: _LegFailedError | None = None
         for res in results:
             if isinstance(res, _DoomLoopError):
                 doom = doom or res
+            elif isinstance(res, _LegFailedError):
+                leg_failed = leg_failed or res
             elif isinstance(res, BaseException):
                 raise res  # abort / real errors propagate, as before
         if doom is not None:
             raise doom
+        if leg_failed is not None:
+            raise leg_failed
         return dict(zip(roles, results, strict=True))
 
     def _reviewer_instruction(
@@ -304,13 +317,24 @@ class PrimusPersona(LLMPersona):
             ),
         )
         plan = self.parse_response(response)
+        # EMPTINESS FIRST, INDEPENDENT OF THE REASON. check_truncation blesses
+        # empty-with-`stop`, and litellm's map_finish_reason defaults every
+        # reason it cannot map to exactly that — provider ERROR states included
+        # — so an empty plan escaped through `stop`, fanned out, and completed
+        # a confident summary over nothing. A terminal answer may legitimately
+        # be empty; an INSTRUCTION never can.
+        if not plan.strip():
+            raise LLMTruncatedError(
+                f"{self.name}: the plan hop returned no content, so there is "
+                "no instruction to hand a subordinate."
+            )
         # An empty plan hands the implementer an empty instruction, so this
         # must fail here rather than fan out (cabal#134). A HALF plan is fatal
         # too, and that is the one place this differs from a terminal answer:
         # a cut-off answer reaches a human who can see it stops mid-word, while
         # a cut-off plan reaches an agent that cannot tell a truncated
         # instruction from a terse one.
-        if self.check_not_truncated(response, plan):
+        if self.check_truncation(response, plan):
             raise LLMTruncatedError(
                 f"{self.name}: the plan was cut off at the output ceiling, and "
                 "a truncated instruction is indistinguishable from a terse one "
@@ -387,7 +411,11 @@ class PrimusPersona(LLMPersona):
         if response.status.state == "failed":
             raise _LegFailedError(
                 role=role,
-                code=int(response.metadata.get("cabal_reason_code", CODE_POLICY_VIOLATION)),
+                # 704, not 701: an unexplained leg failure is "subordinate
+                # handed back to caller", whereas 701 asserts a safety-tier
+                # refusal the code has no way to know happened — the same class
+                # of confident-wrong-label this PR exists to remove.
+                code=int(response.metadata.get("cabal_reason_code", CODE_ESCALATION)),
                 message=str(response.metadata.get("cabal_reason_message", "no reason given")),
             )
         if response.status.message is None:
@@ -438,10 +466,12 @@ class PrimusPersona(LLMPersona):
         summary = self.parse_response(response)
         # Every empty answer in cabal#134's evidence came from this hop. A
         # truncated-but-present summary is kept — it is the terminal answer and
-        # a human can see it stops mid-word — but the flag is recorded on the
-        # instance for handle_task to stamp into the Task, rather than dropped
-        # on the floor the way the first version did.
-        return summary, self.check_not_truncated(response, summary)
+        # a human can see it stops mid-word — and the flag RIDES BACK ON THE
+        # RETURN VALUE for handle_task to stamp into the Task. Deliberately not
+        # an instance attribute: register_local holds ONE handler per agent, so
+        # concurrent dispatches interleave on this object at every await and a
+        # flag written here would be whatever the last one wrote.
+        return summary, self.check_truncation(response, summary)
 
     async def _fire(self, name: HookName, task: Task, role: str) -> None:
         if self.hook_registry is None:

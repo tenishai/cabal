@@ -13,8 +13,9 @@ import pytest
 
 from cabal.agents.personas.wright import WrightPrimusPersona
 from cabal.agents.subordinate import Subordinate
-from cabal.core.a2a.codes import CODE_BUDGET_EXHAUSTED
+from cabal.core.a2a.codes import CODE_BUDGET_EXHAUSTED, CODE_ESCALATION
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
+from cabal.core.abort import TaskAborted
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient, LLMTruncatedError
 
@@ -40,7 +41,7 @@ def _client(*responses: dict) -> LiteLLMClient:
 
 
 def _persona() -> Subordinate:
-    """A persona for the classifier tests, which call check_not_truncated with a
+    """A persona for the classifier tests, which call check_truncation with a
     separately built response and never drive the client. The first version
     stubbed a client here whose response was never used, which read as though
     the stub drove the check."""
@@ -58,32 +59,32 @@ def test_ceiling_with_no_content_raises() -> None:
     """THE DEFECT. This is what produced t-502753ab9f95 and its two siblings."""
     p = _persona()
     with pytest.raises(LLMTruncatedError, match="output ceiling"):
-        p.check_not_truncated(_resp("", "length"), "")
+        p.check_truncation(_resp("", "length"), "")
 
 
 def test_ceiling_with_content_is_kept_but_flagged() -> None:
     """A truncated-but-useful answer is still worth returning — with a flag."""
     p = _persona()
-    assert p.check_not_truncated(_resp("half an answer", "length"), "half an answer") is True
+    assert p.check_truncation(_resp("half an answer", "length"), "half an answer") is True
 
 
 def test_tool_calls_with_no_content_stays_legitimate() -> None:
     """parse_response's docstring calls this 'a legitimate (if unusual) final
     state'. The fix must not turn it into a failure."""
     p = _persona()
-    assert p.check_not_truncated(_resp(None, "tool_calls"), "") is False
+    assert p.check_truncation(_resp(None, "tool_calls"), "") is False
 
 
 def test_whitespace_only_counts_as_no_content() -> None:
     """A model cut off after a newline has not answered."""
     p = _persona()
     with pytest.raises(LLMTruncatedError):
-        p.check_not_truncated(_resp("\n  \n", "length"), "\n  \n")
+        p.check_truncation(_resp("\n  \n", "length"), "\n  \n")
 
 
 def test_a_normal_answer_is_untouched() -> None:
     p = _persona()
-    assert p.check_not_truncated(_resp("hi", "stop"), "hi") is False
+    assert p.check_truncation(_resp("hi", "stop"), "hi") is False
 
 
 # --- end to end through a real dispatch ------------------------------------
@@ -159,7 +160,7 @@ def test_content_filter_with_no_content_is_a_failure() -> None:
     from the fix."""
     p = _persona()
     with pytest.raises(LLMTruncatedError, match="content_filter"):
-        p.check_not_truncated(_resp("", "content_filter"), "")
+        p.check_truncation(_resp("", "content_filter"), "")
 
 
 def test_an_unknown_future_reason_with_no_content_is_a_failure() -> None:
@@ -167,13 +168,13 @@ def test_an_unknown_future_reason_with_no_content_is_a_failure() -> None:
     nobody has thought of yet must not default to success."""
     p = _persona()
     with pytest.raises(LLMTruncatedError, match="not a reason cabal treats"):
-        p.check_not_truncated(_resp("", "some_new_provider_reason"), "")
+        p.check_truncation(_resp("", "some_new_provider_reason"), "")
 
 
 def test_a_missing_reason_with_no_content_is_a_failure() -> None:
     p = _persona()
     with pytest.raises(LLMTruncatedError):
-        p.check_not_truncated({"choices": [{"message": {"content": ""}}]}, "")
+        p.check_truncation({"choices": [{"message": {"content": ""}}]}, "")
 
 
 def test_tool_calls_are_blessed_whatever_the_reason_says() -> None:
@@ -181,13 +182,13 @@ def test_tool_calls_are_blessed_whatever_the_reason_says() -> None:
     is missing or odd — otherwise inverting the rule would break the tool loop."""
     p = _persona()
     resp = {"choices": [{"message": {"content": None, "tool_calls": [{"id": "1"}]}}]}
-    assert p.check_not_truncated(resp, "") is False
+    assert p.check_truncation(resp, "") is False
 
 
 def test_stop_with_no_content_stays_legitimate() -> None:
     """A model that genuinely chooses to say nothing."""
     p = _persona()
-    assert p.check_not_truncated(_resp("", "stop"), "") is False
+    assert p.check_truncation(_resp("", "stop"), "") is False
 
 
 @pytest.mark.asyncio
@@ -254,3 +255,115 @@ async def test_an_untruncated_fan_out_is_not_flagged() -> None:
 
     assert out.status.state == "completed"
     assert "cabal_truncated" not in out.metadata
+
+
+# --- round-2 review findings ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_empty_plan_fails_even_when_the_reason_is_stop() -> None:
+    """ROUND 2, Important 1 — the escape was `stop`.
+
+    check_truncation blesses empty-with-`stop`, so `_plan` returned "" and the
+    fan-out proceeded: the implementer received the empty string as its entire
+    instruction and the aggregator wrote a summary over nothing. cabal#134's
+    exact harm, reached through a different reason.
+
+    Not hypothetical: litellm's `map_finish_reason` defaults EVERY reason it
+    cannot map to `stop` (verified against litellm 1.92.0), including provider
+    error states — the ones most likely to arrive with empty content.
+    """
+    seen: list[str] = []
+
+    class _Recording(Subordinate):
+        async def handle_task(self, task, **kw):
+            seen.append(task.status.message.parts[0].text)
+            return await super().handle_task(task, **kw)
+
+    client = _client(_resp("", "stop"), _resp("work"), _resp("summary"))
+    implementer = _Recording("wright", "implementer", client, model="m")
+    wright = WrightPrimusPersona(client, subordinates={"implementer": implementer}, model="m")
+
+    out = await wright.handle_task(_task("t-emptyplan"))
+
+    assert out.status.state == "failed", out.status.state
+    assert "no instruction to hand a subordinate" in out.metadata["cabal_reason_message"]
+    assert seen == [], f"the fan-out ran on an empty instruction: {seen!r}"
+
+
+@pytest.mark.asyncio
+async def test_a_persona_stamps_the_truncation_flag_too() -> None:
+    """ROUND 2, nit 4. A truncated-but-kept LEG output completed with nothing
+    machine-readable, so a primus summarising it had no signal to see."""
+    p = _persona()
+    p.llm_client = _client(_resp("half an ans", "length"))
+
+    out = await p.handle_task(_task("t-flagged"))
+
+    assert out.status.state == "completed"
+    assert out.metadata["cabal_truncated"] == "wright-implementer"
+
+
+@pytest.mark.asyncio
+async def test_a_clean_persona_dispatch_is_not_flagged() -> None:
+    p = _persona()
+    p.llm_client = _client(_resp("a whole answer"))
+
+    out = await p.handle_task(_task("t-unflagged"))
+
+    assert "cabal_truncated" not in out.metadata
+
+
+@pytest.mark.asyncio
+async def test_an_unexplained_leg_failure_is_704_not_701() -> None:
+    """ROUND 2, nit 6. 701 asserts a safety-tier refusal the code cannot know
+    happened — the confident-wrong-label class this PR exists to remove."""
+    from cabal.agents.primus import _LegFailedError
+
+    exc = _LegFailedError(role="implementer", code=CODE_ESCALATION, message="x")
+    assert exc.code == CODE_ESCALATION
+
+    client = _client(_resp("plan"), _resp("work"), _resp("summary"))
+    implementer = Subordinate("wright", "implementer", client, model="m")
+    wright = WrightPrimusPersona(client, subordinates={"implementer": implementer}, model="m")
+
+    # a leg that fails with no reason code at all
+    async def _failed(task, **kw):
+        return task.model_copy(
+            update={"status": TaskStatus(state="failed", message=None), "metadata": {}}
+        )
+
+    implementer.handle_task = _failed  # type: ignore[method-assign]
+    out = await wright.handle_task(_task("t-unexplained"))
+
+    assert out.status.state == "failed"
+    assert out.metadata["cabal_reason_code"] == CODE_ESCALATION
+
+
+@pytest.mark.asyncio
+async def test_an_abort_outranks_a_leg_failure() -> None:
+    """ROUND 2, nit 3. Results are in insertion order, so raising the first
+    BaseException let leg 1's failure win over leg 2's cancellation — an
+    operator abort reported as a budget failure."""
+    from cabal.agents.primus import _LegFailedError
+
+    client = _client(_resp("plan"), _resp("summary"))
+    a = Subordinate("wright", "implementer", client, model="m")
+    b = Subordinate("wright", "second", client, model="m")
+    wright = WrightPrimusPersona(
+        client, subordinates={"implementer": a, "second": b}, model="m"
+    )
+
+    async def _fails(task, **kw):
+        raise _LegFailedError(role="implementer", code=CODE_BUDGET_EXHAUSTED, message="ceiling")
+
+    async def _aborts(task, **kw):
+        raise TaskAborted("t-abortrace.second", "operator cancelled")
+
+    async def _dispatch(parent_task, *, role, instruction):
+        return await (_fails if role == "implementer" else _aborts)(parent_task)
+
+    wright._dispatch_subordinate = _dispatch  # type: ignore[method-assign]
+
+    with pytest.raises(TaskAborted):
+        await wright.handle_task(_task("t-abortrace"))

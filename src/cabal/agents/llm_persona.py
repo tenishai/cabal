@@ -157,7 +157,7 @@ class LLMPersona:
     #: including reasons that do not exist yet — is treated as a failure.
     _EMPTY_IS_LEGITIMATE = frozenset({"tool_calls", "stop"})
 
-    def check_not_truncated(self, response: Any, text: str) -> bool:
+    def check_truncation(self, response: Any, text: str) -> bool:
         """Raise if the model stopped at its ceiling without saying anything.
 
         PERMITS A SHAPE, IT DOES NOT DENY A REASON. The first version asked
@@ -601,7 +601,7 @@ class LLMPersona:
 
         text = self.parse_response(response)
         try:
-            truncated = self.check_not_truncated(response, text)
+            truncated = self.check_truncation(response, text)
         except LLMTruncatedError as exc:
             self.session_tracker.end(session_id=session_id, summary=f"[failed] {exc}")
             await self.checkpoint_store.drop(task.id)
@@ -626,6 +626,13 @@ class LLMPersona:
             session_id=session_id,
             summary=f"[truncated] {text}" if truncated else text,
         )
+        # Machine-readable, not only a summary string: a truncated-but-kept LEG
+        # output otherwise completed with nothing a primus could see, and the
+        # aggregator then summarised half an answer with no signal in the task.
+        if truncated:
+            task = task.model_copy(
+                update={"metadata": {**task.metadata, "cabal_truncated": self.name}}
+            )
         self._commit_qa_to_memory(task, text)
         # Successful completion — drop the checkpoint so resume doesn't
         # try to replay a finished Task.
