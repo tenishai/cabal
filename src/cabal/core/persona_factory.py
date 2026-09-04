@@ -89,6 +89,15 @@ def register_personas_from_identity(
                 # cabal#11 — subordinates share the router's AbortGraph so a
                 # parent abort reaches their in-flight LLM calls.
                 sub.abort_coordinator = dispatch_router.abort_coordinator
+                # Inherit the primus's provider kwargs unless this subordinate
+                # states its own. A model-family switch is a property of the
+                # whole persona tree, so making the operator repeat it per
+                # subordinate would mostly produce half-configured trees.
+                sub.extra_kwargs = (
+                    sub_cfg.extra_kwargs
+                    if sub_cfg.extra_kwargs is not None
+                    else dict(persona_cfg.extra_kwargs)
+                )
                 sub_instances[role] = sub
             if "implementer" not in sub_instances:
                 log.warning(
@@ -128,6 +137,13 @@ def register_personas_from_identity(
             log.info("personas.system_prompt_overridden", persona=persona_name)
         if persona_cfg.commit_to_memory is not None:
             handler.commit_to_memory = persona_cfg.commit_to_memory
+        if persona_cfg.extra_kwargs:
+            handler.extra_kwargs = dict(persona_cfg.extra_kwargs)
+            log.info(
+                "personas.extra_kwargs_applied",
+                persona=persona_name,
+                keys=sorted(persona_cfg.extra_kwargs),
+            )
 
         # Auto-augment system prompt with edit-format instructions so
         # the operator doesn't have to paste them into identity.toml.

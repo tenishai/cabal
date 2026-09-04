@@ -55,6 +55,11 @@ class CabalConfig(_Open):
 class SubordinateConfig(_Open):
     model: str
     max_tokens: int = 8192
+    #: Provider kwargs for THIS subordinate's calls. `None` (the default) means
+    #: inherit the owning primus's — one setting in the persona block then
+    #: covers every hop, which is what an operator switching model families
+    #: actually wants. An explicit `{}` opts out and sends nothing.
+    extra_kwargs: dict[str, Any] | None = None
 
 
 class PersonaCheckpointingConfig(_Open):
@@ -109,6 +114,13 @@ class PersonaConfig(_Open):
     system_prompt_override: str | None = None
     model_override: str | None = None
     max_tokens_override: int | None = None
+    #: Extra keyword arguments passed through to `litellm.acompletion`, for
+    #: provider- or model-specific knobs cabal has no first-class field for.
+    #: Deliberately untyped and unvalidated: the set is defined by the provider,
+    #: not by cabal, and a whitelist here would need editing every time a
+    #: provider adds one. Example — turning a reasoning model's thinking off:
+    #:     extra_kwargs = { chat_template_kwargs = { enable_thinking = false } }
+    extra_kwargs: dict[str, Any] = Field(default_factory=dict)
     commit_to_memory: bool | None = None
     mcp: PersonaMCPConfig = Field(default_factory=PersonaMCPConfig)
     # Capability tags advertised by this persona. Used by the dispatch
