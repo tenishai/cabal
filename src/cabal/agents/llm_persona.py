@@ -170,9 +170,11 @@ class LLMPersona:
                                a human who can see it stops mid-word.
           empty + tool_calls-> returns False. The one genuinely legitimate
                                empty: a structural tool-call message, which
-                               parse_response's docstring describes. A message
-                               carrying tool_calls is blessed whatever its
-                               reason says.
+                               parse_response's docstring describes. Blessed on
+                               whether _extract_tool_calls finds something
+                               EXECUTABLE, not on the reason string and not on
+                               the raw array — so a response cabal cannot act
+                               on is never blessed as a legitimate silence.
           empty + `stop`    -> returns True. The task still completes — an
                                empty answer reaches a human who can see it is
                                empty, unlike an empty INSTRUCTION handed to an
@@ -197,7 +199,13 @@ class LLMPersona:
         try:
             choice = response["choices"][0]
             finish_reason = choice.get("finish_reason")
-            has_tool_calls = bool((choice.get("message") or {}).get("tool_calls"))
+            # THE SAME PREDICATE THE TOOL LOOP USES, not a looser one beside it.
+            # Blessing on "the array is non-empty" while _extract_tool_calls
+            # skips entries with no `function` key left a gap in the silent
+            # direction: an array cabal cannot act on, blessed as a legitimate
+            # empty. The blessing exists to mean "cabal can act on this", so it
+            # asks the function that decides that.
+            has_tool_calls = bool(_extract_tool_calls(response))
         except (KeyError, IndexError, TypeError, AttributeError):
             # A response shape parse_response would itself have rejected; let
             # that path own the error rather than raising a confusing one here.

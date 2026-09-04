@@ -186,10 +186,26 @@ def test_a_missing_reason_with_no_content_is_a_failure() -> None:
 
 
 def test_tool_calls_are_blessed_whatever_the_reason_says() -> None:
-    """A message carrying tool_calls is a legitimate empty even if the reason
-    is missing or odd — otherwise inverting the rule would break the tool loop."""
+    """An EXECUTABLE tool call is a legitimate empty even when the reason is
+    missing or odd — otherwise tightening the rule would break the tool loop.
+
+    The call must be executable: this originally used `[{"id": "1"}]`, which
+    `_extract_tool_calls` skips for want of a `function` key, so it asserted
+    the looser predicate that round 4 replaced.
+    """
     p = _persona()
-    resp = {"choices": [{"message": {"content": None, "tool_calls": [{"id": "1"}]}}]}
+    resp = {
+        "choices": [
+            {
+                "message": {
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "1", "function": {"name": "f", "arguments": "{}"}}
+                    ],
+                }
+            }
+        ]
+    }
     assert p.check_truncation(resp, "") is False
 
 
@@ -416,7 +432,13 @@ def test_litellm_really_does_collapse_error_states_onto_stop() -> None:
     """
     from litellm.litellm_core_utils.core_helpers import map_finish_reason
 
-    for provider_reason in ("ERROR", "MALFORMED_RESPONSE", "network_error"):
+    for provider_reason in (
+        "ERROR",
+        "MALFORMED_RESPONSE",
+        "MALFORMED_FUNCTION_CALL",
+        "network_error",
+        "FINISH_REASON_UNSPECIFIED",
+    ):
         assert map_finish_reason(provider_reason) == "stop", provider_reason
     # and anything unmapped defaults there too
     assert map_finish_reason("SOMETHING_INVENTED_NEXT_QUARTER") == "stop"
@@ -453,3 +475,43 @@ async def test_a_doom_loop_outranks_a_leg_failure() -> None:
     assert out.metadata["cabal_reason_code"] == CODE_POLICY_VIOLATION, (
         "a guardrail block must outrank a leg failure"
     )
+
+
+def test_an_unexecutable_tool_call_array_is_not_blessed() -> None:
+    """ROUND 4, nit 1 — the mirror of the case closed in round 3.
+
+    `_extract_tool_calls` skips any entry without a `function` key, so an array
+    of such entries yields nothing cabal can execute. Blessing it on "the array
+    is non-empty" made the two predicates disagree in the silent direction.
+    """
+    from cabal.agents.llm_persona import _extract_tool_calls
+
+    resp = {
+        "choices": [
+            {
+                "message": {"content": None, "tool_calls": [{"id": "call_1"}]},
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    assert _extract_tool_calls(resp) == [], "nothing executable in this response"
+    with pytest.raises(LLMTruncatedError):
+        _persona().check_truncation(resp, "")
+
+
+def test_a_real_tool_call_is_still_blessed() -> None:
+    """Guards the guard: tightening the predicate must not break the tool loop."""
+    resp = {
+        "choices": [
+            {
+                "message": {
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "c1", "function": {"name": "f", "arguments": "{}"}}
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    assert _persona().check_truncation(resp, "") is False
