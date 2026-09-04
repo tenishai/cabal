@@ -230,8 +230,18 @@ async def test_a_malformed_tool_call_array_does_not_escape_handle_task() -> None
                 {
                     "message": {
                         "content": "an answer",
-                        # a `function` with no `name`, and a non-dict entry
-                        "tool_calls": [{"id": "1", "function": {}}, "not-a-dict"],
+                        # BOTH entries must actually raise, or the fixture does
+                        # not demonstrate what its docstring claims. The first
+                        # version used `{"function": {}}`, which
+                        # _extract_tool_calls SKIPS — `if not raw.get("function")`
+                        # and {} is falsy — so the teeth were entirely in the
+                        # second entry while the prose named the first.
+                        #   {"function": {"arguments": "{}"}} -> KeyError('name')
+                        #   "not-a-dict"                      -> AttributeError
+                        "tool_calls": [
+                            {"id": "1", "function": {"arguments": "{}"}},
+                            "not-a-dict",
+                        ],
                     },
                     "finish_reason": "stop",
                 }
@@ -247,4 +257,9 @@ async def test_a_malformed_tool_call_array_does_not_escape_handle_task() -> None
     out = await p.handle_task(_task("t-malformed"))
 
     assert out.status.state == "completed", out.status.state
-    assert tracker.summaries, "the session must be ended, not abandoned mid-flight"
+    # EXACTLY, not merely non-empty: the malformed-shape arm returns False, and
+    # flipping it to True leaves a non-empty summary ("[truncated] an answer")
+    # plus cabal_truncated metadata that primus.py consumes. Non-emptiness lets
+    # that through; equality does not.
+    assert tracker.summaries == ["an answer"], tracker.summaries
+    assert "cabal_truncated" not in out.metadata
