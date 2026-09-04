@@ -54,6 +54,17 @@ class LLMInvalidRequestError(CabalLLMError):
     """Provider returned 4xx other than 429 (bad request, invalid model, etc.)."""
 
 
+class LLMTruncatedError(CabalLLMError):
+    """The model stopped at its output ceiling before producing any content.
+
+    NOT an error the provider reports as one: the call returns 200 with
+    `finish_reason: "length"` and an empty message. cabal used to record that
+    as a completed task with an empty answer (cabal#134) — 65k tokens and 15
+    minutes of wall clock, logged as a success. The condition is only
+    detectable by reading `finish_reason`, which nothing did.
+    """
+
+
 # litellm doesn't export a single base for these; we sniff by class name to
 # avoid hard-importing every variant.
 RATE_LIMIT_CLASSES = {"RateLimitError"}

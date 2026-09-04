@@ -27,17 +27,37 @@ from dataclasses import dataclass, field
 
 from cabal.agents.llm_persona import LLMPersona, _message_to_chat
 from cabal.agents.subordinate import Subordinate
-from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, CabalReason, annotate
+from cabal.core.a2a.codes import (
+    CODE_BUDGET_EXHAUSTED,
+    CODE_ESCALATION,
+    CODE_POLICY_VIOLATION,
+    CabalReason,
+    annotate,
+)
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import KIND_SUBORDINATE
 from cabal.core.guardrails import GuardrailContext, VerdictType
 from cabal.core.guardrails_builtin import DoomLoopGuardrail
 from cabal.core.hooks.registry import HookName, HookRegistry
-from cabal.core.llm.litellm_client import LiteLLMClient
+from cabal.core.llm.litellm_client import LiteLLMClient, LLMTruncatedError
 
 # Sentinel: distinguishes "caller passed doom_loop=None (disabled)" from
 # "caller omitted doom_loop (use default DoomLoopGuardrail())".
 _DOOM_LOOP_DEFAULT: object = object()
+
+
+class _LegFailedError(Exception):
+    """A fan-out leg came back as a failed Task.
+
+    Carries the leg's OWN reason code so the primus fails with what actually
+    happened rather than flattening every subordinate failure into one code.
+    """
+
+    def __init__(self, *, role: str, code: int, message: str) -> None:
+        super().__init__(f"{role} subordinate failed: {message}")
+        self.role = role
+        self.code = code
+        self.message = message
 
 
 class _DoomLoopError(Exception):
@@ -124,7 +144,13 @@ class PrimusPersona(LLMPersona):
         # cabal#11 — the parent dispatch node (task.id) is registered by the
         # router; checks here cancel the primus's own pipeline between stages.
         self.abort_coordinator.raise_if_aborted(task.id)
-        plan_text = await self._plan(task)
+        # _plan and _aggregate are the two stages that can raise
+        # LLMTruncatedError: a subordinate leg annotates its own failure and
+        # returns a Task, so it never reaches here as an exception (cabal#134).
+        try:
+            plan_text = await self._plan(task)
+        except LLMTruncatedError as exc:
+            return self._truncated(task, exc)
 
         # cabal#69 — fan-out: every non-reviewer subordinate is a leg,
         # dispatched CONCURRENTLY on the plan. `subordinates` is insertion-
@@ -141,6 +167,11 @@ class PrimusPersona(LLMPersona):
                     role="reviewer",
                     instruction=self._reviewer_instruction(plan_text, leg_outputs),
                 )
+        except _LegFailedError as exc:
+            return annotate(
+                task,
+                CabalReason(code=exc.code, message=f"{self.name}: {exc.message}"),
+            )
         except _DoomLoopError as exc:
             # Doom-loop guard blocked a subordinate dispatch. Return an
             # annotated failed Task to the caller (mirrors the router's own
@@ -154,9 +185,12 @@ class PrimusPersona(LLMPersona):
                 ),
             )
 
-        final_text = await self._aggregate(
-            task, plan_text, leg_outputs, reviewer_critique
-        )
+        try:
+            final_text, truncated = await self._aggregate(
+                task, plan_text, leg_outputs, reviewer_critique
+            )
+        except LLMTruncatedError as exc:
+            return self._truncated(task, exc)
 
         agent_msg = Message(role="agent", parts=[TextPart(text=final_text)])
         history = list(task.history)
@@ -168,7 +202,14 @@ class PrimusPersona(LLMPersona):
                 "contextId": task.context_id,
                 "status": TaskStatus(state="completed", message=agent_msg),
                 "history": history,
-                "metadata": task.metadata,
+                # A kept-but-truncated summary is still the answer, so the task
+                # completes — but it says so, rather than the flag being
+                # computed and dropped (cabal#134 review).
+                "metadata": (
+                    {**task.metadata, "cabal_truncated": "aggregate"}
+                    if truncated
+                    else task.metadata
+                ),
             }
         )
 
@@ -211,14 +252,34 @@ class PrimusPersona(LLMPersona):
             ),
             return_exceptions=True,
         )
+        # PRECEDENCE, AND WHY: a real exception beats both deferred kinds
+        # (raised in-loop at its position); between the two deferred kinds a
+        # DOOM BLOCK OUTRANKS A LEG FAILURE, because a guardrail block is a
+        # structural refusal — the leg never ran — while a leg failure is the
+        # outcome of one that did. That order was comment-only until
+        # test_a_doom_loop_outranks_a_leg_failure; swapping the two raises left
+        # the whole suite green.
+        #
+        # A LEG FAILURE MUST NOT OUTRANK A SIBLING'S ABORT. Results are in
+        # insertion order, so raising the first BaseException would let leg 1's
+        # _LegFailedError win over leg 2's TaskAborted and report an operator
+        # cancellation as a budget failure. Both deferred kinds are held back
+        # until every real exception has had its chance to propagate. Latent
+        # today — no shipped identity configures two concurrent legs — and a
+        # live bug the day one does.
         doom: _DoomLoopError | None = None
+        leg_failed: _LegFailedError | None = None
         for res in results:
             if isinstance(res, _DoomLoopError):
                 doom = doom or res
+            elif isinstance(res, _LegFailedError):
+                leg_failed = leg_failed or res
             elif isinstance(res, BaseException):
                 raise res  # abort / real errors propagate, as before
         if doom is not None:
             raise doom
+        if leg_failed is not None:
+            raise leg_failed
         return dict(zip(roles, results, strict=True))
 
     def _reviewer_instruction(
@@ -263,7 +324,41 @@ class PrimusPersona(LLMPersona):
                 **self.extra_kwargs,
             ),
         )
-        return self.parse_response(response)
+        plan = self.parse_response(response)
+        # EMPTINESS FIRST, INDEPENDENT OF THE REASON. check_truncation blesses
+        # empty-with-`stop`, and litellm's map_finish_reason defaults every
+        # reason it cannot map to exactly that — provider ERROR states included
+        # — so an empty plan escaped through `stop`, fanned out, and completed
+        # a confident summary over nothing. A terminal answer may legitimately
+        # be empty; an INSTRUCTION never can.
+        if not plan.strip():
+            raise LLMTruncatedError(
+                f"{self.name}: the plan hop returned no content, so there is "
+                "no instruction to hand a subordinate."
+            )
+        # An empty plan hands the implementer an empty instruction, so this
+        # must fail here rather than fan out (cabal#134). A HALF plan is fatal
+        # too, and that is the one place this differs from a terminal answer:
+        # a cut-off answer reaches a human who can see it stops mid-word, while
+        # a cut-off plan reaches an agent that cannot tell a truncated
+        # instruction from a terse one.
+        if self.check_truncation(response, plan):
+            raise LLMTruncatedError(
+                f"{self.name}: the plan was cut off at the output ceiling, and "
+                "a truncated instruction is indistinguishable from a terse one "
+                "to the subordinate receiving it."
+            )
+        return plan
+
+    def _truncated(self, task: Task, exc: LLMTruncatedError) -> Task:
+        """A failed Task with a reason code, not a raw exception at the router.
+
+        Same treatment a plain persona's own dispatch gets for this condition,
+        so a primus and a singleton fail identically (cabal#134).
+        """
+        return annotate(
+            task, CabalReason(code=CODE_BUDGET_EXHAUSTED, message=str(exc))
+        )
 
     async def _dispatch_subordinate(
         self, parent_task: Task, *, role: str, instruction: str
@@ -315,6 +410,22 @@ class PrimusPersona(LLMPersona):
         finally:
             self.abort_coordinator.complete(sub_task.id)
 
+        # A FAILED LEG IS NOT OUTPUT (cabal#134 review). This read the parts
+        # without ever looking at the state, so a subordinate that failed —
+        # truncated, guardrail-blocked, anything — had its REASON STRING
+        # consumed as its answer, and the aggregator wrote a confident summary
+        # on top of it. The task then completed clean, which is worse than the
+        # empty answer it replaced: an operator can spot zero characters.
+        if response.status.state == "failed":
+            raise _LegFailedError(
+                role=role,
+                # 704, not 701: an unexplained leg failure is "subordinate
+                # handed back to caller", whereas 701 asserts a safety-tier
+                # refusal the code has no way to know happened — the same class
+                # of confident-wrong-label this PR exists to remove.
+                code=int(response.metadata.get("cabal_reason_code", CODE_ESCALATION)),
+                message=str(response.metadata.get("cabal_reason_message", "no reason given")),
+            )
         if response.status.message is None:
             return ""
         return " ".join(
@@ -327,7 +438,7 @@ class PrimusPersona(LLMPersona):
         plan_text: str,
         leg_outputs: dict[str, str],
         reviewer_critique: str | None = None,
-    ) -> str:
+    ) -> tuple[str, bool]:
         messages = [
             {"role": "system", "content": self._aggregate_prompt},
             *(_message_to_chat(m) for m in task.history),
@@ -360,7 +471,15 @@ class PrimusPersona(LLMPersona):
                 **self.extra_kwargs,
             ),
         )
-        return self.parse_response(response)
+        summary = self.parse_response(response)
+        # Every empty answer in cabal#134's evidence came from this hop. A
+        # truncated-but-present summary is kept — it is the terminal answer and
+        # a human can see it stops mid-word — and the flag RIDES BACK ON THE
+        # RETURN VALUE for handle_task to stamp into the Task. Deliberately not
+        # an instance attribute: register_local holds ONE handler per agent, so
+        # concurrent dispatches interleave on this object at every await and a
+        # flag written here would be whatever the last one wrote.
+        return summary, self.check_truncation(response, summary)
 
     async def _fire(self, name: HookName, task: Task, role: str) -> None:
         if self.hook_registry is None:
