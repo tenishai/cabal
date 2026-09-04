@@ -383,9 +383,17 @@ async def test_a_subordinate_can_opt_out_with_an_empty_dict(
             )
             assert r.status_code == 200
 
-    by_hop = {
-        ("subordinate" if "subordinate" in c["system"] else "primus"): c
-        for c in captures
-    }
-    assert by_hop["primus"]["chat_template_kwargs"] == {"enable_thinking": False}
-    assert by_hop["subordinate"]["chat_template_kwargs"] is None, "opt-out ignored"
+    # Discriminate on MODEL, not on the word "subordinate" in the prompt: the
+    # primus PLAN prompt says "You DELEGATE to subordinates", so a substring
+    # test keys the plan hop as a subordinate and a collapsing dict then hides
+    # it by last-wins. Caught in review — the assertion landed on the right
+    # capture purely by ordering, and adding a reviewer would have moved it.
+    subordinate_hops = [c for c in captures if c["model"] == "openai/some-local-model"]
+    primus_hops = [c for c in captures if c["model"] != "openai/some-local-model"]
+
+    assert len(subordinate_hops) == 1, captures
+    assert len(primus_hops) == 2, "expected the plan and aggregate hops"
+    assert subordinate_hops[0]["chat_template_kwargs"] is None, "opt-out ignored"
+    # BOTH primus hops, which the previous discriminator never checked.
+    for hop in primus_hops:
+        assert hop["chat_template_kwargs"] == {"enable_thinking": False}
