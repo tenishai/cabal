@@ -1,0 +1,47 @@
+# identity.mtplx.toml — cabal Core against the mtplx LAN endpoint (2026-09-03).
+# OpenAI-compatible server: mtplx serve, Qwen3.5-9B-MTPLX-Optimized-Speed.
+# Verified live: /v1/models ok, chat ok (~65 tok/s warm), OpenAI tool-calling ok.
+#
+# THE MODEL IS A REASONING MODEL, AND THE FIX IS TO TURN THAT OFF, NOT TO BUDGET
+# AROUND IT. Measured 2026-09-03 across five runs of one primus dispatch: at
+# ceilings of 8192, 32768 and 65536 the hops either finished in ~3k tokens or
+# consumed the entire ceiling and returned content="" — 8192+8192, 4957+32768
+# and 32768+32768 all produced an EMPTY answer that cabal recorded as
+# `completed`. Raising max_tokens only changes how long you wait to learn which
+# kind of run you got. With thinking off the same dispatch is 33+66 tokens.
+#
+# api_base carries /v1 because the model strings use the openai/ provider.
+# The key lives in MTPLX_API_KEY (see ~/mtplx.env), never in this file.
+
+[cabal]
+operator_id = "operator"
+host = "127.0.0.1"
+port = 7400
+data_dir = "data"
+
+[litellm]
+api_base = "http://192.168.10.202:8000/v1"
+api_key_env = "MTPLX_API_KEY"
+
+# THE ONE SETTING THAT MATTERS FOR THIS MODEL. Measured 2026-09-03: the same
+# question takes 2048 tokens / 30s and returns EMPTY content with thinking on,
+# and 49 tokens / 1.1s with it off. reasoning_effort=none, thinking={"type":
+# "disabled"} and a /no_think prefix are all silently ignored by this server.
+[personas.archivist]
+description = "Memory and search"
+role = "singleton"
+safety_tier = "moderate"
+model_override = "openai/mtplx-qwen35-9b-optimized-speed"
+extra_kwargs = { chat_template_kwargs = { enable_thinking = false } }
+
+[personas.wright]
+description = "Senior software engineer — general-engineering primus"
+role = "primus"
+safety_tier = "moderate"
+model_override = "openai/mtplx-qwen35-9b-optimized-speed"
+# Subordinates inherit this — one line covers plan, implementer and aggregate.
+extra_kwargs = { chat_template_kwargs = { enable_thinking = false } }
+
+[personas.wright.subordinates.implementer]
+model = "openai/mtplx-qwen35-9b-optimized-speed"
+max_tokens = 8192
