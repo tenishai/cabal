@@ -23,10 +23,12 @@
 #                                                    is what this file ships
 #
 # The ceiling is NOT recorded in the event payloads, so that column comes from
-# the run order, not from the rows. What the rows do show: every hop that
-# stopped below its cap used 3-6k tokens and would have fit under the original
-# 8192, so raising the ceiling only changes how long you wait to find out which
-# kind of run you got. (This corrects cabal#131's commit message, whose table
+# the run order, not from the rows. What the rows do show: every thinking-on hop
+# that ended below its ceiling — EXCEPT row five's two, which stopped at 32768
+# for reasons this file cannot give — used 3-6k tokens and would have fit under
+# the original 8192. Raising the ceiling only changes how long you wait to find
+# out which kind of run you got: row five had the most headroom of any run and
+# still came back empty. (This corrects cabal#131's commit message, whose table
 # reads row four as an answer that ignored "two sentences max".)
 #
 # api_base carries /v1 because the model strings use the openai/ provider.
