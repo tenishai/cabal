@@ -255,10 +255,11 @@ class PrimusPersona(LLMPersona):
                 trace_id=task.metadata.get("cabal_trace_id"),
                 span_id=task.metadata.get("cabal_span_id"),
                 max_tokens=self.max_tokens,
-                # LLMPersona.extra_kwargs reaches its own call and the stream,
-                # but BOTH primus stages omitted it — so a provider knob set on
-                # a primus applied to its subordinates and not to the primus
-                # itself. Written-but-never-read, on two of four call paths.
+                # LLMPersona.extra_kwargs reaches its own call, the tool-loop
+                # re-entry that shares that call's dict, and the stream — but
+                # BOTH primus stages omitted it, so a provider knob set on a
+                # primus applied to its subordinates and not to the primus
+                # itself. Two of the five acompletion/astream call sites.
                 **self.extra_kwargs,
             ),
         )

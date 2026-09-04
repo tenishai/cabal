@@ -93,6 +93,22 @@ safety_tier = "moderate"
 # model_override = "anthropic/claude-opus-4-7"
 # max_tokens_override = 16384
 # commit_to_memory = true
+# extra_kwargs — provider/model knobs Cabal has no field of its own for, passed
+# straight through to the LLM call. Example: switching OFF a local reasoning
+# model's thinking, without which it can spend its whole token budget
+# deliberating and return empty content.
+# extra_kwargs = { chat_template_kwargs = { enable_thinking = false } }
+#
+# Keys Cabal binds itself are REFUSED at startup, naming the key: model,
+# messages, agent, trace_id, span_id, task_id, max_tokens, api_base, api_key,
+# tools, stream. Use max_tokens_override and the [litellm] block for those.
+#
+# A PRIMUS passes its extra_kwargs down to its subordinates, so one line covers
+# plan, implementer and aggregate. A subordinate that sets its own replaces the
+# inherited value; to send NOTHING on that hop, set it to empty explicitly:
+#     [personas.wright.subordinates.implementer]
+#     model = "openai/some-local-model"
+#     extra_kwargs = {}          # omit the line entirely to inherit instead
 # edit_format: "none" (default) or "search-replace". When set to
 # "search-replace", Cabal Core auto-appends aider-style SEARCH/REPLACE
 # block instructions to this persona's system prompt, AND `cbl chat`

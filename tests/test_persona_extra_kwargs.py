@@ -10,10 +10,15 @@ and two of the four call paths dropped it.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from cabal.agents.personas.wright import WrightPrimusPersona
 from cabal.agents.subordinate import Subordinate
-from cabal.config.identity import PersonaConfig, SubordinateConfig
+from cabal.config.identity import (
+    RESERVED_EXTRA_KWARGS,
+    PersonaConfig,
+    SubordinateConfig,
+)
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
@@ -111,3 +116,63 @@ async def test_absent_config_sends_nothing_extra() -> None:
 
     assert calls
     assert "chat_template_kwargs" not in calls[0]
+
+
+# --- review findings on PR #131 ---------------------------------------------
+
+
+def test_reserved_keys_are_refused_at_config_load() -> None:
+    """FINDING (Important). Collisions with cabal's own kwargs fail badly and
+    in two opposite directions, both measured on the live dispatch path:
+
+      max_tokens -> TypeError on EVERY dispatch, hours after a clean boot
+      api_base   -> silently WINS over daemon config, 200 OK, no log line
+
+    Both become one boot-time error naming the key.
+    """
+    for key, value in [
+        ("max_tokens", 999),
+        ("api_base", "http://evil.invalid/v1"),
+        ("api_key", "sk-nope"),
+        ("tools", []),
+        ("model", "someone/else"),
+        ("messages", []),
+    ]:
+        with pytest.raises(ValidationError, match="cabal binds these itself"):
+            PersonaConfig(role="singleton", extra_kwargs={key: value})
+        with pytest.raises(ValidationError, match="cabal binds these itself"):
+            SubordinateConfig(model="m", extra_kwargs={key: value})
+
+
+def test_the_error_names_the_offending_key() -> None:
+    """A guard the operator cannot act on is only half a guard."""
+    with pytest.raises(ValidationError) as exc:
+        PersonaConfig(role="singleton", extra_kwargs={"max_tokens": 1, "api_key": "x"})
+    msg = str(exc.value)
+    assert "'api_key'" in msg and "'max_tokens'" in msg
+    assert "max_tokens_override" in msg, "should point at the right field"
+
+
+def test_provider_keys_still_pass() -> None:
+    """Guards the guard: the reserved set must not swallow the actual use case."""
+    cfg = PersonaConfig(role="singleton", extra_kwargs=THINKING_OFF)
+    assert cfg.extra_kwargs == THINKING_OFF
+    assert SubordinateConfig(
+        model="m", extra_kwargs={"reasoning_effort": "low"}
+    ).extra_kwargs == {"reasoning_effort": "low"}
+
+
+def test_reserved_covers_the_client_signature() -> None:
+    """Pins the set to cabal's OWN signature, which is why it is not a treadmill.
+
+    Every keyword-only parameter LiteLLMClient.acompletion binds by name must be
+    reserved; if someone adds one, this fails instead of shipping a key that
+    raises TypeError at dispatch time.
+    """
+    import inspect
+
+    from cabal.core.llm.litellm_client import LiteLLMClient
+
+    for name, param in inspect.signature(LiteLLMClient.acompletion).parameters.items():
+        if param.kind is inspect.Parameter.KEYWORD_ONLY:
+            assert name in RESERVED_EXTRA_KWARGS, f"{name!r} is bindable but not reserved"

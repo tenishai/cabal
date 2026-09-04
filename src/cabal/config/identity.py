@@ -52,6 +52,61 @@ class CabalConfig(_Open):
     operator_id: str | None = None
 
 
+#: Keyword names cabal itself binds on the way to the provider. An
+#: `extra_kwargs` entry using one of these is rejected at config load rather
+#: than at dispatch, because the two collision classes both fail badly and in
+#: opposite directions (found by review on PR #131, both executed):
+#:
+#:   `max_tokens` — TypeError("got multiple values for keyword argument") on
+#:   EVERY dispatch to that persona, hours after a clean boot that logged the
+#:   offending key by name. `max_tokens` is also the likely wrong guess,
+#:   because cabal's own field is called `max_tokens_override`.
+#:
+#:   `api_base` / `api_key` — silently WIN over the daemon's configured values
+#:   (LiteLLMClient uses setdefault), so one persona's traffic is redirected
+#:   with a 200 and no log line saying so.
+#:
+#:   `tools` — silently discarded, since the tool proxy overwrites it.
+#:
+#: This is the complement of the whitelist we deliberately do not keep: it
+#: enumerates OUR OWN signature, not any provider's, so it changes only when
+#: LiteLLMClient does. test_reserved_covers_the_client_signature pins that.
+RESERVED_EXTRA_KWARGS = frozenset(
+    {
+        # bound by name in LiteLLMClient.acompletion / .astream
+        "model",
+        "messages",
+        "agent",
+        "trace_id",
+        "span_id",
+        "task_id",
+        # passed explicitly by every persona call site
+        "max_tokens",
+        # setdefault-ed by the client from daemon config
+        "api_base",
+        "api_key",
+        # owned by the tool proxy
+        "tools",
+        "stream",
+    }
+)
+
+
+def _reject_reserved(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Refuse provider kwargs that would collide with cabal's own."""
+    if not value:
+        return value
+    clashes = sorted(set(value) & RESERVED_EXTRA_KWARGS)
+    if clashes:
+        raise ValueError(
+            f"extra_kwargs may not set {', '.join(repr(c) for c in clashes)} — "
+            "cabal binds these itself on the way to the provider. "
+            "Use max_tokens_override for the token ceiling, and the [litellm] "
+            "block for api_base / api_key."
+        )
+    return value
+
+
 class SubordinateConfig(_Open):
     model: str
     max_tokens: int = 8192
@@ -60,6 +115,11 @@ class SubordinateConfig(_Open):
     #: covers every hop, which is what an operator switching model families
     #: actually wants. An explicit `{}` opts out and sends nothing.
     extra_kwargs: dict[str, Any] | None = None
+
+    @field_validator("extra_kwargs")
+    @classmethod
+    def _no_reserved_keys(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _reject_reserved(v)
 
 
 class PersonaCheckpointingConfig(_Open):
@@ -121,6 +181,11 @@ class PersonaConfig(_Open):
     #: provider adds one. Example — turning a reasoning model's thinking off:
     #:     extra_kwargs = { chat_template_kwargs = { enable_thinking = false } }
     extra_kwargs: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("extra_kwargs")
+    @classmethod
+    def _no_reserved_keys(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return _reject_reserved(v) or {}
     commit_to_memory: bool | None = None
     mcp: PersonaMCPConfig = Field(default_factory=PersonaMCPConfig)
     # Capability tags advertised by this persona. Used by the dispatch

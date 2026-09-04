@@ -93,10 +93,10 @@ def register_personas_from_identity(
                 # states its own. A model-family switch is a property of the
                 # whole persona tree, so making the operator repeat it per
                 # subordinate would mostly produce half-configured trees.
-                sub.extra_kwargs = (
+                sub.extra_kwargs = dict(
                     sub_cfg.extra_kwargs
                     if sub_cfg.extra_kwargs is not None
-                    else dict(persona_cfg.extra_kwargs)
+                    else persona_cfg.extra_kwargs
                 )
                 sub_instances[role] = sub
             if "implementer" not in sub_instances:
