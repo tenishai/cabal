@@ -4,14 +4,23 @@
 #
 # THE MODEL IS A REASONING MODEL, AND THE FIX IS TO TURN THAT OFF, NOT TO BUDGET
 # AROUND IT. Measured 2026-09-03 across five runs of one primus dispatch: at
-# rising ceilings the hops either finished in ~3-6k tokens or consumed the
-# whole ceiling and returned content="", which cabal recorded as `completed`:
+# rising ceilings the hops either finished in ~3-6k tokens or ran on until they
+# stopped at a cap and returned content="", which cabal recorded as
+# `completed`. Note row five: 32768 output against a stated 65536 ceiling, so
+# "used the whole ceiling" is NOT what happened and this file cannot say why
+# from its rows. Two runs topping out at exactly 32768 is consistent with a
+# server-side output cap, which would make anything above 32768 inert — but
+# that is a hypothesis, and a probe asking for 65536 returned finish_reason=
+# stop at 7550 tokens, so the model terminated on its own and the cap remains
+# untested.
 #
 #   ceiling  8192   t-502753ab9f95    8192 + 8192    empty
 #   ceiling 32768   t-7c8dbbcc5b07    4957 + 32768   empty
 #   ceiling 65536   t-3a65a6178a1f    5742 + 3261    375 chars
-#   ceiling 65536   t-3910a1e89adc    3918 + 3210    13378 chars (ignoring
-#                                                    "two sentences max")
+#   ceiling 65536   t-3910a1e89adc    3918 + 3210    13378 chars, but NOT an
+#                                                    answer — a reasoning
+#                                                    transcript cut off
+#                                                    mid-thought
 #   ceiling 65536   t-b9f991463629   32768 + 32768   empty
 #   thinking off    t-c20327c225cb      33 + 66      390 chars
 #
@@ -49,9 +58,16 @@ data_dir = "data"
 api_base = "http://192.168.10.202:8000/v1"
 api_key_env = "MTPLX_API_KEY"
 
-# THE ONE SETTING THAT MATTERS FOR THIS MODEL, and note the archivist fails
-# DIFFERENTLY from the primus above. Thinking-on here does not return empty —
-# it returns the model's own chain of thought AS THE ANSWER. From
+# THE ONE SETTING THAT MATTERS FOR THIS MODEL. Thinking-on does not only
+# return empty — it also returns the model's own chain of thought AS THE
+# ANSWER, on BOTH personas: t-47fedab34551 here (18220 chars) and
+# t-3910a1e89adc in the primus table above (13378 chars) share an opening
+# ("Thinking Process:\n\n1.  **Analyze the Request:**") and both stop
+# mid-deliberation. It is one symptom with two faces, not one per persona.
+# What separates them in these rows is where the hop stopped: every empty
+# answer came from a hop that ran to its cap, every non-empty one from a hop
+# that stopped below it. That is a correlation over ten dispatches, not a
+# mechanism — do not read more into it. From
 # data-mtplx/cabal.db, target_agent='archivist':
 #
 #   t-47fedab34551   5142 tok   80s   18220 chars, opening "Thinking Process:
@@ -63,9 +79,8 @@ api_key_env = "MTPLX_API_KEY"
 #   t-9694beee8273     45 tok    3s   a real answer
 #   t-53a77d3a1985     24 tok    2s   a real answer
 #
-# Two symptoms, one cure: empty content on the primus, a reasoning transcript
-# on the singleton. Both are the same model never emitting an end-of-thinking
-# token; only the surrounding code differs in what it does with the result.
+# Both faces are the same model failing to emit an end-of-thinking token; the
+# surrounding code only decides whether you get nothing or get the thinking.
 #
 # SEPARATELY, and NOT through cabal — curl straight at /v1/chat/completions with
 # max_tokens=2048, so it is a different measurement from the rows above:
