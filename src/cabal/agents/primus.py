@@ -27,13 +27,18 @@ from dataclasses import dataclass, field
 
 from cabal.agents.llm_persona import LLMPersona, _message_to_chat
 from cabal.agents.subordinate import Subordinate
-from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, CabalReason, annotate
+from cabal.core.a2a.codes import (
+    CODE_BUDGET_EXHAUSTED,
+    CODE_POLICY_VIOLATION,
+    CabalReason,
+    annotate,
+)
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import KIND_SUBORDINATE
 from cabal.core.guardrails import GuardrailContext, VerdictType
 from cabal.core.guardrails_builtin import DoomLoopGuardrail
 from cabal.core.hooks.registry import HookName, HookRegistry
-from cabal.core.llm.litellm_client import LiteLLMClient
+from cabal.core.llm.litellm_client import LiteLLMClient, LLMTruncatedError
 
 # Sentinel: distinguishes "caller passed doom_loop=None (disabled)" from
 # "caller omitted doom_loop (use default DoomLoopGuardrail())".
@@ -124,7 +129,13 @@ class PrimusPersona(LLMPersona):
         # cabal#11 — the parent dispatch node (task.id) is registered by the
         # router; checks here cancel the primus's own pipeline between stages.
         self.abort_coordinator.raise_if_aborted(task.id)
-        plan_text = await self._plan(task)
+        # _plan and _aggregate are the two stages that can raise
+        # LLMTruncatedError: a subordinate leg annotates its own failure and
+        # returns a Task, so it never reaches here as an exception (cabal#134).
+        try:
+            plan_text = await self._plan(task)
+        except LLMTruncatedError as exc:
+            return self._truncated(task, exc)
 
         # cabal#69 — fan-out: every non-reviewer subordinate is a leg,
         # dispatched CONCURRENTLY on the plan. `subordinates` is insertion-
@@ -154,9 +165,12 @@ class PrimusPersona(LLMPersona):
                 ),
             )
 
-        final_text = await self._aggregate(
-            task, plan_text, leg_outputs, reviewer_critique
-        )
+        try:
+            final_text = await self._aggregate(
+                task, plan_text, leg_outputs, reviewer_critique
+            )
+        except LLMTruncatedError as exc:
+            return self._truncated(task, exc)
 
         agent_msg = Message(role="agent", parts=[TextPart(text=final_text)])
         history = list(task.history)
@@ -263,7 +277,21 @@ class PrimusPersona(LLMPersona):
                 **self.extra_kwargs,
             ),
         )
-        return self.parse_response(response)
+        plan = self.parse_response(response)
+        # An empty plan hands the implementer an empty instruction, so this
+        # must fail here rather than fan out (cabal#134).
+        self.check_not_truncated(response, plan)
+        return plan
+
+    def _truncated(self, task: Task, exc: LLMTruncatedError) -> Task:
+        """A failed Task with a reason code, not a raw exception at the router.
+
+        Same treatment a plain persona's own dispatch gets for this condition,
+        so a primus and a singleton fail identically (cabal#134).
+        """
+        return annotate(
+            task, CabalReason(code=CODE_BUDGET_EXHAUSTED, message=str(exc))
+        )
 
     async def _dispatch_subordinate(
         self, parent_task: Task, *, role: str, instruction: str
@@ -360,7 +388,10 @@ class PrimusPersona(LLMPersona):
                 **self.extra_kwargs,
             ),
         )
-        return self.parse_response(response)
+        summary = self.parse_response(response)
+        # Every empty answer in cabal#134's evidence came from this hop.
+        self.check_not_truncated(response, summary)
+        return summary
 
     async def _fire(self, name: HookName, task: Task, role: str) -> None:
         if self.hook_registry is None:

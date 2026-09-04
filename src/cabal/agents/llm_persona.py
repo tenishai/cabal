@@ -33,6 +33,7 @@ from cabal.core.llm.litellm_client import (
     LiteLLMClient,
     LLMInvalidRequestError,
     LLMRateLimitedError,
+    LLMTruncatedError,
     LLMUnavailableError,
 )
 from cabal.core.memory.session_tracker import NoOpSessionTracker, SessionTracker
@@ -147,6 +148,44 @@ class LLMPersona:
         if task.status.message is not None:
             messages.append(_message_to_chat(task.status.message))
         return messages
+
+    def check_not_truncated(self, response: Any, text: str) -> bool:
+        """Raise if the model stopped at its ceiling without saying anything.
+
+        THREE-WAY, not a boolean (cabal#134):
+
+          length + no text  -> LLMTruncatedError. The model was cut off before
+                               it produced an answer. Recording this as a
+                               completed task is what let a 65k-token, 15-minute
+                               dispatch report success with an empty reply.
+          length + text     -> returns True, and the text is kept. A truncated
+                               but useful answer is still worth returning; the
+                               caller just should not be handed a sentence that
+                               stops mid-word without being told. Reported by
+                               return value rather than a log line because no
+                               module in cabal.agents logs directly — these
+                               classes report through the caller.
+          anything else     -> returns False. In particular `tool_calls` with no
+                               content is the legitimate empty that
+                               parse_response's docstring describes, and it must
+                               keep working.
+        """
+        try:
+            finish_reason = response["choices"][0].get("finish_reason")
+        except (KeyError, IndexError, TypeError):
+            # A response shape parse_response would itself have rejected; let
+            # that path own the error rather than raising a confusing one here.
+            return False
+        if finish_reason != "length":
+            return False
+        if not text.strip():
+            raise LLMTruncatedError(
+                f"{self.name}: the model stopped at its output ceiling "
+                "(finish_reason=length) before producing any content. Raise "
+                "max_tokens, or reduce what the model is asked to produce "
+                "before answering."
+            )
+        return True
 
     def parse_response(self, response: Any) -> str:
         """Extract assistant text from the LiteLLM response.
@@ -538,6 +577,15 @@ class LLMPersona:
                     )
 
         text = self.parse_response(response)
+        try:
+            truncated = self.check_not_truncated(response, text)
+        except LLMTruncatedError as exc:
+            self.session_tracker.end(session_id=session_id, summary=f"[failed] {exc}")
+            await self.checkpoint_store.drop(task.id)
+            return annotate(
+                task,
+                CabalReason(code=CODE_BUDGET_EXHAUSTED, message=str(exc)),
+            )
 
         # cabal#39 — output guardrail check before committing the result.
         text, blocked = await self._apply_guardrails(
@@ -551,7 +599,10 @@ class LLMPersona:
             await self.checkpoint_store.drop(task.id)
             return blocked
 
-        self.session_tracker.end(session_id=session_id, summary=text)
+        self.session_tracker.end(
+            session_id=session_id,
+            summary=f"[truncated] {text}" if truncated else text,
+        )
         self._commit_qa_to_memory(task, text)
         # Successful completion — drop the checkpoint so resume doesn't
         # try to replay a finished Task.
