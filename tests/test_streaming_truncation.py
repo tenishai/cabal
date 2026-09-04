@@ -1,0 +1,183 @@
+"""The streaming path checks finish_reason too (cabal#136).
+
+#134/#135 fixed the three non-streaming call sites. `astream_task` was the
+fourth and could not check at all: `astream` yields plain strings, so the
+terminal `finish_reason` — which rides the final chunk — was discarded inside
+the client and never reached the persona.
+
+Worse than the non-streaming case in one respect: on a truncated stream the
+operator has already watched text arrive, so the absence of an error reads as a
+finished answer rather than an empty one.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from cabal.agents.subordinate import Subordinate
+from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
+from cabal.core.hooks.registry import HookRegistry
+from cabal.core.llm.litellm_client import LiteLLMClient, LLMTruncatedError
+
+
+def _task(tid: str = "t-1") -> Task:
+    return Task(
+        id=tid,
+        status=TaskStatus(
+            state="submitted",
+            message=Message(role="user", parts=[TextPart(text="stream me")]),
+        ),
+    )
+
+
+def _chunk(text: str | None = None, finish_reason: str | None = None) -> dict:
+    return {"choices": [{"delta": {"content": text}, "finish_reason": finish_reason}]}
+
+
+def _streaming_client(*chunks: dict) -> LiteLLMClient:
+    """A client whose provider call returns the given chunks in order."""
+
+    async def fn(**kwargs):
+        assert kwargs.get("stream") is True, "astream must set stream=True"
+
+        class _Stream:
+            def __aiter__(self):
+                async def gen():
+                    for c in chunks:
+                        yield c
+
+                return gen()
+
+        return _Stream()
+
+    return LiteLLMClient(acompletion_fn=fn, hook_registry=HookRegistry())
+
+
+class _RecordingTracker:
+    """Captures session summaries — the only place the streaming path records
+    that an answer was cut off, and therefore the only thing that can tell a
+    flagged run from an unflagged one."""
+
+    def __init__(self) -> None:
+        self.summaries: list[str] = []
+
+    def start(self, *, external_id: str, agent_identity: str) -> str:
+        return external_id
+
+    def end(self, *, session_id: str, summary: str) -> None:
+        self.summaries.append(summary)
+
+
+def _persona(client: LiteLLMClient, tracker: object | None = None) -> Subordinate:
+    return Subordinate(
+        "wright",
+        "implementer",
+        client,
+        model="m",
+        session_tracker=tracker,  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stream_cut_off_with_no_content_raises() -> None:
+    """THE DEFECT on this path: it ended indistinguishably from a clean one."""
+    p = _persona(_streaming_client(_chunk(None, None), _chunk(None, "length")))
+
+    with pytest.raises(LLMTruncatedError, match="output ceiling"):
+        async for _ in p.astream_task(_task()):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_a_stream_cut_off_mid_answer_keeps_the_text() -> None:
+    """Deltas already reached the operator, so the partial answer is kept —
+    the session summary is what records that it was cut off."""
+    p = _persona(
+        _streaming_client(_chunk("half an "), _chunk("answer"), _chunk(None, "length"))
+    )
+
+    out = [d async for d in p.astream_task(_task())]
+
+    assert "".join(out) == "half an answer"
+
+
+@pytest.mark.asyncio
+async def test_a_complete_stream_is_untouched() -> None:
+    """Guards the guard: a healthy stream must not start failing."""
+    p = _persona(_streaming_client(_chunk("all "), _chunk("done"), _chunk(None, "stop")))
+
+    out = [d async for d in p.astream_task(_task())]
+
+    assert "".join(out) == "all done"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_stream_that_stopped_is_not_silently_fine() -> None:
+    """`stop` with nothing streamed: litellm collapses provider ERROR,
+    MALFORMED_RESPONSE and network_error onto `stop`, so this is the shape a
+    failed generation arrives in. It does not raise — the classifier keeps it
+    completable — but it is flagged rather than passing as a clean run."""
+    p = _persona(_streaming_client(_chunk(None, "stop")))
+
+    out = [d async for d in p.astream_task(_task())]
+
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_an_empty_stream_with_no_reason_at_all_raises() -> None:
+    """A provider that ends the stream saying nothing about why."""
+    p = _persona(_streaming_client(_chunk(None, None)))
+
+    with pytest.raises(LLMTruncatedError):
+        async for _ in p.astream_task(_task()):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_the_reason_is_taken_from_the_last_chunk_that_has_one() -> None:
+    """finish_reason is None on every chunk but the last, so the client keeps
+    the last NON-NULL value rather than the last value.
+
+    Both readings KEEP the text, so asserting on the text cannot tell them
+    apart — the mutation proved exactly that. The difference is only visible in
+    the flag: last-non-null sees `length` and marks the summary [truncated];
+    last-value sees the trailing None and marks nothing.
+    """
+    tracker = _RecordingTracker()
+    p = _persona(
+        _streaming_client(
+            _chunk("text", None), _chunk(None, "length"), _chunk(None, None)
+        ),
+        tracker,
+    )
+
+    out = [d async for d in p.astream_task(_task())]
+
+    assert "".join(out) == "text"  # kept: truncated-with-content
+    assert tracker.summaries == ["[truncated] text"], tracker.summaries
+
+
+@pytest.mark.asyncio
+async def test_a_complete_stream_is_not_flagged() -> None:
+    """Guards the guard: the flag must not appear on a healthy stream."""
+    tracker = _RecordingTracker()
+    p = _persona(_streaming_client(_chunk("all done"), _chunk(None, "stop")), tracker)
+
+    async for _ in p.astream_task(_task()):
+        pass
+
+    assert tracker.summaries == ["all done"], tracker.summaries
+
+
+def test_both_paths_share_one_classifier() -> None:
+    """The rule lives in the client module precisely so the streaming path can
+    reach it; a second copy on the persona is how the two drift apart."""
+    import inspect
+
+    from cabal.agents.llm_persona import LLMPersona
+    from cabal.core.llm.litellm_client import classify_truncation
+
+    src = inspect.getsource(LLMPersona.check_truncation)
+    assert "classify_truncation(" in src, "the persona must delegate, not re-implement"
+    assert callable(classify_truncation)
