@@ -8,11 +8,7 @@
 # stopped at a cap and returned content="", which cabal recorded as
 # `completed`. Note row five: 32768 output against a stated 65536 ceiling, so
 # "used the whole ceiling" is NOT what happened and this file cannot say why
-# from its rows. Two runs topping out at exactly 32768 is consistent with a
-# server-side output cap, which would make anything above 32768 inert — but
-# that is a hypothesis, and a probe asking for 65536 returned finish_reason=
-# stop at 7550 tokens, so the model terminated on its own and the cap remains
-# untested.
+# from its rows (both its hops stopped at 32768; unexplained).
 #
 #   ceiling  8192   t-502753ab9f95    8192 + 8192    empty
 #   ceiling 32768   t-7c8dbbcc5b07    4957 + 32768   empty
@@ -22,13 +18,16 @@
 #                                                    transcript cut off
 #                                                    mid-thought
 #   ceiling 65536   t-b9f991463629   32768 + 32768   empty
-#   thinking off    t-c20327c225cb      33 + 66      390 chars
+#   thinking off    t-c20327c225cb      33 + 66      390 chars  <- ceiling back
+#                                                    at the 8192 default, which
+#                                                    is what this file ships
 #
 # The ceiling is NOT recorded in the event payloads, so that column comes from
-# the run order, not from the rows. What the rows do show is that the two runs
-# which answered used 3-6k tokens per hop and would have fit under the original
-# 8192 — raising the ceiling only changes how long you wait to learn which kind
-# of run you got.
+# the run order, not from the rows. What the rows do show: every hop that
+# stopped below its cap used 3-6k tokens and would have fit under the original
+# 8192, so raising the ceiling only changes how long you wait to find out which
+# kind of run you got. (This corrects cabal#131's commit message, whose table
+# reads row four as an answer that ignored "two sentences max".)
 #
 # api_base carries /v1 because the model strings use the openai/ provider.
 #
@@ -61,17 +60,13 @@ api_key_env = "MTPLX_API_KEY"
 # THE ONE SETTING THAT MATTERS FOR THIS MODEL. Thinking-on does not only
 # return empty — it also returns the model's own chain of thought AS THE
 # ANSWER, on BOTH personas: t-47fedab34551 here (18220 chars) and
-# t-3910a1e89adc in the primus table above (13378 chars) share an opening
-# ("Thinking Process:\n\n1.  **Analyze the Request:**") and both stop
-# mid-deliberation. It is one symptom with two faces, not one per persona.
-# What separates them in these rows is where the hop stopped: every empty
-# answer came from a hop that ran to its cap, every non-empty one from a hop
-# that stopped below it. That is a correlation over ten dispatches, not a
-# mechanism — do not read more into it. From
-# data-mtplx/cabal.db, target_agent='archivist':
+# t-3910a1e89adc in the primus table above (13378 chars) share an opening and
+# both stop mid-deliberation. It is one symptom with two faces, not one per
+# persona. From data-mtplx/cabal.db, target_agent='archivist':
 #
 #   t-47fedab34551   5142 tok   80s   18220 chars, opening "Thinking Process:
-#                                     1. **Analyze the Request:**" — five
+#                                     \n\n1.  **Analyze the Request:**" (two
+#                                     spaces after the 1., as in the row) — five
 #                                     thousand tokens of the model deciding
 #                                     whether an Archivist may multiply 17x23
 #   t-9e11ec722b60   2248 tok   34s   a real but slow answer
@@ -79,8 +74,9 @@ api_key_env = "MTPLX_API_KEY"
 #   t-9694beee8273     45 tok    3s   a real answer
 #   t-53a77d3a1985     24 tok    2s   a real answer
 #
-# Both faces are the same model failing to emit an end-of-thinking token; the
-# surrounding code only decides whether you get nothing or get the thinking.
+# The working explanation is that the model never emits an end-of-thinking
+# token, and the surrounding code only decides whether you get nothing or get
+# the thinking. Nothing here inspects a token stream or a chat template.
 #
 # SEPARATELY, and NOT through cabal — curl straight at /v1/chat/completions with
 # max_tokens=2048, so it is a different measurement from the rows above:
