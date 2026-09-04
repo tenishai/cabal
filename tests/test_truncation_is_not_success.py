@@ -430,7 +430,17 @@ def test_litellm_really_does_collapse_error_states_onto_stop() -> None:
     If a future litellm stops collapsing these, the reasoning in
     check_truncation's docstring needs revisiting — this fails and says so.
     """
-    from litellm.litellm_core_utils.core_helpers import map_finish_reason
+    # SKIPS IN CI, AND THAT IS THE HONEST OUTCOME. litellm is an UNDECLARED
+    # dependency (cabal#88), so a clean install does not have it and this test
+    # cannot check anything there — it failed CI on exactly that, while passing
+    # locally where an older install still provides it. Asserting against a
+    # package that may be absent has to skip rather than fail; when #88 lands
+    # and litellm is declared, this starts running in CI with no change here.
+    litellm_helpers = pytest.importorskip(
+        "litellm.litellm_core_utils.core_helpers",
+        reason="litellm is an undeclared dependency (cabal#88)",
+    )
+    map_finish_reason = litellm_helpers.map_finish_reason
 
     for provider_reason in (
         "ERROR",
