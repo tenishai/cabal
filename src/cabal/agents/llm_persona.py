@@ -102,7 +102,10 @@ class LLMPersona:
     # NOT on resume — so a non-idempotent rewrite can't compound across resumes;
     # the guarded messages are what gets checkpointed. Input-phase covers the
     # first LLM call only; tool-loop turns are #52's scope. astream_task does
-    # NOT apply guardrails (streaming path deferred).
+    # NOT apply guardrails (streaming path deferred), and it does NOT check
+    # finish_reason either — it accumulates deltas, so a truncated stream ends
+    # indistinguishably from a complete one and cabal#134 is still live on that
+    # path.
     input_guardrails: list[Guardrail] = field(default_factory=list)
     output_guardrails: list[Guardrail] = field(default_factory=list)
     # cabal#52 — tool-boundary guardrails. Empty defaults = zero behavior change.
@@ -149,43 +152,63 @@ class LLMPersona:
             messages.append(_message_to_chat(task.status.message))
         return messages
 
+    #: Reasons for which an empty message is a legitimate final state, rather
+    #: than a model that stopped before it said anything. Everything else —
+    #: including reasons that do not exist yet — is treated as a failure.
+    _EMPTY_IS_LEGITIMATE = frozenset({"tool_calls", "stop"})
+
     def check_not_truncated(self, response: Any, text: str) -> bool:
         """Raise if the model stopped at its ceiling without saying anything.
 
-        THREE-WAY, not a boolean (cabal#134):
+        PERMITS A SHAPE, IT DOES NOT DENY A REASON. The first version asked
+        `if finish_reason != "length": return False`, which defaults every
+        reason it has not enumerated — present or future, provider-specific or
+        not — to "this is fine". `content_filter` with empty content then
+        reproduced cabal#134 exactly, one string comparison from the fix. A
+        check whose whole premise is that silence was wrongly read as success
+        must not default open on silence, so empty text is a failure UNLESS the
+        reason is one we have blessed.
 
-          length + no text  -> LLMTruncatedError. The model was cut off before
-                               it produced an answer. Recording this as a
-                               completed task is what let a 65k-token, 15-minute
-                               dispatch report success with an empty reply.
-          length + text     -> returns True, and the text is kept. A truncated
-                               but useful answer is still worth returning; the
-                               caller just should not be handed a sentence that
-                               stops mid-word without being told. Reported by
-                               return value rather than a log line because no
-                               module in cabal.agents logs directly — these
-                               classes report through the caller.
-          anything else     -> returns False. In particular `tool_calls` with no
-                               content is the legitimate empty that
-                               parse_response's docstring describes, and it must
-                               keep working.
+          text present      -> returns True when the reason is `length` (the
+                               answer was cut off but is worth keeping), else
+                               False. A truncated terminal answer still reaches
+                               a human who can see it stops mid-word.
+          empty + blessed   -> returns False. `tool_calls` with no content is
+                               the legitimate empty parse_response's docstring
+                               describes; `stop` is a model that genuinely chose
+                               to say nothing. A message carrying tool_calls is
+                               blessed whatever its reason says.
+          empty + anything  -> LLMTruncatedError, naming the reason. Covers
+          else               `length`, `content_filter`, and every reason no one
+                               has thought of yet.
+
+        Reported by return value rather than a log line because no module in
+        cabal.agents logs directly — these classes report through the caller.
         """
         try:
-            finish_reason = response["choices"][0].get("finish_reason")
-        except (KeyError, IndexError, TypeError):
+            choice = response["choices"][0]
+            finish_reason = choice.get("finish_reason")
+            has_tool_calls = bool((choice.get("message") or {}).get("tool_calls"))
+        except (KeyError, IndexError, TypeError, AttributeError):
             # A response shape parse_response would itself have rejected; let
             # that path own the error rather than raising a confusing one here.
             return False
-        if finish_reason != "length":
+        if text.strip():
+            return bool(finish_reason == "length")
+        if has_tool_calls or finish_reason in self._EMPTY_IS_LEGITIMATE:
             return False
-        if not text.strip():
+        if finish_reason == "length":
             raise LLMTruncatedError(
                 f"{self.name}: the model stopped at its output ceiling "
-                "(finish_reason=length) before producing any content. Raise "
-                "max_tokens, or reduce what the model is asked to produce "
-                "before answering."
+                "(finish_reason='length') before producing any content. Raise "
+                "max_tokens, or reduce what the model must produce before it "
+                "can answer."
             )
-        return True
+        raise LLMTruncatedError(
+            f"{self.name}: the model produced no content and stopped with "
+            f"finish_reason={finish_reason!r}, which is not a reason cabal "
+            "treats as a legitimate empty answer."
+        )
 
     def parse_response(self, response: Any) -> str:
         """Extract assistant text from the LiteLLM response.

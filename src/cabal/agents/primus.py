@@ -45,6 +45,20 @@ from cabal.core.llm.litellm_client import LiteLLMClient, LLMTruncatedError
 _DOOM_LOOP_DEFAULT: object = object()
 
 
+class _LegFailedError(Exception):
+    """A fan-out leg came back as a failed Task.
+
+    Carries the leg's OWN reason code so the primus fails with what actually
+    happened rather than flattening every subordinate failure into one code.
+    """
+
+    def __init__(self, *, role: str, code: int, message: str) -> None:
+        super().__init__(f"{role} subordinate failed: {message}")
+        self.role = role
+        self.code = code
+        self.message = message
+
+
 class _DoomLoopError(Exception):
     """Internal signal: doom-loop guardrail blocked a subordinate dispatch.
 
@@ -152,6 +166,11 @@ class PrimusPersona(LLMPersona):
                     role="reviewer",
                     instruction=self._reviewer_instruction(plan_text, leg_outputs),
                 )
+        except _LegFailedError as exc:
+            return annotate(
+                task,
+                CabalReason(code=exc.code, message=f"{self.name}: {exc.message}"),
+            )
         except _DoomLoopError as exc:
             # Doom-loop guard blocked a subordinate dispatch. Return an
             # annotated failed Task to the caller (mirrors the router's own
@@ -166,7 +185,7 @@ class PrimusPersona(LLMPersona):
             )
 
         try:
-            final_text = await self._aggregate(
+            final_text, truncated = await self._aggregate(
                 task, plan_text, leg_outputs, reviewer_critique
             )
         except LLMTruncatedError as exc:
@@ -182,7 +201,14 @@ class PrimusPersona(LLMPersona):
                 "contextId": task.context_id,
                 "status": TaskStatus(state="completed", message=agent_msg),
                 "history": history,
-                "metadata": task.metadata,
+                # A kept-but-truncated summary is still the answer, so the task
+                # completes — but it says so, rather than the flag being
+                # computed and dropped (cabal#134 review).
+                "metadata": (
+                    {**task.metadata, "cabal_truncated": "aggregate"}
+                    if truncated
+                    else task.metadata
+                ),
             }
         )
 
@@ -279,8 +305,17 @@ class PrimusPersona(LLMPersona):
         )
         plan = self.parse_response(response)
         # An empty plan hands the implementer an empty instruction, so this
-        # must fail here rather than fan out (cabal#134).
-        self.check_not_truncated(response, plan)
+        # must fail here rather than fan out (cabal#134). A HALF plan is fatal
+        # too, and that is the one place this differs from a terminal answer:
+        # a cut-off answer reaches a human who can see it stops mid-word, while
+        # a cut-off plan reaches an agent that cannot tell a truncated
+        # instruction from a terse one.
+        if self.check_not_truncated(response, plan):
+            raise LLMTruncatedError(
+                f"{self.name}: the plan was cut off at the output ceiling, and "
+                "a truncated instruction is indistinguishable from a terse one "
+                "to the subordinate receiving it."
+            )
         return plan
 
     def _truncated(self, task: Task, exc: LLMTruncatedError) -> Task:
@@ -343,6 +378,18 @@ class PrimusPersona(LLMPersona):
         finally:
             self.abort_coordinator.complete(sub_task.id)
 
+        # A FAILED LEG IS NOT OUTPUT (cabal#134 review). This read the parts
+        # without ever looking at the state, so a subordinate that failed —
+        # truncated, guardrail-blocked, anything — had its REASON STRING
+        # consumed as its answer, and the aggregator wrote a confident summary
+        # on top of it. The task then completed clean, which is worse than the
+        # empty answer it replaced: an operator can spot zero characters.
+        if response.status.state == "failed":
+            raise _LegFailedError(
+                role=role,
+                code=int(response.metadata.get("cabal_reason_code", CODE_POLICY_VIOLATION)),
+                message=str(response.metadata.get("cabal_reason_message", "no reason given")),
+            )
         if response.status.message is None:
             return ""
         return " ".join(
@@ -355,7 +402,7 @@ class PrimusPersona(LLMPersona):
         plan_text: str,
         leg_outputs: dict[str, str],
         reviewer_critique: str | None = None,
-    ) -> str:
+    ) -> tuple[str, bool]:
         messages = [
             {"role": "system", "content": self._aggregate_prompt},
             *(_message_to_chat(m) for m in task.history),
@@ -389,9 +436,12 @@ class PrimusPersona(LLMPersona):
             ),
         )
         summary = self.parse_response(response)
-        # Every empty answer in cabal#134's evidence came from this hop.
-        self.check_not_truncated(response, summary)
-        return summary
+        # Every empty answer in cabal#134's evidence came from this hop. A
+        # truncated-but-present summary is kept — it is the terminal answer and
+        # a human can see it stops mid-word — but the flag is recorded on the
+        # instance for handle_task to stamp into the Task, rather than dropped
+        # on the floor the way the first version did.
+        return summary, self.check_not_truncated(response, summary)
 
     async def _fire(self, name: HookName, task: Task, role: str) -> None:
         if self.hook_registry is None:
