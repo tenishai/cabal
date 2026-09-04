@@ -35,6 +35,7 @@ async def stub_acompletion_captures():
                     (m["content"] for m in messages if m["role"] == "system"), ""
                 ),
                 "max_tokens": kwargs.get("max_tokens"),
+                "chat_template_kwargs": kwargs.get("chat_template_kwargs"),
             }
         )
         return {"choices": [{"message": {"content": "ok"}}]}
@@ -227,3 +228,172 @@ async def test_no_overrides_keeps_defaults(tmp_path, stub_acompletion_captures) 
         # Archivist defaults: commit_to_memory=True, sonnet model
         assert handler.commit_to_memory is True
         assert "sonnet" in handler.model.lower()
+
+
+@pytest.mark.asyncio
+async def test_extra_kwargs_from_identity_reach_the_provider_call(
+    tmp_path, stub_acompletion_captures
+) -> None:
+    """identity.toml -> factory -> handler -> litellm, end to end.
+
+    The unit tests in test_persona_extra_kwargs.py set `extra_kwargs` on the
+    objects directly, so they pass even if the FACTORY never reads the config.
+    This is the test that fails when that wiring is removed.
+    """
+    fn, captures = stub_acompletion_captures
+    identity = dedent(
+        """
+        [personas.archivist]
+        role = "singleton"
+        safety_tier = "moderate"
+        extra_kwargs = { chat_template_kwargs = { enable_thinking = false } }
+        """
+    )
+    fastapi_app = await _build_app(tmp_path, identity, fn)
+    async with fastapi_app.router.lifespan_context(fastapi_app):
+        transport = ASGITransport(app=fastapi_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            token = await _bootstrap_token(fastapi_app, client)
+            r = await client.post(
+                "/a2a/tasks",
+                json={
+                    "target": "archivist",
+                    "task": {
+                        "id": "t-kwargs",
+                        "status": {
+                            "state": "submitted",
+                            "message": {
+                                "role": "user",
+                                "parts": [{"kind": "text", "text": "anything"}],
+                            },
+                        },
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200
+
+    assert captures, "expected an LLM call"
+    assert all(
+        c["chat_template_kwargs"] == {"enable_thinking": False} for c in captures
+    ), captures
+
+
+@pytest.mark.asyncio
+async def test_subordinates_inherit_the_primus_extra_kwargs(
+    tmp_path, stub_acompletion_captures
+) -> None:
+    """One line in the persona block covers the whole tree.
+
+    A model-family switch is a property of the tree, not of one hop; requiring
+    it per subordinate would mostly produce half-configured trees where the
+    primus answers and its implementer hangs.
+    """
+    fn, captures = stub_acompletion_captures
+    identity = dedent(
+        """
+        [personas.wright]
+        role = "primus"
+        safety_tier = "moderate"
+        extra_kwargs = { chat_template_kwargs = { enable_thinking = false } }
+
+        [personas.wright.subordinates.implementer]
+        model = "openai/some-local-model"
+        """
+    )
+    fastapi_app = await _build_app(tmp_path, identity, fn)
+    async with fastapi_app.router.lifespan_context(fastapi_app):
+        transport = ASGITransport(app=fastapi_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            token = await _bootstrap_token(fastapi_app, client)
+            r = await client.post(
+                "/a2a/tasks",
+                json={
+                    "target": "wright-primus",
+                    "task": {
+                        "id": "t-inherit",
+                        "status": {
+                            "state": "submitted",
+                            "message": {
+                                "role": "user",
+                                "parts": [{"kind": "text", "text": "anything"}],
+                            },
+                        },
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200
+
+    # plan + implementer + aggregate
+    assert len(captures) == 3, [c["system"][:40] for c in captures]
+    dropped = [
+        c["system"].splitlines()[0]
+        for c in captures
+        if c["chat_template_kwargs"] != {"enable_thinking": False}
+    ]
+    assert not dropped, f"hops that did not inherit: {dropped}"
+
+
+@pytest.mark.asyncio
+async def test_a_subordinate_can_opt_out_with_an_empty_dict(
+    tmp_path, stub_acompletion_captures
+) -> None:
+    """`extra_kwargs = {}` sends nothing on that hop — documented, now pinned.
+
+    identity.toml.example promotes this to operator-facing behaviour, but
+    nothing held the factory to it: changing the `is not None` check to a
+    truthiness test silently converts the opt-out into an inherit, and every
+    other test stays green.
+    """
+    fn, captures = stub_acompletion_captures
+    identity = dedent(
+        """
+        [personas.wright]
+        role = "primus"
+        safety_tier = "moderate"
+        extra_kwargs = { chat_template_kwargs = { enable_thinking = false } }
+
+        [personas.wright.subordinates.implementer]
+        model = "openai/some-local-model"
+        extra_kwargs = {}
+        """
+    )
+    fastapi_app = await _build_app(tmp_path, identity, fn)
+    async with fastapi_app.router.lifespan_context(fastapi_app):
+        transport = ASGITransport(app=fastapi_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            token = await _bootstrap_token(fastapi_app, client)
+            r = await client.post(
+                "/a2a/tasks",
+                json={
+                    "target": "wright-primus",
+                    "task": {
+                        "id": "t-optout",
+                        "status": {
+                            "state": "submitted",
+                            "message": {
+                                "role": "user",
+                                "parts": [{"kind": "text", "text": "anything"}],
+                            },
+                        },
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200
+
+    # Discriminate on MODEL, not on the word "subordinate" in the prompt: the
+    # primus PLAN prompt says "You DELEGATE to subordinates", so a substring
+    # test keys the plan hop as a subordinate and a collapsing dict then hides
+    # it by last-wins. Caught in review — the assertion landed on the right
+    # capture purely by ordering, and adding a reviewer would have moved it.
+    subordinate_hops = [c for c in captures if c["model"] == "openai/some-local-model"]
+    primus_hops = [c for c in captures if c["model"] != "openai/some-local-model"]
+
+    assert len(subordinate_hops) == 1, captures
+    assert len(primus_hops) == 2, "expected the plan and aggregate hops"
+    assert subordinate_hops[0]["chat_template_kwargs"] is None, "opt-out ignored"
+    # BOTH primus hops, which the previous discriminator never checked.
+    for hop in primus_hops:
+        assert hop["chat_template_kwargs"] == {"enable_thinking": False}
