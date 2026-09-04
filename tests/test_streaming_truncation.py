@@ -91,14 +91,18 @@ async def test_a_stream_cut_off_with_no_content_raises() -> None:
 @pytest.mark.asyncio
 async def test_a_stream_cut_off_mid_answer_keeps_the_text() -> None:
     """Deltas already reached the operator, so the partial answer is kept —
-    the session summary is what records that it was cut off."""
+    and the session summary is what records that it was cut off, so it is
+    asserted rather than merely described."""
+    tracker = _RecordingTracker()
     p = _persona(
-        _streaming_client(_chunk("half an "), _chunk("answer"), _chunk(None, "length"))
+        _streaming_client(_chunk("half an "), _chunk("answer"), _chunk(None, "length")),
+        tracker,
     )
 
     out = [d async for d in p.astream_task(_task())]
 
     assert "".join(out) == "half an answer"
+    assert tracker.summaries == ["[truncated] half an answer"], tracker.summaries
 
 
 @pytest.mark.asyncio
@@ -116,12 +120,21 @@ async def test_an_empty_stream_that_stopped_is_not_silently_fine() -> None:
     """`stop` with nothing streamed: litellm collapses provider ERROR,
     MALFORMED_RESPONSE and network_error onto `stop`, so this is the shape a
     failed generation arrives in. It does not raise — the classifier keeps it
-    completable — but it is flagged rather than passing as a clean run."""
-    p = _persona(_streaming_client(_chunk(None, "stop")))
+    completable — but it is FLAGGED rather than passing as a clean run.
+
+    The flag is the whole assertion. Asserting `out == []` holds whether or not
+    the empty-plus-`stop` arm flags anything, so the first version left this
+    arm of the streaming path with no coverage at all: a mutation turning it
+    off was caught only by the NON-streaming tests, which exercise a different
+    call site.
+    """
+    tracker = _RecordingTracker()
+    p = _persona(_streaming_client(_chunk(None, "stop")), tracker)
 
     out = [d async for d in p.astream_task(_task())]
 
     assert out == []
+    assert tracker.summaries == ["[truncated] "], tracker.summaries
 
 
 @pytest.mark.asyncio
@@ -129,7 +142,9 @@ async def test_an_empty_stream_with_no_reason_at_all_raises() -> None:
     """A provider that ends the stream saying nothing about why."""
     p = _persona(_streaming_client(_chunk(None, None)))
 
-    with pytest.raises(LLMTruncatedError):
+    # match= pins WHICH arm fired: without it this passes on the `length`
+    # message too, and the two are different failures.
+    with pytest.raises(LLMTruncatedError, match="not a reason cabal treats"):
         async for _ in p.astream_task(_task()):
             pass
 
@@ -170,14 +185,66 @@ async def test_a_complete_stream_is_not_flagged() -> None:
     assert tracker.summaries == ["all done"], tracker.summaries
 
 
-def test_both_paths_share_one_classifier() -> None:
+def test_both_paths_share_one_classifier(monkeypatch) -> None:
     """The rule lives in the client module precisely so the streaming path can
-    reach it; a second copy on the persona is how the two drift apart."""
-    import inspect
+    reach it; a second copy on the persona is how the two drift apart.
 
-    from cabal.agents.llm_persona import LLMPersona
-    from cabal.core.llm.litellm_client import classify_truncation
+    Asserted by BEHAVIOUR, not by reading the source: a source-substring check
+    passes just as happily when the delegation is dead code or its arguments
+    are wrong. Replacing the shared function must change what the persona does.
+    """
+    import cabal.agents.llm_persona as lp
 
-    src = inspect.getsource(LLMPersona.check_truncation)
-    assert "classify_truncation(" in src, "the persona must delegate, not re-implement"
-    assert callable(classify_truncation)
+    calls: list[dict] = []
+
+    def _spy(**kwargs):
+        calls.append(kwargs)
+        return False
+
+    monkeypatch.setattr(lp, "classify_truncation", _spy)
+    p = _persona(_streaming_client(_chunk("x")))
+    assert p.check_truncation({"choices": [{"finish_reason": "length"}]}, "text") is False
+    assert calls, "the persona did not go through the shared classifier"
+    assert calls[0]["finish_reason"] == "length"
+    assert calls[0]["text"] == "text"
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_tool_call_array_does_not_escape_handle_task() -> None:
+    """REVIEW, Important 1 — a regression the refactor introduced.
+
+    `_extract_tool_calls` is not internally total: a `function` object with no
+    `name`, or a non-dict entry, raises. Lifting the call into
+    `classify_truncation(...)`'s argument list put it outside the guard that
+    had covered it, so a bare KeyError escaped `handle_task` — which catches
+    only `LLMTruncatedError` — and the session was never ended.
+
+    Reachable with no tool proxy at all: the tool loop is gated on
+    `tool_proxy is not None`, so `check_truncation` is then the FIRST caller.
+    """
+    tracker = _RecordingTracker()
+
+    async def fn(**kwargs):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "an answer",
+                        # a `function` with no `name`, and a non-dict entry
+                        "tool_calls": [{"id": "1", "function": {}}, "not-a-dict"],
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+
+    client = LiteLLMClient(acompletion_fn=fn, hook_registry=HookRegistry())
+    p = Subordinate(
+        "wright", "implementer", client, model="m", session_tracker=tracker
+    )
+    assert p.tool_proxy is None, "the guard must be reachable with no tool proxy"
+
+    out = await p.handle_task(_task("t-malformed"))
+
+    assert out.status.state == "completed", out.status.state
+    assert tracker.summaries, "the session must be ended, not abandoned mid-flight"

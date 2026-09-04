@@ -103,10 +103,10 @@ class LLMPersona:
     # NOT on resume — so a non-idempotent rewrite can't compound across resumes;
     # the guarded messages are what gets checkpointed. Input-phase covers the
     # first LLM call only; tool-loop turns are #52's scope. astream_task does
-    # NOT apply guardrails (streaming path deferred), and it does NOT check
-    # finish_reason either — it accumulates deltas, so a truncated stream ends
-    # indistinguishably from a complete one and cabal#134 is still live on that
-    # path.
+    # NOT apply guardrails (streaming path deferred). It DOES check
+    # finish_reason as of cabal#136 — the client surfaces the stream's terminal
+    # reason through an on_finish callback, since the reason rides the final
+    # chunk and astream yields plain strings.
     input_guardrails: list[Guardrail] = field(default_factory=list)
     output_guardrails: list[Guardrail] = field(default_factory=list)
     # cabal#52 — tool-boundary guardrails. Empty defaults = zero behavior change.
@@ -165,17 +165,25 @@ class LLMPersona:
         try:
             choice = response["choices"][0]
             finish_reason = choice.get("finish_reason")
+            # INSIDE THE GUARD. _extract_tool_calls is not internally total —
+            # its own try covers the choices/message access, so a `function`
+            # object with no `name`, or a non-dict entry, still raises. Lifting
+            # this into the classify_truncation() argument list put it OUTSIDE
+            # this except, and a bare KeyError then escaped handle_task, which
+            # catches only LLMTruncatedError — leaving the session never ended.
+            # THE SAME PREDICATE THE TOOL LOOP USES, not a looser one beside
+            # it: the blessing means "cabal can act on this".
+            has_executable_tool_calls = bool(_extract_tool_calls(response))
         except (KeyError, IndexError, TypeError, AttributeError):
-            # A response shape parse_response would itself have rejected; let
-            # that path own the error rather than raising a confusing one here.
+            # A malformed response shape. parse_response returns "" for these
+            # rather than rejecting them, so nothing downstream owns the error
+            # — raising here would surface a confusing one from the wrong layer.
             return False
         return classify_truncation(
             agent=self.name,
             finish_reason=finish_reason,
             text=text,
-            # THE SAME PREDICATE THE TOOL LOOP USES, not a looser one beside
-            # it: the blessing means "cabal can act on this".
-            has_executable_tool_calls=bool(_extract_tool_calls(response)),
+            has_executable_tool_calls=has_executable_tool_calls,
         )
 
     def parse_response(self, response: Any) -> str:
