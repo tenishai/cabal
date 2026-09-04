@@ -4,14 +4,40 @@
 #
 # THE MODEL IS A REASONING MODEL, AND THE FIX IS TO TURN THAT OFF, NOT TO BUDGET
 # AROUND IT. Measured 2026-09-03 across five runs of one primus dispatch: at
-# ceilings of 8192, 32768 and 65536 the hops either finished in ~3k tokens or
-# consumed the entire ceiling and returned content="" — 8192+8192, 4957+32768
-# and 32768+32768 all produced an EMPTY answer that cabal recorded as
-# `completed`. Raising max_tokens only changes how long you wait to learn which
-# kind of run you got. With thinking off the same dispatch is 33+66 tokens.
+# rising ceilings the hops either finished in ~3-6k tokens or consumed the
+# whole ceiling and returned content="", which cabal recorded as `completed`:
+#
+#   ceiling  8192   t-502753ab9f95    8192 + 8192    empty
+#   ceiling 32768   t-7c8dbbcc5b07    4957 + 32768   empty
+#   ceiling 65536   t-3a65a6178a1f    5742 + 3261    375 chars
+#   ceiling 65536   t-3910a1e89adc    3918 + 3210    13378 chars (ignoring
+#                                                    "two sentences max")
+#   ceiling 65536   t-b9f991463629   32768 + 32768   empty
+#   thinking off    t-c20327c225cb      33 + 66      390 chars
+#
+# The ceiling is NOT recorded in the event payloads, so that column comes from
+# the run order, not from the rows. What the rows do show is that the two runs
+# which answered used 3-6k tokens per hop and would have fit under the original
+# 8192 — raising the ceiling only changes how long you wait to learn which kind
+# of run you got.
 #
 # api_base carries /v1 because the model strings use the openai/ provider.
-# The key lives in MTPLX_API_KEY (see ~/mtplx.env), never in this file.
+#
+# TWO THINGS MUST BE IN THE ENVIRONMENT. The key, and the database:
+#
+#   export MTPLX_API_KEY=...                                   # see ~/mtplx.env
+#   export CABAL_DB_URL=sqlite+aiosqlite:///data-mtplx/cabal.db
+#
+# The key never lives in this file. The DB URL is easy to miss and matters more
+# than it looks: `cabal.data_dir` below does NOT set the sqlite path — the
+# engine reads CABAL_DB_URL or falls back to the CWD-relative default
+# `data/cabal.db` (core/db.py), and `cbl daemon up` has no --db-url flag. So
+# running this identity without it puts the mtplx personas in the REMOTE-OLLAMA
+# agent's database: same conversations, events, personas, signing_keys. Nothing
+# is destroyed (sync_personas skips existing rows), but the bulletin keeps
+# advertising Ollama-era cards while the handlers dispatch to mtplx, and the two
+# backends' event logs interleave. Every measurement in this file came from a
+# separated data-mtplx/ store, which is why it can be checked against rows.
 
 [cabal]
 operator_id = "operator"
@@ -23,10 +49,32 @@ data_dir = "data"
 api_base = "http://192.168.10.202:8000/v1"
 api_key_env = "MTPLX_API_KEY"
 
-# THE ONE SETTING THAT MATTERS FOR THIS MODEL. Measured 2026-09-03: the same
-# question takes 2048 tokens / 30s and returns EMPTY content with thinking on,
-# and 49 tokens / 1.1s with it off. reasoning_effort=none, thinking={"type":
-# "disabled"} and a /no_think prefix are all silently ignored by this server.
+# THE ONE SETTING THAT MATTERS FOR THIS MODEL, and note the archivist fails
+# DIFFERENTLY from the primus above. Thinking-on here does not return empty —
+# it returns the model's own chain of thought AS THE ANSWER. From
+# data-mtplx/cabal.db, target_agent='archivist':
+#
+#   t-47fedab34551   5142 tok   80s   18220 chars, opening "Thinking Process:
+#                                     1. **Analyze the Request:**" — five
+#                                     thousand tokens of the model deciding
+#                                     whether an Archivist may multiply 17x23
+#   t-9e11ec722b60   2248 tok   34s   a real but slow answer
+#   ---- enable_thinking = false from here ----
+#   t-9694beee8273     45 tok    3s   a real answer
+#   t-53a77d3a1985     24 tok    2s   a real answer
+#
+# Two symptoms, one cure: empty content on the primus, a reasoning transcript
+# on the singleton. Both are the same model never emitting an end-of-thinking
+# token; only the surrounding code differs in what it does with the result.
+#
+# SEPARATELY, and NOT through cabal — curl straight at /v1/chat/completions with
+# max_tokens=2048, so it is a different measurement from the rows above:
+# thinking on returned finish_reason=length with content="" after 2048 tokens
+# and 30.4s; thinking off returned 280 chars in 49 tokens and 1.1s. That probe
+# is also where reasoning_effort=none, thinking={"type": "disabled"} and a
+# /no_think prefix were each shown to be ACCEPTED AND SILENTLY IGNORED by this
+# server — the most useful negative result here, and the reason this file sets
+# the knob the awkward way.
 [personas.archivist]
 description = "Memory and search"
 role = "singleton"
@@ -39,7 +87,11 @@ description = "Senior software engineer — general-engineering primus"
 role = "primus"
 safety_tier = "moderate"
 model_override = "openai/mtplx-qwen35-9b-optimized-speed"
-# Subordinates inherit this — one line covers plan, implementer and aggregate.
+# Set on the PERSONA, which covers two mechanisms at once: the primus's own
+# plan and aggregate hops take it from the handler, and every subordinate that
+# does not set its own inherits it. Moving this line down into
+# [.subordinates.implementer] keeps the implementer covered and silently strips
+# plan and aggregate — the exact regression cabal#131 fixed.
 extra_kwargs = { chat_template_kwargs = { enable_thinking = false } }
 
 [personas.wright.subordinates.implementer]

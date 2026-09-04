@@ -98,6 +98,10 @@ safety_tier = "moderate"
 # model's thinking, without which it can spend its whole token budget
 # deliberating and return empty content.
 # extra_kwargs = { chat_template_kwargs = { enable_thinking = false } }
+# A fully worked non-Ollama example lives in identity.mtplx.toml, including the
+# CABAL_DB_URL requirement that applies to ANY second identity: cabal.data_dir
+# does not set the sqlite path, so a second identity run without it writes into
+# the first one's database.
 #
 # Keys Cabal binds itself are REFUSED at startup, naming the key: model,
 # messages, agent, trace_id, span_id, task_id, max_tokens, api_base, api_key,
