@@ -12,6 +12,7 @@ Phase 1 surface (per cabal-handoff.md §4):
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import httpx
@@ -57,6 +58,89 @@ def daemon_up(
 
     fastapi_app = create_app(agent=agent, config_path=config)
     uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
+
+
+def _auth_hint(detail: str) -> str:
+    """Append the remedy when a failure is really a stale operator token.
+
+    A token signed by a rotated (or reset) signing key comes back as
+    `No key for kid` — accurate, and useless to anyone who does not know
+    cabal's crypto model. cabal#92 Mode B: the token does not self-heal and
+    nothing tells you to re-authenticate.
+    """
+    if "No key for kid" in detail or "invalid_key_id" in detail:
+        return (
+            f"{detail}\n"
+            "  → your saved token was signed by a signing key that no longer "
+            "exists (rotation, reset-auth, or a fresh database).\n"
+            "  → re-authenticate: `cbl login --code <CODE>` using the code in "
+            "the daemon's startup log."
+        )
+    return detail
+
+
+@app.command("reset-auth")
+def reset_auth_cmd(
+    purge_secrets: bool = typer.Option(
+        False,
+        "--purge-secrets",
+        help="ALSO delete every stored secret. They are encrypted with the "
+        "master key you no longer have, so this is unrecoverable.",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
+    db_url: str = typer.Option(
+        "", "--db-url", help="Override the database URL (default: CABAL_DB_URL)."
+    ),
+) -> None:
+    """Recover from a lost or changed CABAL_MASTER_KEY (cabal#92).
+
+    Backs the database up, clears the signing keys cabal can no longer decrypt,
+    and drops the cached operator token that the deleted key signed. The next
+    `cbl daemon up` mints a fresh key and prints a new bootstrap code.
+
+    Secrets are LEFT IN PLACE unless --purge-secrets: they are the one thing
+    here that cannot be regenerated.
+    """
+    from cabal.core.auth.reset import ResetError, reset_auth, sqlite_path_from_url
+    from cabal.core.db import DEFAULT_DB_URL
+
+    url = db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL
+    try:
+        path = sqlite_path_from_url(url)
+    except ResetError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"database:  {path}")
+    typer.echo("clears:    signing_keys, ~/.cabal/token")
+    if purge_secrets:
+        typer.echo("ALSO clears: secrets — UNRECOVERABLE")
+    else:
+        typer.echo("keeps:     secrets (use --purge-secrets to drop them too)")
+
+    if not yes:
+        typer.confirm("Proceed?", abort=True)
+
+    try:
+        report = reset_auth(
+            url, purge_secrets=purge_secrets, token_path=api.TokenStore().path
+        )
+    except ResetError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"backup:            {report.backup_path}")
+    typer.echo(f"signing keys gone: {report.signing_keys_deleted}")
+    if report.secrets_purged:
+        typer.echo(f"secrets purged:    {report.secrets_purged}")
+    if report.secrets_remaining:
+        typer.echo(
+            f"secrets kept:      {report.secrets_remaining} "
+            "(still encrypted with the old key — undecryptable until it is restored)"
+        )
+    if report.token_removed:
+        typer.echo("operator token:    removed")
+    typer.echo("next: `cbl daemon up`, then `cbl login --code <CODE>` from its log.")
 
 
 @app.command("login")
@@ -108,7 +192,7 @@ def dispatch(
             detail = exc.response.json().get("detail", exc.response.text)
         except Exception:  # noqa: BLE001
             detail = exc.response.text
-        typer.echo(f"dispatch failed: {detail}", err=True)
+        typer.echo(f"dispatch failed: {_auth_hint(detail)}", err=True)
         raise typer.Exit(code=1) from exc
     except httpx.RequestError as exc:
         typer.echo(f"could not reach daemon at {api.base_url()}: {exc}", err=True)

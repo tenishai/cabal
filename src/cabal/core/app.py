@@ -40,7 +40,12 @@ from cabal.core.auth.bootstrap import ensure_signing_key
 from cabal.core.auth.bootstrap_codes import issue_operator_code
 from cabal.core.auth.jwks_provider import RefreshingJWKSProvider
 from cabal.core.auth.keys import load_active_signing_key
-from cabal.core.auth.master_key import resolve_master_key
+from cabal.core.auth.master_key import (
+    EncryptedRowDamagedError,
+    MasterKeyMismatchError,
+    describe_master_key_source,
+    resolve_master_key,
+)
 from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.broker.heartbeat import HeartbeatScheduler
 from cabal.core.broker.router import DispatchRouter
@@ -156,6 +161,20 @@ def build_router_input_guardrails(identity: IdentityConfig | None) -> list[Guard
     return guardrails
 
 
+#: The operator-facing text for a key that cannot decrypt the database.
+#: A MODULE CONSTANT because the README quotes it: round 2 of #92's review
+#: found the code hedged ("either ... or ...") while the README still asserted
+#: a single cause, which is the exact case the hedge exists for. Named here so
+#: test_readme_quotes_the_current_mismatch_message can hold the two together.
+MASTER_KEY_MISMATCH_MSG = (
+    "Could not decrypt this database's signing key: either the master key is "
+    "not the one that wrote it, or the stored row is damaged. Restore the "
+    "CABAL_MASTER_KEY that wrote it, point CABAL_DB_URL at a different "
+    "database, or run `cbl reset-auth` to back up the database and regenerate "
+    "the signing key."
+)
+
+
 def create_app(
     *,
     agent: str = "all",
@@ -174,6 +193,67 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        """Startup, with the failure made VISIBLE.
+
+        #77 already found that uvicorn exits on a startup exception without the
+        traceback reaching the terminal, and wrapped ONE step (migrations) in a
+        log-and-reraise. Everything after it stayed mute: a mismatched master
+        key exited with status 3 and a log that simply stopped, which is most of
+        why cabal#92 took DB surgery to diagnose. This wrapper covers the whole
+        sequence instead of another single step.
+
+        `started` keeps the diagnosis honest — once the body has yielded, a
+        later exception is a SHUTDOWN failure and must not be reported as a
+        startup one.
+        """
+        started = False
+        try:
+            async with _startup(_app):
+                started = True
+                yield
+        except MasterKeyMismatchError:
+            # `started` here for the same reason as below: nothing in the
+            # shutdown path decrypts today, so this is unreachable rather than
+            # wrong — but the invariant should hold structurally, not by luck
+            # about what `finally` happens to call.
+            if started:
+                raise
+            # The one startup failure with a known remedy, so it gets a real
+            # message instead of a traceback (cabal#92).
+            log.error(
+                "cabal.master_key_mismatch",
+                db_url=db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL,
+                key_source=describe_master_key_source(),
+                msg=MASTER_KEY_MISMATCH_MSG,
+            )
+            raise
+        except EncryptedRowDamagedError:
+            if started:
+                raise
+            log.error(
+                "cabal.encrypted_row_damaged",
+                db_url=db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL,
+                msg=(
+                    "The stored signing key is not well-formed ciphertext, so "
+                    "no master key will decrypt it. Restore the database from a "
+                    "backup, or run `cbl reset-auth` to regenerate the signing "
+                    "key. Do NOT go looking for a different CABAL_MASTER_KEY."
+                ),
+            )
+            raise
+        except Exception:
+            if not started:
+                log.exception("cabal.startup_failed")
+            else:
+                # Suppressing the misleading `startup_failed` must not mean
+                # saying nothing: an unlogged shutdown exception goes back to
+                # uvicorn, which is the swallowing this whole wrapper exists to
+                # end, just relocated to the other end of the lifespan.
+                log.exception("cabal.shutdown_failed")
+            raise
+
+    @asynccontextmanager
+    async def _startup(_app: FastAPI) -> AsyncIterator[None]:
         log.info("cabal.startup", version=__version__, agent=agent, config=config_path)
 
         master_key = resolve_master_key(allow_dev_fallback=allow_dev_master_key)
