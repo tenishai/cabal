@@ -252,6 +252,14 @@ class PrimusPersona(LLMPersona):
             ),
             return_exceptions=True,
         )
+        # PRECEDENCE, AND WHY: a real exception beats both deferred kinds
+        # (raised in-loop at its position); between the two deferred kinds a
+        # DOOM BLOCK OUTRANKS A LEG FAILURE, because a guardrail block is a
+        # structural refusal — the leg never ran — while a leg failure is the
+        # outcome of one that did. That order was comment-only until
+        # test_a_doom_loop_outranks_a_leg_failure; swapping the two raises left
+        # the whole suite green.
+        #
         # A LEG FAILURE MUST NOT OUTRANK A SIBLING'S ABORT. Results are in
         # insertion order, so raising the first BaseException would let leg 1's
         # _LegFailedError win over leg 2's TaskAborted and report an operator

@@ -152,11 +152,6 @@ class LLMPersona:
             messages.append(_message_to_chat(task.status.message))
         return messages
 
-    #: Reasons for which an empty message is a legitimate final state, rather
-    #: than a model that stopped before it said anything. Everything else —
-    #: including reasons that do not exist yet — is treated as a failure.
-    _EMPTY_IS_LEGITIMATE = frozenset({"tool_calls", "stop"})
-
     def check_truncation(self, response: Any, text: str) -> bool:
         """Raise if the model stopped at its ceiling without saying anything.
 
@@ -173,14 +168,28 @@ class LLMPersona:
                                answer was cut off but is worth keeping), else
                                False. A truncated terminal answer still reaches
                                a human who can see it stops mid-word.
-          empty + blessed   -> returns False. `tool_calls` with no content is
-                               the legitimate empty parse_response's docstring
-                               describes; `stop` is a model that genuinely chose
-                               to say nothing. A message carrying tool_calls is
-                               blessed whatever its reason says.
+          empty + tool_calls-> returns False. The one genuinely legitimate
+                               empty: a structural tool-call message, which
+                               parse_response's docstring describes. A message
+                               carrying tool_calls is blessed whatever its
+                               reason says.
+          empty + `stop`    -> returns True. The task still completes — an
+                               empty answer reaches a human who can see it is
+                               empty, unlike an empty INSTRUCTION handed to an
+                               agent — but it is FLAGGED, because `stop` does
+                               not mean what it looks like. litellm's
+                               _FINISH_REASON_MAP collapses ERROR,
+                               MALFORMED_RESPONSE, MALFORMED_FUNCTION_CALL,
+                               network_error and FINISH_REASON_UNSPECIFIED onto
+                               `stop`, and map_finish_reason defaults every
+                               unmapped reason there too. Those are exactly the
+                               states that arrive with empty content. Without
+                               the flag the WORSE outcome (nothing) carried
+                               LESS machine-readable signal than the better one
+                               (half an answer).
           empty + anything  -> LLMTruncatedError, naming the reason. Covers
-          else               `length`, `content_filter`, and every reason no one
-                               has thought of yet.
+          else               `length`, `content_filter`, and every reason that
+                               does not reach us through litellm's mapper.
 
         Reported by return value rather than a log line because no module in
         cabal.agents logs directly — these classes report through the caller.
@@ -195,8 +204,10 @@ class LLMPersona:
             return False
         if text.strip():
             return bool(finish_reason == "length")
-        if has_tool_calls or finish_reason in self._EMPTY_IS_LEGITIMATE:
+        if has_tool_calls:
             return False
+        if finish_reason == "stop":
+            return True
         if finish_reason == "length":
             raise LLMTruncatedError(
                 f"{self.name}: the model stopped at its output ceiling "

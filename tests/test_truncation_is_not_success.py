@@ -13,7 +13,11 @@ import pytest
 
 from cabal.agents.personas.wright import WrightPrimusPersona
 from cabal.agents.subordinate import Subordinate
-from cabal.core.a2a.codes import CODE_BUDGET_EXHAUSTED, CODE_ESCALATION
+from cabal.core.a2a.codes import (
+    CODE_BUDGET_EXHAUSTED,
+    CODE_ESCALATION,
+    CODE_POLICY_VIOLATION,
+)
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import TaskAborted
 from cabal.core.hooks.registry import HookRegistry
@@ -68,11 +72,15 @@ def test_ceiling_with_content_is_kept_but_flagged() -> None:
     assert p.check_truncation(_resp("half an answer", "length"), "half an answer") is True
 
 
-def test_tool_calls_with_no_content_stays_legitimate() -> None:
-    """parse_response's docstring calls this 'a legitimate (if unusual) final
-    state'. The fix must not turn it into a failure."""
+def test_a_tool_calls_reason_without_any_calls_is_a_failure() -> None:
+    """The blessing keys on the MESSAGE carrying calls, not on the reason
+    string. A response claiming `tool_calls` with none attached is one cabal
+    could never execute — `_extract_tool_calls` reads `message.tool_calls` —
+    so it would previously have completed as an empty answer. Failing it is
+    the same improvement as failing the legacy `function_call` shape."""
     p = _persona()
-    assert p.check_truncation(_resp(None, "tool_calls"), "") is False
+    with pytest.raises(LLMTruncatedError, match="tool_calls"):
+        p.check_truncation(_resp(None, "tool_calls"), "")
 
 
 def test_whitespace_only_counts_as_no_content() -> None:
@@ -185,10 +193,18 @@ def test_tool_calls_are_blessed_whatever_the_reason_says() -> None:
     assert p.check_truncation(resp, "") is False
 
 
-def test_stop_with_no_content_stays_legitimate() -> None:
-    """A model that genuinely chooses to say nothing."""
+def test_an_empty_stop_completes_but_is_flagged() -> None:
+    """ROUND 3, Important 1. `stop` does not mean "the model chose to say
+    nothing": litellm collapses ERROR, MALFORMED_RESPONSE, network_error and
+    FINISH_REASON_UNSPECIFIED onto it, and defaults every unmapped reason there
+    too — exactly the states that arrive empty.
+
+    The task still completes, because an empty answer reaches a human who can
+    see it is empty. But it is flagged, because otherwise the WORSE outcome
+    (nothing at all) carried LESS machine-readable signal than the better one
+    (half an answer), which is inverted severity."""
     p = _persona()
-    assert p.check_truncation(_resp("", "stop"), "") is False
+    assert p.check_truncation(_resp("", "stop"), "") is True
 
 
 @pytest.mark.asyncio
@@ -318,11 +334,6 @@ async def test_a_clean_persona_dispatch_is_not_flagged() -> None:
 async def test_an_unexplained_leg_failure_is_704_not_701() -> None:
     """ROUND 2, nit 6. 701 asserts a safety-tier refusal the code cannot know
     happened — the confident-wrong-label class this PR exists to remove."""
-    from cabal.agents.primus import _LegFailedError
-
-    exc = _LegFailedError(role="implementer", code=CODE_ESCALATION, message="x")
-    assert exc.code == CODE_ESCALATION
-
     client = _client(_resp("plan"), _resp("work"), _resp("summary"))
     implementer = Subordinate("wright", "implementer", client, model="m")
     wright = WrightPrimusPersona(client, subordinates={"implementer": implementer}, model="m")
@@ -367,3 +378,78 @@ async def test_an_abort_outranks_a_leg_failure() -> None:
 
     with pytest.raises(TaskAborted):
         await wright.handle_task(_task("t-abortrace"))
+
+
+@pytest.mark.asyncio
+async def test_an_empty_aggregate_completes_but_says_so() -> None:
+    """ROUND 3, Important 1, end to end on the hop that produced every row of
+    cabal#134's evidence. A provider ERROR normalises to `stop` and arrives
+    empty; the task completes, and now carries the flag it was missing."""
+    client = _client(_resp("plan"), _resp("work"), _resp("", "stop"))
+    implementer = Subordinate("wright", "implementer", client, model="m")
+    wright = WrightPrimusPersona(client, subordinates={"implementer": implementer}, model="m")
+
+    out = await wright.handle_task(_task("t-emptyagg"))
+
+    assert out.status.state == "completed"
+    assert out.metadata["cabal_truncated"] == "aggregate"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_persona_answer_completes_but_says_so() -> None:
+    """The same inverted severity on a singleton's terminal answer."""
+    p = _persona()
+    p.llm_client = _client(_resp("", "stop"))
+
+    out = await p.handle_task(_task("t-emptyans"))
+
+    assert out.status.state == "completed"
+    assert out.metadata["cabal_truncated"] == "wright-implementer"
+
+
+def test_litellm_really_does_collapse_error_states_onto_stop() -> None:
+    """The premise the whole asymmetry argument turns on, pinned against the
+    installed litellm rather than quoted from a review.
+
+    If a future litellm stops collapsing these, the reasoning in
+    check_truncation's docstring needs revisiting — this fails and says so.
+    """
+    from litellm.litellm_core_utils.core_helpers import map_finish_reason
+
+    for provider_reason in ("ERROR", "MALFORMED_RESPONSE", "network_error"):
+        assert map_finish_reason(provider_reason) == "stop", provider_reason
+    # and anything unmapped defaults there too
+    assert map_finish_reason("SOMETHING_INVENTED_NEXT_QUARTER") == "stop"
+
+
+@pytest.mark.asyncio
+async def test_a_doom_loop_outranks_a_leg_failure() -> None:
+    """ROUND 3, nit 1. The precedence between the two DEFERRED kinds was
+    asserted by comment only — swapping the raises left the suite green.
+
+    Doom wins: a guardrail block is a structural refusal (the leg never ran),
+    while a leg failure is an outcome of one that did.
+    """
+    from cabal.agents.primus import _DoomLoopError, _LegFailedError
+
+    client = _client(_resp("plan"), _resp("summary"))
+    a = Subordinate("wright", "implementer", client, model="m")
+    b = Subordinate("wright", "second", client, model="m")
+    wright = WrightPrimusPersona(
+        client, subordinates={"implementer": a, "second": b}, model="m"
+    )
+
+    async def _dispatch(parent_task, *, role, instruction):
+        if role == "implementer":
+            raise _LegFailedError(
+                role="implementer", code=CODE_BUDGET_EXHAUSTED, message="ceiling"
+            )
+        raise _DoomLoopError("repeated delegation")
+
+    wright._dispatch_subordinate = _dispatch  # type: ignore[method-assign]
+    out = await wright.handle_task(_task("t-doomfirst"))
+
+    assert out.status.state == "failed"
+    assert out.metadata["cabal_reason_code"] == CODE_POLICY_VIOLATION, (
+        "a guardrail block must outrank a leg failure"
+    )
