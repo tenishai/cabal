@@ -93,6 +93,8 @@ RESERVED_EXTRA_KWARGS = frozenset(
         # owned by the tool proxy
         "tools",
         "stream",
+        # the streaming path's terminal-reason callback (cabal#136)
+        "on_finish",
     }
 )
 

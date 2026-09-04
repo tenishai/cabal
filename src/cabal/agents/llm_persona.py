@@ -35,6 +35,7 @@ from cabal.core.llm.litellm_client import (
     LLMRateLimitedError,
     LLMTruncatedError,
     LLMUnavailableError,
+    classify_truncation,
 )
 from cabal.core.memory.session_tracker import NoOpSessionTracker, SessionTracker
 from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
@@ -102,10 +103,10 @@ class LLMPersona:
     # NOT on resume — so a non-idempotent rewrite can't compound across resumes;
     # the guarded messages are what gets checkpointed. Input-phase covers the
     # first LLM call only; tool-loop turns are #52's scope. astream_task does
-    # NOT apply guardrails (streaming path deferred), and it does NOT check
-    # finish_reason either — it accumulates deltas, so a truncated stream ends
-    # indistinguishably from a complete one and cabal#134 is still live on that
-    # path.
+    # NOT apply guardrails (streaming path deferred). It DOES check
+    # finish_reason as of cabal#136 — the client surfaces the stream's terminal
+    # reason through an on_finish callback, since the reason rides the final
+    # chunk and astream yields plain strings.
     input_guardrails: list[Guardrail] = field(default_factory=list)
     output_guardrails: list[Guardrail] = field(default_factory=list)
     # cabal#52 — tool-boundary guardrails. Empty defaults = zero behavior change.
@@ -153,80 +154,36 @@ class LLMPersona:
         return messages
 
     def check_truncation(self, response: Any, text: str) -> bool:
-        """Raise if the model stopped at its ceiling without saying anything.
+        """Whether *response* was cut off, raising when it was cut off fatally.
 
-        PERMITS A SHAPE, IT DOES NOT DENY A REASON. The first version asked
-        `if finish_reason != "length": return False`, which defaults every
-        reason it has not enumerated — present or future, provider-specific or
-        not — to "this is fine". `content_filter` with empty content then
-        reproduced cabal#134 exactly, one string comparison from the fix. A
-        check whose whole premise is that silence was wrongly read as success
-        must not default open on silence, so empty text is a failure UNLESS the
-        reason is one we have blessed.
-
-          text present      -> returns True when the reason is `length` (the
-                               answer was cut off but is worth keeping), else
-                               False. A truncated terminal answer still reaches
-                               a human who can see it stops mid-word.
-          empty + tool_calls-> returns False. The one genuinely legitimate
-                               empty: a structural tool-call message, which
-                               parse_response's docstring describes. Blessed on
-                               whether _extract_tool_calls finds something
-                               EXECUTABLE, not on the reason string and not on
-                               the raw array — so a response cabal cannot act
-                               on is never blessed as a legitimate silence.
-          empty + `stop`    -> returns True. The task still completes — an
-                               empty answer reaches a human who can see it is
-                               empty, unlike an empty INSTRUCTION handed to an
-                               agent — but it is FLAGGED, because `stop` does
-                               not mean what it looks like. litellm's
-                               _FINISH_REASON_MAP collapses ERROR,
-                               MALFORMED_RESPONSE, MALFORMED_FUNCTION_CALL,
-                               network_error and FINISH_REASON_UNSPECIFIED onto
-                               `stop`, and map_finish_reason defaults every
-                               unmapped reason there too. Those are exactly the
-                               states that arrive with empty content. Without
-                               the flag the WORSE outcome (nothing) carried
-                               LESS machine-readable signal than the better one
-                               (half an answer).
-          empty + anything  -> LLMTruncatedError, naming the reason. Covers
-          else               `length`, `content_filter`, and every reason that
-                               does not reach us through litellm's mapper.
-
-        Reported by return value rather than a log line because no module in
-        cabal.agents logs directly — these classes report through the caller.
+        A thin adapter: it pulls `finish_reason` and the executable-tool-call
+        shape out of a NON-STREAMING response and hands them to
+        `classify_truncation`, which is shared with the streaming path so the
+        two cannot drift apart (cabal#136). The rule itself, and why each arm
+        exists, is documented there.
         """
         try:
             choice = response["choices"][0]
             finish_reason = choice.get("finish_reason")
-            # THE SAME PREDICATE THE TOOL LOOP USES, not a looser one beside it.
-            # Blessing on "the array is non-empty" while _extract_tool_calls
-            # skips entries with no `function` key left a gap in the silent
-            # direction: an array cabal cannot act on, blessed as a legitimate
-            # empty. The blessing exists to mean "cabal can act on this", so it
-            # asks the function that decides that.
-            has_tool_calls = bool(_extract_tool_calls(response))
+            # INSIDE THE GUARD. _extract_tool_calls is not internally total —
+            # its own try covers the choices/message access, so a `function`
+            # object with no `name`, or a non-dict entry, still raises. Lifting
+            # this into the classify_truncation() argument list put it OUTSIDE
+            # this except, and a bare KeyError then escaped handle_task, which
+            # catches only LLMTruncatedError — leaving the session never ended.
+            # THE SAME PREDICATE THE TOOL LOOP USES, not a looser one beside
+            # it: the blessing means "cabal can act on this".
+            has_executable_tool_calls = bool(_extract_tool_calls(response))
         except (KeyError, IndexError, TypeError, AttributeError):
-            # A response shape parse_response would itself have rejected; let
-            # that path own the error rather than raising a confusing one here.
+            # A malformed response shape. parse_response returns "" for these
+            # rather than rejecting them, so nothing downstream owns the error
+            # — raising here would surface a confusing one from the wrong layer.
             return False
-        if text.strip():
-            return bool(finish_reason == "length")
-        if has_tool_calls:
-            return False
-        if finish_reason == "stop":
-            return True
-        if finish_reason == "length":
-            raise LLMTruncatedError(
-                f"{self.name}: the model stopped at its output ceiling "
-                "(finish_reason='length') before producing any content. Raise "
-                "max_tokens, or reduce what the model must produce before it "
-                "can answer."
-            )
-        raise LLMTruncatedError(
-            f"{self.name}: the model produced no content and stopped with "
-            f"finish_reason={finish_reason!r}, which is not a reason cabal "
-            "treats as a legitimate empty answer."
+        return classify_truncation(
+            agent=self.name,
+            finish_reason=finish_reason,
+            text=text,
+            has_executable_tool_calls=has_executable_tool_calls,
         )
 
     def parse_response(self, response: Any) -> str:
@@ -716,6 +673,9 @@ class LLMPersona:
         session_id = self.session_tracker.start(external_id=task.id, agent_identity=self.name)
         messages = self.build_messages(task)
         full_text = ""
+        # A LOCAL, not a field: one handler serves concurrent dispatches, so an
+        # instance attribute would hold whatever the last stream wrote.
+        terminal_reason: list[str | None] = [None]
         try:
             async for delta in self.llm_client.astream(
                 model=self.model,
@@ -725,6 +685,7 @@ class LLMPersona:
                 trace_id=task.metadata.get("cabal_trace_id"),
                 span_id=task.metadata.get("cabal_span_id"),
                 max_tokens=self.max_tokens,
+                on_finish=lambda reason: terminal_reason.__setitem__(0, reason),
                 **self.extra_kwargs,
             ):
                 full_text += delta
@@ -732,7 +693,28 @@ class LLMPersona:
         except Exception as exc:
             self.session_tracker.end(session_id=session_id, summary=f"[stream-failed] {exc}")
             raise
-        self.session_tracker.end(session_id=session_id, summary=full_text)
+
+        # cabal#136 — the stream is over, so the same rule the non-streaming
+        # path uses can finally be applied. A stream cut off at the ceiling
+        # previously ended INDISTINGUISHABLY from a complete one, which is
+        # worse than the non-streaming case: the operator has already watched
+        # text arrive, so the absence of an error reads as a finished answer.
+        try:
+            truncated = classify_truncation(
+                agent=self.name,
+                finish_reason=terminal_reason[0],
+                text=full_text,
+                # A stream that produced tool calls is not something this path
+                # can act on — astream_task runs no tool loop.
+                has_executable_tool_calls=False,
+            )
+        except LLMTruncatedError as exc:
+            self.session_tracker.end(session_id=session_id, summary=f"[failed] {exc}")
+            raise
+        self.session_tracker.end(
+            session_id=session_id,
+            summary=f"[truncated] {full_text}" if truncated else full_text,
+        )
         self._commit_qa_to_memory(task, full_text)
 
 
