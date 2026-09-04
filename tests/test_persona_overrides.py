@@ -333,3 +333,59 @@ async def test_subordinates_inherit_the_primus_extra_kwargs(
         if c["chat_template_kwargs"] != {"enable_thinking": False}
     ]
     assert not dropped, f"hops that did not inherit: {dropped}"
+
+
+@pytest.mark.asyncio
+async def test_a_subordinate_can_opt_out_with_an_empty_dict(
+    tmp_path, stub_acompletion_captures
+) -> None:
+    """`extra_kwargs = {}` sends nothing on that hop — documented, now pinned.
+
+    identity.toml.example promotes this to operator-facing behaviour, but
+    nothing held the factory to it: changing the `is not None` check to a
+    truthiness test silently converts the opt-out into an inherit, and every
+    other test stays green.
+    """
+    fn, captures = stub_acompletion_captures
+    identity = dedent(
+        """
+        [personas.wright]
+        role = "primus"
+        safety_tier = "moderate"
+        extra_kwargs = { chat_template_kwargs = { enable_thinking = false } }
+
+        [personas.wright.subordinates.implementer]
+        model = "openai/some-local-model"
+        extra_kwargs = {}
+        """
+    )
+    fastapi_app = await _build_app(tmp_path, identity, fn)
+    async with fastapi_app.router.lifespan_context(fastapi_app):
+        transport = ASGITransport(app=fastapi_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            token = await _bootstrap_token(fastapi_app, client)
+            r = await client.post(
+                "/a2a/tasks",
+                json={
+                    "target": "wright-primus",
+                    "task": {
+                        "id": "t-optout",
+                        "status": {
+                            "state": "submitted",
+                            "message": {
+                                "role": "user",
+                                "parts": [{"kind": "text", "text": "anything"}],
+                            },
+                        },
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200
+
+    by_hop = {
+        ("subordinate" if "subordinate" in c["system"] else "primus"): c
+        for c in captures
+    }
+    assert by_hop["primus"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert by_hop["subordinate"]["chat_template_kwargs"] is None, "opt-out ignored"

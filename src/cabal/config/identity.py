@@ -66,7 +66,12 @@ class CabalConfig(_Open):
 #:   (LiteLLMClient uses setdefault), so one persona's traffic is redirected
 #:   with a 200 and no log line saying so.
 #:
-#:   `tools` — silently discarded, since the tool proxy overwrites it.
+#:   `tools` — silently discarded, since the tool proxy overwrites it. This
+#:   one is over-broad ON PURPOSE: `tools` is only cabal's when a proxy is
+#:   wired, so a proxy-less persona could otherwise pass it through. Refused
+#:   anyway, because such a persona gets `tool_calls` back with nothing able to
+#:   execute them and returns empty content — the failure this feature exists
+#:   to stop.
 #:
 #: This is the complement of the whitelist we deliberately do not keep: it
 #: enumerates OUR OWN signature, not any provider's, so it changes only when

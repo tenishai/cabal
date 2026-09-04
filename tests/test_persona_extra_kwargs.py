@@ -4,7 +4,7 @@ The motivating case: a reasoning model whose thinking must be switched off
 per-call (`chat_template_kwargs={"enable_thinking": False}`). With it, a
 question answers in 49 tokens; without it, the model spends its entire budget
 thinking and returns empty content. cabal had the field but no way to set it,
-and two of the four call paths dropped it.
+and two of the five call paths dropped it.
 """
 
 from __future__ import annotations
@@ -173,6 +173,15 @@ def test_reserved_covers_the_client_signature() -> None:
 
     from cabal.core.llm.litellm_client import LiteLLMClient
 
-    for name, param in inspect.signature(LiteLLMClient.acompletion).parameters.items():
-        if param.kind is inspect.Parameter.KEYWORD_ONLY:
-            assert name in RESERVED_EXTRA_KWARGS, f"{name!r} is bindable but not reserved"
+    # BOTH methods. Pinning only acompletion left a rot-hazard in the anti-rot
+    # device: the signatures are identical today, but a streaming-specific
+    # parameter is exactly what someone adds to one and not the other, and the
+    # resulting key would be swallowed by the client instead of reaching the
+    # provider. Verified with a positive control — adding a keyword-only param
+    # to astream alone fired nothing before this loop.
+    for method in (LiteLLMClient.acompletion, LiteLLMClient.astream):
+        for name, param in inspect.signature(method).parameters.items():
+            if param.kind is inspect.Parameter.KEYWORD_ONLY:
+                assert name in RESERVED_EXTRA_KWARGS, (
+                    f"{name!r} is bindable on {method.__name__} but not reserved"
+                )
