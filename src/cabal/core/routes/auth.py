@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, HTTPException, Request, status
+from datetime import UTC, datetime, timedelta
+
+from fastapi import APIRouter, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from cabal.core.auth.bootstrap_codes import BootstrapCodeError, consume
-from cabal.core.auth.jwt import mint
+from cabal.core.auth.jwt import JWTError, extract_bearer, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.db import open_session
 
@@ -90,3 +92,93 @@ async def bootstrap(req: BootstrapRequest, request: Request) -> BootstrapRespons
         )
 
     return BootstrapResponse(access_token=token, persona=persona_name)
+
+
+# ---- gateway token exchange (external-MCP arc, C1) ------------------------
+
+_LIMINAL_TTL_SECONDS = 15 * 60
+
+
+class LiminalTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "Bearer"
+    aud: str
+    persona: str
+    expires_at: str
+
+
+@router.post("/liminal-token", response_model=LiminalTokenResponse)
+async def liminal_token(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> LiminalTokenResponse:
+    """Exchange a colleague token for a short-lived gateway token.
+
+    The colleague JWT is standing identity (year-scale, aud cabal-core);
+    the MCP gateway deliberately demands its own audience so standing
+    identity cannot open it directly. This route is the swap: prove you
+    are an agent this switchboard minted, get a fifteen-minute
+    aud="liminal" token whose persona is your agent name -- the key the
+    gateway's policy store grants on. Nothing here grants anything: an
+    exchanged token for an ungranted agent opens exactly zero tools, and
+    a leaked one dies inside the quarter hour.
+
+    Colleague-scope only, deliberately: operators already hold
+    /admin/token/mint-service for service tokens, and a dispatch-scoped
+    persona token is a call credential, not a standing identity to
+    exchange.
+
+    The gate is inlined (verify + aud + scope) rather than borrowed from
+    the admin module: the shared scope helper is still in flight on
+    another branch, and this route must hold its walls standing alone.
+    Folding it into the shared gate when that lands is welcome.
+    """
+    try:
+        claims = verify(
+            extract_bearer(authorization),
+            key_set=request.app.state.jwks_provider(),
+            expected_audience="cabal-core",
+        )
+    except JWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
+        ) from exc
+    if "colleague" not in (claims.get("cabal_scope") or []):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="requires colleague scope",
+        )
+    sub = str(claims.get("sub") or "")
+    if sub.startswith("agent:"):
+        persona = sub.split(":", 1)[1]
+    else:
+        persona = str(claims.get("cabal_persona") or "")
+    if not persona:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="token carries no agent identity to exchange",
+        )
+
+    async with open_session(request.app.state.sessionmaker) as session:
+        stored = await load_active_signing_key(session, master_key=request.app.state.master_key)
+    if stored is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="no active signing key",
+        )
+
+    token = mint(
+        signing_key=stored,
+        sub=sub,
+        aud="liminal",  # must match admin.py's _AUD_LIMINAL / the gateway registry
+        persona=persona,
+        scope=["mcp"],
+        ttl_seconds=_LIMINAL_TTL_SECONDS,
+    )
+    expires_at = (datetime.now(UTC) + timedelta(seconds=_LIMINAL_TTL_SECONDS)).isoformat()
+    return LiminalTokenResponse(
+        access_token=token,
+        aud="liminal",
+        persona=persona,
+        expires_at=expires_at,
+    )
