@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from cabal.agents.llm_persona import LLMPersona
+from cabal.agents.llm_persona import HONESTY_FLOOR, LLMPersona
 from cabal.core.a2a.codes import (
     CODE_BUDGET_EXHAUSTED,
     CODE_POLICY_VIOLATION,
@@ -74,7 +74,12 @@ async def test_build_messages_includes_system_prompt() -> None:
         system_prompt="be concise",
     )
     await persona.handle_task(_user_task("hi"))
-    assert seen["messages"][0] == {"role": "system", "content": "be concise"}
+    # The system message is the persona prompt PLUS the honesty floor every
+    # prompt now carries (cabal#138), so this asserts the persona's own text
+    # leads and survives rather than asserting the message equals it.
+    assert seen["messages"][0]["role"] == "system"
+    assert seen["messages"][0]["content"].startswith("be concise")
+    assert HONESTY_FLOOR in seen["messages"][0]["content"]
     assert seen["messages"][1] == {"role": "user", "content": "hi"}
 
 

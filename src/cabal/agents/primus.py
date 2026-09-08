@@ -25,7 +25,7 @@ import re
 import secrets
 from dataclasses import dataclass, field
 
-from cabal.agents.llm_persona import LLMPersona, _message_to_chat
+from cabal.agents.llm_persona import HONESTY_FLOOR, LLMPersona, _message_to_chat
 from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.codes import (
     CODE_BUDGET_EXHAUSTED,
@@ -300,7 +300,7 @@ class PrimusPersona(LLMPersona):
 
     async def _plan(self, task: Task) -> str:
         messages = [
-            {"role": "system", "content": self._plan_prompt},
+            {"role": "system", "content": self._plan_prompt + HONESTY_FLOOR},
             *(_message_to_chat(m) for m in task.history),
         ]
         if task.status.message is not None:
@@ -440,7 +440,7 @@ class PrimusPersona(LLMPersona):
         reviewer_critique: str | None = None,
     ) -> tuple[str, bool]:
         messages = [
-            {"role": "system", "content": self._aggregate_prompt},
+            {"role": "system", "content": self._aggregate_prompt + HONESTY_FLOOR},
             *(_message_to_chat(m) for m in task.history),
         ]
         if task.status.message is not None:

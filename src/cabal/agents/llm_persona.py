@@ -46,6 +46,25 @@ from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 _RESULT_SUMMARY_MAX = 2000
 
 
+#: Appended to EVERY system prompt cabal assembles (cabal#138).
+#:
+#: Not left to persona authors. Only the Archivist carried an anti-fabrication
+#: rule, it was scoped to "no memory hit", and it did not stop that persona
+#: from claiming a memory store it did not have or citing PRs that are not in
+#: the store. A floor that depends on each author remembering is not a floor.
+#:
+#: Deliberately three short rules. A long preamble crowds out the persona's own
+#: prompt, and small models weight early tokens heavily — this has to cost
+#: little enough that it is worth carrying on every call.
+HONESTY_FLOOR = """
+Answering honestly:
+- "I don't know" is an acceptable answer. Say it rather than inventing one.
+- Do not claim a capability you cannot demonstrate. If you have no memory
+  store, no tool, or no access to something, say so plainly.
+- Cite only what you actually retrieved. If part of an answer is not from
+  something you were given, say which part is unverified."""
+
+
 @dataclass
 class LLMPersona:
     """LocalHandler-shaped LLM agent.
@@ -145,7 +164,7 @@ class LLMPersona:
 
         Default: [system+memories, ...history (user/agent alternating), current].
         """
-        system_content = self.system_prompt + self._recall_for_task(task)
+        system_content = self.system_prompt + self._recall_for_task(task) + HONESTY_FLOOR
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
         for hist in task.history:
             messages.append(_message_to_chat(hist))
