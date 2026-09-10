@@ -177,6 +177,52 @@ takes an explicit `--purge-secrets`.
 If the daemon starts but dispatch fails with `No key for kid`, the saved token
 was signed by a key that no longer exists: run `cbl login --code <CODE>` again.
 
+## Seeing the fleet (`cbl status`)
+
+`cbl status` lists the personas this cabal owns. It also lists **live agent
+sessions** — the Claude Code sessions actually doing work — once they register:
+
+```
+NAME                    GEN KIND       ROLE       STATUS     TIER     HEARTBEAT
+-------------------------------------------------------------------------------
+echo                      1 member     builtin    active     strict   —
+poe2                      1 session    session    active     strict   2026-09-10T12:04:00+00:00
+                       ↳ liminal · fix/73-hardening · working the hardening bill
+poe3                      1 session    session    active     strict   2026-09-10T11:31:00+00:00  STALE
+```
+
+A session row is **presence only** — it exists to answer "what is running, and
+what is it doing". Nothing can route work to it, and the reason is not the empty
+capability map on the row: capability routing matches against an in-memory
+registry that only `identity.toml` personas are ever added to, so a session is
+absent from it entirely. The `session://` endpoint and empty agent card are
+belt to that suspenders.
+
+Wire it up with the hook cabal ships:
+
+```jsonc
+// ~/.claude/settings.json, or a project .claude/settings.json
+"hooks": {
+  "SessionStart": [{"hooks": [{"type": "command",
+     "command": "/path/to/cabal/hooks/cabal-session-presence.sh start"}]}],
+  "Stop":         [{"hooks": [{"type": "command",
+     "command": "/path/to/cabal/hooks/cabal-session-presence.sh beat"}]}]
+}
+```
+
+Set `CABAL_SESSION_NAME=poe2` for a readable roster (it falls back to a short
+session id), and `CABAL_SESSION_TASK="..."` for the one-line what-I-am-doing.
+Repo and branch are read from git; a detached worktree reports `detached@<sha>`.
+
+The hook **fails open everywhere** — no `cbl` on PATH, a daemon that is down, or
+a failing call all exit 0. Presence is an operator convenience and must never
+break a turn.
+
+`STALE` marks a session that has not heartbeated in 15 minutes. Clean
+de-registration cannot be relied on — a crashed session never runs its Stop
+hook — so staleness, not `cbl session end`, is what makes a dead session read
+as dead. Reaping those rows is tracked in #70.
+
 ## Modes
 
 - **Solo (default)**: one process, all personas as local handlers, dispatch router

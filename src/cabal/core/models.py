@@ -75,6 +75,10 @@ class Agent(Base):
     # own container); "federated" = a sovereign peer this cabal is a client of.
     # federation_audience is the sovereign service id callers mint into `aud`.
     kind: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'member'"))
+    # cabal#142 — presence payload for kind='session' rows: what this live
+    # session is working on right now (repo / branch / one-line task). NULL on
+    # every persona row and on any session that has not heartbeated yet.
+    work_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     federation_audience: Mapped[str | None] = mapped_column(String)
 
     persona: Mapped[Persona] = relationship(back_populates="agents")
