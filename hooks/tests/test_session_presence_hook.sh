@@ -96,6 +96,45 @@ out=$( : > "$CBL_LOG"; ( cd "$GITDIR" && PATH="$TMP/bin:$PATH" \
       cat "$CBL_LOG" )
 check "falls back to session id" "session register abcd1234" "$out"
 
+# 9b. a FAILING call leaves a footprint in the log, while still exiting 0.
+#     This is the whole point of nit 1: fail-open must not mean fail-silent.
+cat > "$TMP/bin/cbl" <<'NOISY'
+#!/usr/bin/env bash
+echo "$@" >> "$CBL_LOG"
+echo "no token; run 'cbl login' first." >&2
+exit 1
+NOISY
+chmod +x "$TMP/bin/cbl"
+export TMPDIR="$TMP"
+rm -f "$TMP/cabal-session-presence.log"
+out=$( ( cd "$GITDIR" && PATH="$TMP/bin:$PATH" TMPDIR="$TMP" CABAL_SESSION_NAME=poe2 \
+        bash "$HOOK" start </dev/null >/dev/null 2>&1 ); echo "exit=$?" )
+check "a failing call still exits 0"       "exit=0"                    "$out"
+check "stderr is captured, not discarded"  "no token"                  "$(cat "$TMP/cabal-session-presence.log" 2>/dev/null)"
+
+# 9c. stdout is still discarded — the log must not fill with success chatter
+cat > "$TMP/bin/cbl" <<'CHATTY'
+#!/usr/bin/env bash
+echo "$@" >> "$CBL_LOG"
+echo "registered poe2 (kind=session)"
+exit 0
+CHATTY
+chmod +x "$TMP/bin/cbl"
+rm -f "$TMP/cabal-session-presence.log"
+( cd "$GITDIR" && PATH="$TMP/bin:$PATH" TMPDIR="$TMP" CABAL_SESSION_NAME=poe2 \
+    bash "$HOOK" start </dev/null >/dev/null 2>&1 )
+check_not "success chatter stays out of the log" "registered poe2" \
+  "$(cat "$TMP/cabal-session-presence.log" 2>/dev/null)"
+
+# restore the plain stub for anything after this point
+cat > "$TMP/bin/cbl" <<'STUB2'
+#!/usr/bin/env bash
+echo "$@" >> "$CBL_LOG"
+[ "${CBL_FAIL:-0}" = "1" ] && exit 1
+exit 0
+STUB2
+chmod +x "$TMP/bin/cbl"
+
 # 10. end de-registers
 out=$(run end); check "end de-registers" "session end poe2" "$out"
 

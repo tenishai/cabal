@@ -191,6 +191,11 @@ async def register_session(
     # collides with the retired row on the composite PK the second time a
     # session ever starts. `next_generation` scans all statuses; its own
     # docstring warns about exactly this and it sits forty lines up this file.
+    # Two concurrent registers of the same name can both read MAX and both
+    # insert; the loser gets a UNIQUE failure. DO NOT ADD A LOCK OR A RETRY --
+    # `beat` is self-healing (`heartbeat || register`), so the loser's next
+    # Stop 404s on heartbeat and re-registers. The window is one turn
+    # (PR #148 review, nit 2).
     if generation is None:
         generation = await next_generation(session, name)
     row = await register_agent(

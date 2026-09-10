@@ -59,11 +59,25 @@ args=()
 # the plain way is an unbound-variable error on bash 3.2 -- which is what
 # /bin/bash is on macOS. A session outside a git repo has no repo, no branch and
 # no task, so the empty case is the ordinary one, not the edge.
+# stdout is discarded and stderr is KEPT, in a capped log. Those two halves do
+# different jobs and only one of them was ever load-bearing: `cbl session
+# register` prints on success, which on a per-turn Stop hook is transcript
+# noise, so >/dev/null earns its place. `2>&1` earned nothing and destroyed the
+# only evidence a presence failure ever leaves. `exit 0` below is the whole
+# fail-open contract; discarding diagnostics was never part of it.
+#
+# The case this exists for is not a crash. `_session_token()` prints
+# "no token; run `cbl login` first." and exits 1, so a merely EXPIRED token
+# silently empties the roster -- and an empty `cbl status` is indistinguishable
+# from "nothing is running", which is the one question this feature exists to
+# answer (PR #148 review, nit 1).
+LOG="${TMPDIR:-/tmp}/cabal-session-presence.log"
+
 case "$MODE" in
-  start) cbl session register "$NAME" ${args[@]+"${args[@]}"} >/dev/null 2>&1 ;;
-  beat)  cbl session heartbeat "$NAME" ${args[@]+"${args[@]}"} >/dev/null 2>&1 \
-           || cbl session register "$NAME" ${args[@]+"${args[@]}"} >/dev/null 2>&1 ;;
-  end)   cbl session end "$NAME" >/dev/null 2>&1 ;;
+  start) cbl session register "$NAME" ${args[@]+"${args[@]}"} >/dev/null 2>>"$LOG" ;;
+  beat)  cbl session heartbeat "$NAME" ${args[@]+"${args[@]}"} >/dev/null 2>>"$LOG" \
+           || cbl session register "$NAME" ${args[@]+"${args[@]}"} >/dev/null 2>>"$LOG" ;;
+  end)   cbl session end "$NAME" >/dev/null 2>>"$LOG" ;;
 esac
 
 # Unconditionally 0: see the fail-open note at the top.
