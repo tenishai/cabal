@@ -183,6 +183,30 @@ async def test_no_input_shape_is_free() -> None:
     )
 
 
+def test_the_increment_is_unconditional() -> None:
+    """THE ACTUAL TEETH, and it took two attempts to get here.
+
+    A behavioural test can only catch a free-pass condition keyed on an input
+    shape it happens to enumerate -- proven by trying: a mutant that skipped
+    the increment for an empty canonical payload survived the shape-based test
+    above, because none of its shapes produce one.
+
+    So assert the structure instead, the same way test_check_is_await_free
+    does. Exactly two early returns may precede the increment -- the non-Task
+    guard and the empty-session-key guard, both documented. A third is someone
+    adding "this kind of delegation is free", which is how this regresses.
+    """
+    import inspect
+
+    src = inspect.getsource(DelegationBudgetGuardrail.check)
+    before = src.split("count = self._counts.pop")[0]
+    assert before.count("return ") == 2, (
+        "an early return was added or removed before the counter increments. "
+        "Two are expected (non-Task target, missing session key). A third "
+        "means some delegation is now free -- see the no-refund rule."
+    )
+
+
 def test_a_policy_may_lower_the_budget_but_never_raise_it() -> None:
     """A policy-only limit fails open when the policy is missing; the ceiling
     lives in code so a misconfigured deployment is still bounded."""
