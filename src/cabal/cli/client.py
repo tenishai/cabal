@@ -58,6 +58,42 @@ def list_agents(*, token: str) -> dict[str, Any]:
     return resp.json()
 
 
+def register_session(
+    *, token: str, name: str, work: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    with make_client() as c:
+        resp = c.post(
+            "/admin/sessions/register",
+            json={"name": name, "work": work},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def heartbeat_session(
+    *, token: str, name: str, work: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    with make_client() as c:
+        resp = c.post(
+            f"/admin/sessions/{name}/heartbeat",
+            json={"work": work},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def end_session(*, token: str, name: str) -> dict[str, Any]:
+    with make_client() as c:
+        resp = c.post(
+            f"/admin/sessions/{name}/end",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def reload_identity(*, token: str) -> dict[str, Any]:
     with make_client() as c:
         resp = c.post(

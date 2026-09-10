@@ -16,7 +16,7 @@ from datetime import datetime
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cabal.core.models import Agent
+from cabal.core.models import Agent, Persona
 
 
 @dataclass(slots=True, frozen=True)
@@ -37,6 +37,7 @@ class AgentRow:
     last_heartbeat: datetime | None
     kind: str = "member"
     federation_audience: str | None = None
+    work: dict | None = None
 
     @classmethod
     def from_orm(cls, row: Agent) -> AgentRow:
@@ -55,6 +56,7 @@ class AgentRow:
             last_heartbeat=row.last_heartbeat,
             kind=row.kind,
             federation_audience=row.federation_audience,
+            work=row.work_json,
         )
 
 
@@ -131,6 +133,68 @@ async def register_federated(
     )
 
 
+SESSION_KIND = "session"
+#: Every session row hangs off one synthetic persona so the `agents.persona_name`
+#: FK holds without inventing a persona per session. It is deliberately NOT a
+#: dispatchable persona — nothing in identity.toml declares it.
+SESSION_PERSONA = "_session"
+
+
+async def ensure_session_persona(session: AsyncSession) -> None:
+    """Create the synthetic persona backing session rows, once, idempotently."""
+    existing = await session.get(Persona, SESSION_PERSONA)
+    if existing is None:
+        session.add(
+            Persona(
+                name=SESSION_PERSONA,
+                config_json={
+                    "synthetic": True,
+                    "reason": "backs kind='session' presence rows (cabal#142)",
+                },
+            )
+        )
+        await session.flush()
+
+
+async def register_session(
+    session: AsyncSession,
+    *,
+    name: str,
+    work: dict | None = None,
+    generation: int = 1,
+) -> AgentRow:
+    """Register a live agent session as PRESENCE ONLY (cabal#142).
+
+    A Claude Code session is not dispatchable: it runs no inbound listener and
+    holds no signed AgentCard. The row exists so `cbl status` can answer "what
+    is actually running and what is it doing" — the question the bulletin could
+    not answer while it listed only the three personas.
+
+    That non-dispatchability is encoded rather than documented: the endpoint is
+    a ``session://`` URI no transport can dial, the agent card is empty, and the
+    capability map is empty so `select_by_capabilities` can never route here.
+    """
+    await ensure_session_persona(session)
+    row = await register_agent(
+        session,
+        name=name,
+        persona_name=SESSION_PERSONA,
+        role="session",
+        endpoint=f"session://{name}",
+        capabilities={},
+        safety_tier="strict",
+        agent_card_json={},
+        agent_card_kid="",
+        generation=generation,
+        status="active",
+        kind=SESSION_KIND,
+    )
+    if work is not None:
+        await heartbeat(session, name, generation, work=work)
+        return await get(session, name, generation) or row
+    return row
+
+
 async def get_active(session: AsyncSession, name: str) -> AgentRow | None:
     """Return the active generation for `name`, or None.
 
@@ -196,11 +260,26 @@ async def mark_retired(session: AsyncSession, name: str, generation: int) -> Non
     )
 
 
-async def heartbeat(session: AsyncSession, name: str, generation: int) -> None:
-    from sqlalchemy import func
+async def heartbeat(
+    session: AsyncSession,
+    name: str,
+    generation: int,
+    *,
+    work: dict | None = None,
+) -> None:
+    """Bump `last_heartbeat`, and for a session row also record what it is doing.
 
+    `work` is written ONLY when a payload is supplied. Passing None leaves any
+    existing value alone rather than clearing it — a persona heartbeat from the
+    scheduler must not wipe a session's work line, and a session that heartbeats
+    without new information should keep showing the last thing it reported.
+    To clear it deliberately, pass an empty dict.
+    """
+    values: dict = {"last_heartbeat": func.current_timestamp()}
+    if work is not None:
+        values["work_json"] = work
     await session.execute(
         update(Agent)
         .where(Agent.name == name, Agent.generation == generation)
-        .values(last_heartbeat=func.current_timestamp())
+        .values(**values)
     )
