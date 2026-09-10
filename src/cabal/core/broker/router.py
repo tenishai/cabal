@@ -359,9 +359,10 @@ class DispatchRouter:
             raise DispatchError(f"agent {target_agent!r}'s handler does not implement astream_task")
 
         # cabal#151 — the SAME input-guardrail chain dispatch() runs. Without
-        # this, every router-level bound (DoomLoopGuardrail #42, the delegation
-        # budget #146) was opt-out by choosing the streaming endpoint, which
-        # makes a bound not a bound.
+        # this, every router-level bound was opt-out by choosing the streaming
+        # endpoint, which makes a bound not a bound. On this branch that is
+        # DoomLoopGuardrail (#42); the delegation budget (#146) joins it when
+        # that branch merges, and would have shipped bypassable without this.
         #
         # AFTER the structural refusals above, deliberately: a guardrail that
         # ran first would charge a delegation budget for a dispatch that could
