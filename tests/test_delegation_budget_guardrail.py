@@ -163,9 +163,15 @@ async def test_no_input_shape_is_free() -> None:
     someone ADDING a refund method and misses the likelier regression, which
     is someone editing `check()` to skip the increment under some condition.
 
-    This charges across every axis a future condition might key on -- target,
-    payload, task id -- and asserts the count equals the number of calls. Any
-    "this kind of delegation is free" branch makes the arithmetic disagree.
+    This charges across four axes -- target, payload, payload size, task id --
+    and asserts the count equals the number of calls.
+
+    WHAT IT CANNOT DO, stated because an earlier commit message claimed this
+    docstring already said so and it did not: it only catches a free-pass
+    condition keyed on a shape listed here. A mutant skipping the increment
+    for an empty canonical payload SURVIVED it, because none of these produce
+    one. Read it as pinning today's behaviour on four axes, not as a proof
+    that no delegation is free.
     """
     g = DelegationBudgetGuardrail(limit=99)
     shapes = [
@@ -194,7 +200,19 @@ def test_the_increment_is_unconditional() -> None:
     So assert the structure instead, the same way test_check_is_await_free
     does. Exactly two early returns may precede the increment -- the non-Task
     guard and the empty-session-key guard, both documented. A third is someone
-    adding "this kind of delegation is free", which is how this regresses.
+    adding "this kind of delegation is free" by the early-return route.
+
+    IT GUARDS THE EARLY-RETURN ROUTE ONLY, and that is the honest scope. The
+    pre-pass constructed two bypasses it does not catch: a conditional
+    increment AMOUNT, and a refund AFTER the increment. Both live below the
+    line this assertion scans and touch no `return`.
+
+    Three attempts at a complete guard produced three partial ones, which is
+    the answer: "no delegation is ever free" is a property of the whole
+    function and no cheap assertion covers it. This plus the behavioural test
+    above cover the two likeliest regressions; the rest is the docstring on
+    `check()` and whoever reviews the change. Do not add a fourth partial
+    guard believing it closes the set.
     """
     import inspect
 
