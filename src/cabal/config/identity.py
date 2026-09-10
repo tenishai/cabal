@@ -254,6 +254,27 @@ class GuardrailsConfig(_Open):
     doom_loop: bool = True
     doom_loop_threshold: int = 5
 
+    #: cabal#146 -- total delegations per conversation, payload-independent.
+    #: Complements doom_loop rather than replacing it: that one catches a tight
+    #: repeat quickly, this one catches the paraphrase storm that walks past it.
+    #: A deployment may LOWER this; MAX_DELEGATIONS_PER_CONTEXT is the ceiling
+    #: and a larger value is clamped, not honoured.
+    delegation_budget: bool = True
+    delegation_budget_limit: int = 20
+
+    @field_validator("delegation_budget_limit")
+    @classmethod
+    def _budget_at_least_one(cls, v: int) -> int:
+        # Mirrors the doom_loop validator: surface a field-named error at
+        # config load rather than aborting create_app inside router
+        # construction. The guard itself also raises for < 1.
+        if v < 1:
+            raise ValueError(
+                f"guardrails.delegation_budget_limit must be >= 1 (got {v}); "
+                "raise it or disable the guard with delegation_budget = false"
+            )
+        return v
+
     @field_validator("doom_loop_threshold")
     @classmethod
     def _threshold_at_least_one(cls, v: int) -> int:

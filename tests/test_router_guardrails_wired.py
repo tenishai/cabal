@@ -40,7 +40,10 @@ from cabal.core.broker.router import DispatchRouter
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import make_engine, make_sessionmaker
 from cabal.core.db_pragmas import install_sqlite_pragmas
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import (
+    DelegationBudgetGuardrail,
+    DoomLoopGuardrail,
+)
 from cabal.core.models import Base, Persona
 
 # ======================================================================
@@ -101,9 +104,44 @@ def test_build_router_input_guardrails_threshold_from_config() -> None:
 
 
 def test_build_router_input_guardrails_opt_out() -> None:
-    """identity.toml ``[guardrails] doom_loop = false`` → no guardrails wired."""
+    """``doom_loop = false`` removes the doom-loop guard.
+
+    It no longer empties the list: cabal#146 added a second, independent
+    guard, and the two opt out separately on purpose -- turning off the
+    sameness counter must not silently disable the delegation budget.
+    """
     identity = IdentityConfig(guardrails=GuardrailsConfig(doom_loop=False))
+    wired = build_router_input_guardrails(identity)
+    assert not [g for g in wired if isinstance(g, DoomLoopGuardrail)]
+    assert [g for g in wired if isinstance(g, DelegationBudgetGuardrail)]
+
+
+def test_both_guards_opt_out_independently() -> None:
+    identity = IdentityConfig(
+        guardrails=GuardrailsConfig(doom_loop=False, delegation_budget=False)
+    )
     assert build_router_input_guardrails(identity) == []
+
+
+def test_delegation_budget_is_wired_with_its_configured_limit() -> None:
+    identity = IdentityConfig(
+        guardrails=GuardrailsConfig(delegation_budget_limit=7)
+    )
+    budgets = [
+        g
+        for g in build_router_input_guardrails(identity)
+        if isinstance(g, DelegationBudgetGuardrail)
+    ]
+    assert len(budgets) == 1
+    assert budgets[0].limit == 7
+
+
+def test_both_guards_are_wired_by_default() -> None:
+    """Default-on for both. A deployment that never edits identity.toml gets
+    the paraphrase bound as well as the sameness bound."""
+    wired = build_router_input_guardrails(IdentityConfig())
+    kinds = {type(g).__name__ for g in wired}
+    assert kinds == {"DoomLoopGuardrail", "DelegationBudgetGuardrail"}
 
 
 # ======================================================================

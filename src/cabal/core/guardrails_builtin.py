@@ -233,6 +233,102 @@ class DoomLoopGuardrail:
 # ---------------------------------------------------------------------------
 
 
+#: The ceiling no identity.toml can raise. A policy value may only LOWER the
+#: effective budget (cabal#146). A policy-only limit fails open exactly when
+#: the policy is missing or unparsed, which is the state a newly-added or
+#: misconfigured persona is in -- so the backstop lives here, in code.
+MAX_DELEGATIONS_PER_CONTEXT = 40
+
+#: Bound on tracked conversations, mirroring DoomLoopGuardrail's outer LRU.
+#: Without it a long-lived process leaks one counter per context forever.
+_BUDGET_MAXSIZE = 512
+
+
+class DelegationBudgetGuardrail:
+    """Bound the TOTAL delegations in one conversation, ignoring payload.
+
+    cabal#146. `DoomLoopGuardrail` counts *identical* delegations and is
+    defeated by paraphrase: its own BLOCK message tells the model to change
+    approach, a language model changes approach by rewording, and rewording
+    moves it off the `(target, payload)` key the counter watches. An incident
+    produced ~270 asks of materially one question across a dozen wordings,
+    each wording counting separately toward a threshold of 3.
+
+    So this counts nothing about the payload and nothing about the target --
+    only how many delegations a conversation has made. No amount of rewording
+    evades a counter that never looks at the words.
+
+    **No TTL, deliberately.** DoomLoopGuardrail lazily resets a key after
+    `ttl_seconds`, which is right for a sameness counter: a repeat every ten
+    minutes is not a runaway. It is wrong here. A slow storm is still a storm,
+    and a budget that forgets is not a budget.
+
+    **BLOCK is enough; this does not need to terminate.** The router turns
+    BLOCK into a policy-violation annotation rather than failing the task (see
+    its own "No hard-halt" note). Unlike the sameness counter this one never
+    decreases, so once a conversation is over budget EVERY later delegation
+    blocks too. The agent cannot reword its way through, which is the property
+    the incident actually needed.
+
+    **Counts semantic delegations, not transport retries.** It runs inside
+    `DispatchRouter.dispatch`, so a connection that never produced a dispatch
+    never arrives here, and one unreachable colleague cannot eat the budget.
+
+    MUST REMAIN AWAIT-FREE, for the same reason DoomLoopGuardrail must: a
+    primus fan-out (cabal#69) calls this concurrently across legs sharing one
+    instance, and an await-free `async def` runs atomically to completion on a
+    cooperative event loop. Any `await` here reintroduces a data race on the
+    counter -- guard the state, do not await inside it.
+    """
+
+    def __init__(self, limit: int = MAX_DELEGATIONS_PER_CONTEXT) -> None:
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1, got {limit}")
+        # A policy may only tighten. Clamping rather than raising is
+        # deliberate: a deployment asking for more than the backstop should
+        # still boot, bounded, rather than refuse to start.
+        self._limit = min(limit, MAX_DELEGATIONS_PER_CONTEXT)
+        self._counts: dict[str, int] = {}
+        self._maxsize = _BUDGET_MAXSIZE
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+        """PASS until a conversation exceeds its budget, then BLOCK every time."""
+        if not isinstance(target, Task):
+            return Verdict.pass_()
+
+        task: Task = target
+        # Same key as DoomLoopGuardrail: context_id is stable across hops and
+        # sub-tasks inherit it, so a fan-out shares one budget with its
+        # children. Falling back to task.id gives an un-threaded caller a
+        # budget of one task -- weaker than intended, never absent.
+        session_key = task.context_id or task.id
+        if not session_key:
+            return Verdict.pass_()
+
+        # Outer LRU, matching DoomLoopGuardrail: pop-then-reinsert marks this
+        # conversation most-recent; a new one evicts the least-recent at cap.
+        count = self._counts.pop(session_key, 0) + 1
+        if len(self._counts) >= self._maxsize:
+            self._counts.pop(next(iter(self._counts)))
+        self._counts[session_key] = count
+
+        if count > self._limit:
+            return Verdict.block(
+                reason=(
+                    f"Delegation budget exhausted: {count - 1} delegations already "
+                    f"made in this conversation (limit {self._limit}). Every "
+                    "delegation counts regardless of wording, so rephrasing will "
+                    "not get through. If you cannot answer from what you have, "
+                    "say so and stop rather than asking again."
+                )
+            )
+        return Verdict.pass_()
+
+
 class ValidateBeforeRecord:
     """Validate a mutating-tool result before it is appended to the conversation.
 
