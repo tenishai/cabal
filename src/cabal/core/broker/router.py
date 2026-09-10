@@ -358,6 +358,37 @@ class DispatchRouter:
         if not hasattr(handler, "astream_task"):
             raise DispatchError(f"agent {target_agent!r}'s handler does not implement astream_task")
 
+        # cabal#151 — the SAME input-guardrail chain dispatch() runs. Without
+        # this, every router-level bound (DoomLoopGuardrail #42, the delegation
+        # budget #146) was opt-out by choosing the streaming endpoint, which
+        # makes a bound not a bound.
+        #
+        # AFTER the structural refusals above, deliberately: a guardrail that
+        # ran first would charge a delegation budget for a dispatch that could
+        # never have happened (unknown agent, no astream_task). dispatch() has
+        # the same ordering -- _prepare resolves and raises before any guard.
+        #
+        # BLOCK raises rather than yielding an error delta. The three refusals
+        # above already establish "this stream will not happen" as a pre-yield
+        # raise, and both callers already handle DispatchError -- the SSE route
+        # emits an error frame carrying partial_text (a2a_jsonrpc.py), the TUI
+        # catches it. Yielding a delta instead would mean a blocked stream had
+        # opened, which is the opposite of an *input* guardrail's contract.
+        if self._input_guardrails:
+            guard_ctx = GuardrailContext(
+                persona_name=ctx.caller_persona or ctx.caller_agent or "",
+                task_id=task.id,
+                phase="router",
+            )
+            # Same metadata contract as dispatch(): DoomLoopGuardrail keys its
+            # delegation hash on this and would otherwise hash an empty target.
+            task.metadata["cabal_target_agent"] = target_agent
+            verdict = await run_guardrails(self._input_guardrails, task, guard_ctx)
+            if verdict.type == VerdictType.BLOCK:
+                raise DispatchError(f"router guardrail blocked: {verdict.reason}")
+            if verdict.rewritten is not None:
+                task = verdict.rewritten
+
         task = _ensure_trace(task)
         await self._bookkeeper.on_dispatch_start(task, ctx.target, ctx.caller_agent)
 
