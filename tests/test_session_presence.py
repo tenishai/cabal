@@ -105,6 +105,57 @@ async def test_capability_routing_cannot_see_a_session(sessionmaker) -> None:
 
 
 @pytest.mark.asyncio
+async def test_register_end_register_is_the_ordinary_cycle_not_an_edge(
+    sessionmaker,
+) -> None:
+    """THE CRITICAL FROM PR #148 REVIEW.
+
+    A session name is deliberately STABLE across restarts (CABAL_SESSION_NAME),
+    and `end` retires the row rather than deleting it. So the SECOND time a
+    session ever starts, a hardcoded generation=1 collides with the retired
+    generation=1 on the composite PK:
+
+        IntegrityError: UNIQUE constraint failed: agents.name, agents.generation
+
+    What made it Critical is the silence: heartbeat-after-end 404s, so the
+    hook's `beat` falls back to `register`, which 500s, and both disappear into
+    `>/dev/null 2>&1` behind `exit 0`. The session is simply never seen again
+    and nothing says why.
+    """
+    async with sessionmaker() as s:
+        first = await store.register_session(s, name="poe2")
+        assert first.generation == 1
+        await store.mark_retired(s, "poe2", first.generation)
+
+        second = await store.register_session(s, name="poe2", work={"task": "day two"})
+        assert second.generation == 2
+        active = await store.get_active(s, "poe2")
+        assert active is not None
+        assert active.generation == 2
+        assert active.work == {"task": "day two"}
+
+
+@pytest.mark.asyncio
+async def test_registering_over_a_draining_row_does_not_collide(sessionmaker) -> None:
+    """`draining` is also invisible to get_active, so it takes the same path."""
+    async with sessionmaker() as s:
+        first = await store.register_session(s, name="poe2")
+        await store.mark_draining(s, "poe2", first.generation)
+        second = await store.register_session(s, name="poe2")
+        assert second.generation == 2
+
+
+@pytest.mark.asyncio
+async def test_a_third_start_keeps_climbing(sessionmaker) -> None:
+    """next_generation scans MAX over all statuses, so this holds past two."""
+    async with sessionmaker() as s:
+        for expected in (1, 2, 3):
+            row = await store.register_session(s, name="poe2")
+            assert row.generation == expected
+            await store.mark_retired(s, "poe2", row.generation)
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_records_what_the_session_is_doing(sessionmaker) -> None:
     async with sessionmaker() as s:
         await store.register_session(s, name="poe2")

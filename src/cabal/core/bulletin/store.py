@@ -161,7 +161,7 @@ async def register_session(
     *,
     name: str,
     work: dict | None = None,
-    generation: int = 1,
+    generation: int | None = None,
 ) -> AgentRow:
     """Register a live agent session as PRESENCE ONLY (cabal#142).
 
@@ -185,6 +185,14 @@ async def register_session(
     advertises nothing.
     """
     await ensure_session_persona(session)
+    # NOT generation=1. A session name is deliberately STABLE across restarts
+    # (CABAL_SESSION_NAME), so register -> end -> register is the ordinary daily
+    # cycle, and `end` retires the row rather than deleting it. Hardcoding 1
+    # collides with the retired row on the composite PK the second time a
+    # session ever starts. `next_generation` scans all statuses; its own
+    # docstring warns about exactly this and it sits forty lines up this file.
+    if generation is None:
+        generation = await next_generation(session, name)
     row = await register_agent(
         session,
         name=name,

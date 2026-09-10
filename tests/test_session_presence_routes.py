@@ -68,6 +68,52 @@ async def test_re_registering_an_active_session_is_idempotent(app, client) -> No
 
 
 @pytest.mark.asyncio
+async def test_register_after_end_is_the_daily_cycle_and_must_not_500(
+    app, client
+) -> None:
+    """THE CRITICAL FROM REVIEW, through the routes.
+
+    `end` retires rather than deletes, and CABAL_SESSION_NAME is stable by
+    design, so this sequence runs every time a session restarts. It used to
+    raise UNIQUE constraint failed: agents.name, agents.generation -- and the
+    hook swallowed the 500, so the session just silently stopped appearing.
+    """
+    tok = await _operator_token(app, client)
+    await client.post("/admin/sessions/register", json={"name": "poe2"}, headers=_auth(tok))
+    await client.post("/admin/sessions/poe2/end", headers=_auth(tok))
+
+    again = await client.post(
+        "/admin/sessions/register",
+        json={"name": "poe2", "work": {"task": "day two"}},
+        headers=_auth(tok),
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["generation"] == 2
+
+    listing = await client.get("/admin/agents", headers=_auth(tok))
+    live = [
+        a for a in listing.json()["agents"]
+        if a["name"] == "poe2" and a["status"] == "active"
+    ]
+    assert len(live) == 1
+    assert live[0]["work"] == {"task": "day two"}
+
+
+@pytest.mark.asyncio
+async def test_the_retired_row_survives_the_restart(app, client) -> None:
+    """Re-registering must not erase the history -- the retired generation is
+    still there, which is the point of retiring rather than deleting."""
+    tok = await _operator_token(app, client)
+    await client.post("/admin/sessions/register", json={"name": "poe2"}, headers=_auth(tok))
+    await client.post("/admin/sessions/poe2/end", headers=_auth(tok))
+    await client.post("/admin/sessions/register", json={"name": "poe2"}, headers=_auth(tok))
+
+    listing = await client.get("/admin/agents", headers=_auth(tok))
+    gens = sorted(a["generation"] for a in listing.json()["agents"] if a["name"] == "poe2")
+    assert gens == [1, 2]
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_updates_the_work_line(app, client) -> None:
     tok = await _operator_token(app, client)
     await client.post("/admin/sessions/register", json={"name": "poe2"}, headers=_auth(tok))

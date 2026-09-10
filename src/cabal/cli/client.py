@@ -40,8 +40,16 @@ def base_url() -> str:
     return os.environ.get("CABAL_URL", DEFAULT_BASE_URL)
 
 
-def make_client() -> httpx.Client:
-    return httpx.Client(base_url=base_url(), timeout=httpx.Timeout(30.0))
+def make_client(timeout_s: float = 30.0) -> httpx.Client:
+    return httpx.Client(base_url=base_url(), timeout=httpx.Timeout(timeout_s))
+
+
+#: Presence calls run from a Stop hook on every turn, so their cost is paid by
+#: the operator's latency, not by a batch job. 30s is right for a dispatch and
+#: wrong here: a firewall that DROPs rather than refuses would stall the turn.
+#: `beat` can make two of these back to back (heartbeat, then register on
+#: 404), so this bounds that pair at 10s rather than 60s (PR #148 review nit).
+SESSION_TIMEOUT_S = 5.0
 
 
 def bootstrap(code: str) -> dict[str, Any]:
@@ -61,7 +69,7 @@ def list_agents(*, token: str) -> dict[str, Any]:
 def register_session(
     *, token: str, name: str, work: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    with make_client() as c:
+    with make_client(SESSION_TIMEOUT_S) as c:
         resp = c.post(
             "/admin/sessions/register",
             json={"name": name, "work": work},
@@ -74,7 +82,7 @@ def register_session(
 def heartbeat_session(
     *, token: str, name: str, work: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    with make_client() as c:
+    with make_client(SESSION_TIMEOUT_S) as c:
         resp = c.post(
             f"/admin/sessions/{name}/heartbeat",
             json={"work": work},
@@ -85,7 +93,7 @@ def heartbeat_session(
 
 
 def end_session(*, token: str, name: str) -> dict[str, Any]:
-    with make_client() as c:
+    with make_client(SESSION_TIMEOUT_S) as c:
         resp = c.post(
             f"/admin/sessions/{name}/end",
             headers={"Authorization": f"Bearer {token}"},
