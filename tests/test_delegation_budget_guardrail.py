@@ -132,6 +132,33 @@ async def test_a_non_task_target_passes() -> None:
     assert (await g.check(["messages"], _ctx())).type is VerdictType.PASS
 
 
+@pytest.mark.asyncio
+async def test_budget_is_charged_at_attempt_time_with_no_refund() -> None:
+    """DELIBERATE, and an earlier docstring got it backwards.
+
+    `check()` increments before the hop and nothing rolls it back, so a
+    delegation to an unreachable colleague costs the same as a successful one.
+    That is required: the incident stormed a colleague scaled to ZERO
+    replicas, so if unreachable targets were free the exact case this guard
+    defends against would be unbounded.
+
+    This test exists to stop someone "fixing" that into a refund. If you are
+    here because you want failed dispatches to be free, read the incident
+    first -- an agent that chose to ask again spent an ask, whether or not
+    anyone was listening.
+    """
+    g = DelegationBudgetGuardrail(limit=2)
+    for _ in range(2):
+        assert (await g.check(_task(), _ctx())).type is VerdictType.PASS
+    # Whatever the caller went on to do with those two dispatches -- succeed,
+    # time out, hit a dead endpoint -- the third is refused.
+    assert (await g.check(_task(), _ctx())).type is VerdictType.BLOCK
+    # And there is no compensating surface to undo it.
+    assert not [
+        m for m in dir(g) if any(w in m.lower() for w in ("refund", "release", "decrement", "rollback"))
+    ]
+
+
 def test_a_policy_may_lower_the_budget_but_never_raise_it() -> None:
     """A policy-only limit fails open when the policy is missing; the ceiling
     lives in code so a misconfigured deployment is still bounded."""

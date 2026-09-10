@@ -270,9 +270,20 @@ class DelegationBudgetGuardrail:
     blocks too. The agent cannot reword its way through, which is the property
     the incident actually needed.
 
-    **Counts semantic delegations, not transport retries.** It runs inside
-    `DispatchRouter.dispatch`, so a connection that never produced a dispatch
-    never arrives here, and one unreachable colleague cannot eat the budget.
+    **A delegation to an unreachable colleague DOES consume budget, and that
+    is deliberate.** The counter increments in `check()`, before the hop, and
+    there is no rollback -- so a failed dispatch costs the same as a successful
+    one. That is the behaviour the incident requires: the agents in it stormed
+    a colleague scaled to zero replicas, so if unreachable targets were free
+    the exact case this guard exists for would be unbounded. An agent that
+    chose to ask again spent an ask, whether or not anyone was listening.
+
+    What genuinely does NOT consume budget is a retry *inside* one dispatch:
+    `check()` runs once per `dispatch()` call, not once per connection attempt,
+    so transport-level retries beneath the router never re-enter it. Those two
+    were conflated in an earlier draft of this docstring, which claimed "one
+    unreachable colleague cannot eat the budget" -- backwards, and describing
+    behaviour that would reopen the hole.
 
     MUST REMAIN AWAIT-FREE, for the same reason DoomLoopGuardrail must: a
     primus fan-out (cabal#69) calls this concurrently across legs sharing one
