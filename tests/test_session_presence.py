@@ -52,17 +52,56 @@ async def test_the_synthetic_persona_is_created_once_not_per_session(
 
 
 @pytest.mark.asyncio
-async def test_a_session_is_structurally_undispatchable(sessionmaker) -> None:
-    """Non-dispatchability is encoded, not documented.
+async def test_a_session_carries_no_dispatchable_surface(sessionmaker) -> None:
+    """The row advertises nothing: `session://` dials on no transport, and the
+    card and capability map are empty.
 
-    An empty capability map cannot satisfy any `select_by_capabilities`
-    requirement, and a `session://` endpoint is not dialable by any transport.
+    NOTE these are defence in depth, NOT the reason a session cannot be routed
+    to -- see test_capability_routing_cannot_see_a_session for the mechanism
+    that actually holds. Asserting only these would pin a property that does
+    not cause the outcome.
     """
     async with sessionmaker() as s:
         row = await store.register_session(s, name="poe3")
-        assert row.capabilities == {}
         assert row.endpoint == "session://poe3"
         assert row.agent_card_json == {}
+        assert row.capabilities == {}
+
+
+@pytest.mark.asyncio
+async def test_capability_routing_cannot_see_a_session(sessionmaker) -> None:
+    """THE REAL MECHANISM, and it is stronger than the empty capability map.
+
+    `select_by_capabilities` matches against the router's IN-MEMORY
+    `_capabilities` dict, which is populated in exactly one place --
+    `persona_factory` calling `register_capabilities` for identity.toml
+    personas. Registering a session never touches it, so a session name is
+    not a key holding an empty set; it is absent entirely.
+    """
+    from cabal.core.broker.router import DispatchRouter
+
+    async with sessionmaker() as s:
+        await store.register_session(s, name="poe3")
+
+    # `_bookkeeper` / `_jwks_provider` are stored and never touched by the
+    # capability registry, so stand-ins keep this a unit test of the routing
+    # question rather than a wiring test of the whole broker.
+    router = DispatchRouter(
+        sessionmaker=sessionmaker, bookkeeper=object(), jwks_provider=object()
+    )
+    router.register_capabilities("archivist", ["search"])
+
+    # The docstring claims the session is "not a key at all", which is stronger
+    # than "a key holding an empty set". `capabilities_for` cannot tell those
+    # apart -- it returns set() for both -- so the private dict is the only
+    # assertion target that discriminates, and the claim is worth pinning
+    # because it is what makes the guarantee independent of the empty map.
+    assert "poe3" not in router._capabilities
+    assert "archivist" in router._capabilities
+
+    # And the outcome, which holds regardless of the mechanism.
+    for required in (["search"], ["anything"], []):
+        assert router.select_by_capabilities(required) != "poe3"
 
 
 @pytest.mark.asyncio

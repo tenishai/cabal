@@ -184,15 +184,19 @@ sessions** — the Claude Code sessions actually doing work — once they regist
 
 ```
 NAME                    GEN KIND       ROLE       STATUS     TIER     HEARTBEAT
+-------------------------------------------------------------------------------
 echo                      1 member     builtin    active     strict   —
-poe2                      1 session    session    active     strict   2026-09-10T12:04:11Z
-                            ↳ liminal · fix/73-hardening · working the hardening bill
-poe3                      1 session    session    active     strict   2026-09-10T11:31:02Z  STALE
+poe2                      1 session    session    active     strict   2026-09-10T12:04:00+00:00
+                       ↳ liminal · fix/73-hardening · working the hardening bill
+poe3                      1 session    session    active     strict   2026-09-10T11:31:00+00:00  STALE
 ```
 
-A session row is **presence only**. cabal gives it a `session://` endpoint and
-an empty capability map, so nothing can route work to it — it exists to answer
-"what is running, and what is it doing".
+A session row is **presence only** — it exists to answer "what is running, and
+what is it doing". Nothing can route work to it, and the reason is not the empty
+capability map on the row: capability routing matches against an in-memory
+registry that only `identity.toml` personas are ever added to, so a session is
+absent from it entirely. The `session://` endpoint and empty agent card are
+belt to that suspenders.
 
 Wire it up with the hook cabal ships:
 

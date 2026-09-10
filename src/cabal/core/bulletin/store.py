@@ -170,9 +170,19 @@ async def register_session(
     is actually running and what is it doing" — the question the bulletin could
     not answer while it listed only the three personas.
 
-    That non-dispatchability is encoded rather than documented: the endpoint is
-    a ``session://`` URI no transport can dial, the agent card is empty, and the
-    capability map is empty so `select_by_capabilities` can never route here.
+    That non-dispatchability is structural, and the reason is NOT this row's
+    empty ``capabilities`` map -- capability routing never reads the bulletin.
+    `DispatchRouter.select_by_capabilities` matches against an IN-MEMORY
+    ``_capabilities`` dict populated in exactly one place,
+    `persona_factory.register_capabilities`, for personas declared in
+    identity.toml. Registering a session never touches it, so a session name is
+    not a key with an empty value -- it is not a key at all, and no
+    `required_capabilities` can select it.
+
+    The empty card and the ``session://`` endpoint (no transport dials that
+    scheme) are the belt to that suspenders. Kept empty deliberately, so that if
+    capability routing ever does learn to read the bulletin, a session still
+    advertises nothing.
     """
     await ensure_session_persona(session)
     row = await register_agent(
@@ -270,10 +280,16 @@ async def heartbeat(
     """Bump `last_heartbeat`, and for a session row also record what it is doing.
 
     `work` is written ONLY when a payload is supplied. Passing None leaves any
-    existing value alone rather than clearing it — a persona heartbeat from the
-    scheduler must not wipe a session's work line, and a session that heartbeats
-    without new information should keep showing the last thing it reported.
-    To clear it deliberately, pass an empty dict.
+    existing value alone rather than clearing it: a heartbeat is a liveness
+    signal, and a caller with nothing new to report should refresh liveness
+    without destroying the last thing the session said it was doing. To clear
+    it deliberately, pass an empty dict.
+
+    This also protects against a persona heartbeat blanking a session's work
+    line -- though only in the collision case, so do not read it as the main
+    reason. `HeartbeatScheduler` pings only the names in its `_local_names`
+    set, which sessions are never added to, so the two populations do not
+    overlap unless an operator sets CABAL_SESSION_NAME to a persona's name.
     """
     values: dict = {"last_heartbeat": func.current_timestamp()}
     if work is not None:
