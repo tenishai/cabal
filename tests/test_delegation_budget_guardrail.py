@@ -153,10 +153,34 @@ async def test_budget_is_charged_at_attempt_time_with_no_refund() -> None:
     # Whatever the caller went on to do with those two dispatches -- succeed,
     # time out, hit a dead endpoint -- the third is refused.
     assert (await g.check(_task(), _ctx())).type is VerdictType.BLOCK
-    # And there is no compensating surface to undo it.
-    assert not [
-        m for m in dir(g) if any(w in m.lower() for w in ("refund", "release", "decrement", "rollback"))
+
+@pytest.mark.asyncio
+async def test_no_input_shape_is_free() -> None:
+    """The teeth behind the no-refund rule.
+
+    An earlier version of this asserted no method named refund/release/
+    decrement existed, which the pre-pass correctly called theatre: it catches
+    someone ADDING a refund method and misses the likelier regression, which
+    is someone editing `check()` to skip the increment under some condition.
+
+    This charges across every axis a future condition might key on -- target,
+    payload, task id -- and asserts the count equals the number of calls. Any
+    "this kind of delegation is free" branch makes the arithmetic disagree.
+    """
+    g = DelegationBudgetGuardrail(limit=99)
+    shapes = [
+        _task("a", target_agent="x"),
+        _task("b", target_agent="y"),
+        _task("", target_agent="z"),
+        _task("a", target_agent="x", task_id="other"),
+        _task("a" * 5000, target_agent="x"),
     ]
+    for t in shapes:
+        assert (await g.check(t, _ctx())).type is VerdictType.PASS
+    assert g._counts["ctx-1"] == len(shapes), (
+        "some input shape was charged nothing -- if that is deliberate, the "
+        "budget is no longer a count of delegations"
+    )
 
 
 def test_a_policy_may_lower_the_budget_but_never_raise_it() -> None:
