@@ -282,11 +282,21 @@ class DispatchRouter:
                     # a2a_jsonrpc._message_send (ERROR_FORBIDDEN). Add one to any
                     # third caller, or it will inherit 502 silently.
                     # A BLOCK below still advises.
-                    blocked = GuardrailBlocked(
+                    #
+                    # NO on_dispatch_failure CALL HERE, unlike the streaming
+                    # path this was copied from (#152 r1 Important 1). This
+                    # raise is INSIDE the try opened above, whose `except
+                    # Exception` already closes the record. on_dispatch_failure
+                    # inserts an Event and publishes to the bus, so calling it
+                    # here too wrote the failure twice -- measured as
+                    # ['dispatch_start', 'dispatch_failure', 'dispatch_failure']
+                    # against the streaming path's two. The Conversation update
+                    # is an idempotent state="failed", which is why nothing
+                    # else showed it. dispatch_streaming raises from OUTSIDE
+                    # its own try, so its explicit call is correct where it is.
+                    raise GuardrailBlocked(
                         f"router guardrail terminated the task: {verdict.reason}"
                     )
-                    await self._bookkeeper.on_dispatch_failure(task, blocked)
-                    raise blocked
                 if verdict.type == VerdictType.BLOCK:
                     response = annotate(
                         task,

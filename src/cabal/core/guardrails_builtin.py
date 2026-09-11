@@ -284,12 +284,32 @@ class DelegationBudgetGuardrail:
     for a caller.
 
     **THE VERDICT FOLLOWS THE KEY CLASS (cabal#152).** A CONVERSATION key
-    terminates: its counter never decreases and it has no window, so once a
-    conversation is over budget every later delegation is refused no matter how
-    long the agent waits or how it rewords -- there is nothing left for the task
-    to do, which is what `TERMINATE` means. A CALLER key BLOCKS: it is a rolling
-    rate limit, the refusal message names the refill window, and a refusal the
-    caller can legitimately wait out must not kill its task.
+    terminates: its counter never decreases and it has no window, so no wording
+    and no waiting gets the task through -- there is nothing left for it to do,
+    which is what `TERMINATE` means. A CALLER key BLOCKS: it is a rolling rate
+    limit, the refusal message names the refill window, and a refusal the caller
+    can legitimately wait out must not kill its task.
+
+    **"NEVER REFILLS" IS TOO STRONG FOR THE CONVERSATION KEY, and an earlier
+    version of this paragraph said it (#152 r1 Important 3).** The LRU is a
+    second refill path: `_BUDGET_MAXSIZE` is 512, and a conversation that has
+    gone quiet -- as a terminated one has, by construction -- is an eviction
+    candidate. Measured at limit=1 with the clock frozen so no window could be
+    blamed: terminate after exhaustion, PASS again after 600 other
+    conversations. `test_a_conversation_budget_does_not_refill` is honest about
+    this, because it says no amount of elapsed TIME; eviction is a different
+    mechanism and nothing tests it. The paragraph ten lines above knew --
+    "a conversation is its own window: it ends, its key goes cold, the LRU
+    reclaims it" -- and this one overreached past it.
+
+    IT DOES NOT CHANGE THE VERDICT, which is the part worth being precise
+    about since this is the justification the split rests on. The budget is
+    genuinely spent at the moment the refusal fires, and nothing the agent can
+    do inside that task will unspend it: the eviction needs 512 OTHER
+    conversations to pass through the guard, which is not an affordance the
+    refused agent has. So permanence is not a property of the conversation key
+    either -- it is a much longer-lived one, and long-lived enough that
+    terminating is the right answer while "never" is the wrong word.
 
     This docstring previously argued **BLOCK is enough** for both, and that was
     right until `TERMINATE` existed. What is NOT right -- and is what the #152

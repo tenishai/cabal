@@ -1420,3 +1420,47 @@ async def test_terminate_ends_a_streaming_dispatch_too(
         ):
             pass
     assert "terminated the task" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_a_terminated_dispatch_records_one_failure_not_two(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """cabal#152 r1 Important 1 — THE STREAMING PATH'S CALL, COPIED ONE LEVEL IN.
+
+    `dispatch_streaming` raises from OUTSIDE its own `try`, so it calls
+    `on_dispatch_failure` itself and must. The non-streaming TERMINATE arm
+    copied that call but raises from INSIDE the `try`, whose `except Exception`
+    already closes the record — and `on_dispatch_failure` is not idempotent: it
+    inserts an Event and publishes to the bus. The sequence was
+    `[dispatch_start, dispatch_failure, dispatch_failure]` against streaming's
+    two.
+
+    The Conversation update is an idempotent `state="failed"`, which is why
+    nothing else showed it, and deleting the duplicate call left 870 tests
+    green. So this asserts the EVENT SEQUENCE, which is the only observable the
+    defect moves.
+    """
+    from cabal.core.broker.router import GuardrailBlocked
+
+    guard = _RecordingGuard(verdict=Verdict.terminate(reason="edge not declared"))
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[guard],
+    )
+    router.register_local(FakeArchivist())
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
+
+    with pytest.raises(GuardrailBlocked):
+        await router.dispatch(
+            target_agent="archivist",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=token,
+        )
+
+    async with sessionmaker() as s:
+        events = (await s.execute(select(Event).order_by(Event.id))).scalars().all()
+    assert [e.event_type for e in events] == ["dispatch_start", "dispatch_failure"]

@@ -251,7 +251,17 @@ class LLMPersona:
             phase=phase,
         )
         verdict = await run_guardrails(guardrails, target, ctx)
-        if verdict.type == VerdictType.BLOCK:
+        # ANY NON-PASS IS A REFUSAL, rather than an enumeration of the verdicts
+        # that exist today (#152 r1 Important 2). This read `== BLOCK`, so a
+        # TERMINATE fell through and was treated as a PASS -- the dispatch
+        # proceeded and the LLM ran. Since run_guardrails ALSO short-circuits on
+        # TERMINATE, a terminating guard was strictly WEAKER here than the same
+        # guard returning BLOCK, which inverts the verdict's whole point.
+        #
+        # SAFE AS A CATCH-ALL because run_guardrails only ever returns BLOCK,
+        # TERMINATE, or PASS: a REWRITE is threaded internally and comes back as
+        # PASS carrying `rewritten`, so the branch below still sees it.
+        if verdict.type is not VerdictType.PASS:
             blocked = annotate(
                 task,
                 CabalReason(
@@ -299,7 +309,16 @@ class LLMPersona:
             tool_arguments=tool_arguments,
         )
         verdict = await run_guardrails(guardrails, target, ctx)
-        if verdict.type == VerdictType.BLOCK:
+        # ANY NON-PASS IS A REFUSAL -- see _apply_guardrails above for why the
+        # enumeration was a fail-open (#152 r1 Important 2).
+        #
+        # A TERMINATE STILL ONLY BLOCKS THE CALL HERE, not the Task. This is
+        # pi's per-call policy boundary: BLOCK already means "refuse this tool
+        # call and let the dispatch continue", and escalating a terminal verdict
+        # into a whole-Task failure from inside the tool loop would be a larger
+        # change than closing the fail-open. Refusing the call is the
+        # fail-closed reading, and it is what the caller is built to handle.
+        if verdict.type is not VerdictType.PASS:
             return target, verdict.reason
         if verdict.rewritten is not None:
             return verdict.rewritten, None
