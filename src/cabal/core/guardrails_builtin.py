@@ -314,6 +314,15 @@ class DelegationBudgetGuardrail:
     ) -> None:
         if limit < 1:
             raise ValueError(f"limit must be >= 1, got {limit}")
+        # A zero or negative window expires before every check, pinning the
+        # counter at 1 and silently disabling the caller-keyed budget (#159).
+        # Raised here as well as in the config model, matching `limit`: the
+        # guard is constructible directly, so the config validator is not the
+        # only door.
+        if caller_window_seconds <= 0:
+            raise ValueError(
+                f"caller_window_seconds must be > 0, got {caller_window_seconds}"
+            )
         # A policy may only tighten. Clamping rather than raising is
         # deliberate: a deployment asking for more than the backstop should
         # still boot, bounded, rather than refuse to start.

@@ -308,6 +308,35 @@ def test_a_zero_limit_is_refused() -> None:
         DelegationBudgetGuardrail(limit=0)
 
 
+def test_a_zero_or_negative_caller_window_is_refused() -> None:
+    """#159. A window of zero expires before every check, so the counter is
+    pinned at 1 and the caller-keyed budget is silently OFF -- the exact path
+    this guard exists to bound. Measured before the floor: 500 un-threaded
+    caller dispatches at window=0.0 produced ZERO blocks, against 480 at 3600.
+
+    The direction is what makes it worth a floor. Weakening via `limit` means
+    raising a number that is clamped at a ceiling; weakening via the window
+    means LOWERING it, so an operator shortening the window to help blocked
+    callers recover sooner walks toward disabling the backstop.
+    """
+    for bad in (0.0, -5.0):
+        with pytest.raises(ValueError, match="caller_window_seconds must be > 0"):
+            DelegationBudgetGuardrail(caller_window_seconds=bad)
+
+
+def test_the_config_refuses_a_zero_caller_window_too() -> None:
+    """Both doors, matching `limit`: the guard is constructible directly, so
+    the config validator is not the only way in, and vice versa."""
+    from pydantic import ValidationError
+
+    from cabal.config.identity import GuardrailsConfig
+
+    assert GuardrailsConfig().delegation_budget_caller_window_seconds == 3600.0
+    for bad in (0.0, -5.0):
+        with pytest.raises(ValidationError, match="must be > 0"):
+            GuardrailsConfig(delegation_budget_caller_window_seconds=bad)
+
+
 @pytest.mark.asyncio
 async def test_tracked_conversations_are_bounded() -> None:
     """A long-lived process must not leak one counter per conversation."""

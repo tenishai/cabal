@@ -281,6 +281,26 @@ class GuardrailsConfig(_Open):
             )
         return v
 
+    @field_validator("delegation_budget_caller_window_seconds")
+    @classmethod
+    def _caller_window_is_positive(cls, v: float) -> float:
+        # THE DANGEROUS DIRECTION HERE IS DOWNWARD, which is why this needs a
+        # floor at all (#159). For delegation_budget_limit, weakening the guard
+        # means raising the number, and that is clamped at the ceiling. For the
+        # window, weakening means LOWERING it -- and at 0 the window expires
+        # before every check, so the counter is pinned at 1 and the caller-keyed
+        # budget is silently off. An operator shortening the window to help
+        # blocked callers recover sooner is walking toward disabling the
+        # backstop, and without this gets no error on arrival.
+        if v <= 0:
+            raise ValueError(
+                "guardrails.delegation_budget_caller_window_seconds must be > 0 "
+                f"(got {v}); a window of zero silently disables the caller-keyed "
+                "budget. Disable the guard with delegation_budget = false if that "
+                "is what you mean."
+            )
+        return v
+
     @field_validator("doom_loop_threshold")
     @classmethod
     def _threshold_at_least_one(cls, v: int) -> int:
