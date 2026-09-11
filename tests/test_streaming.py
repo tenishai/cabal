@@ -483,8 +483,14 @@ async def test_a_blocked_stream_reports_forbidden_on_the_wire(
 
     The review demonstrated that: with the arm neutralised the frame carried
     -32603 and the full suite still passed, 783 of them. So this asserts the
-    emitted code on a real SSE frame through the real route, the same way
-    test_stream_endpoint_404_for_unknown_agent pins -32003.
+    emitted code on a real SSE frame through the real route.
+
+    DELIBERATELY STRONGER THAN test_stream_endpoint_404_for_unknown_agent,
+    which an earlier version of this docstring cited as the model (r3 review).
+    That test is a three-way `or` accepting message text in place of the code,
+    so it stays green whatever code the frame carries -- exactly the soft
+    assertion this one exists to avoid. Tightening it is out of scope here;
+    do not copy it as "the established pattern".
     """
 
     class FakeStreamer:
