@@ -27,6 +27,7 @@ from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import AbortCoordinator, TaskAborted
 from cabal.core.checkpoint import Checkpoint, CheckpointStore, NoOpCheckpointStore
 from cabal.core.guardrails import Guardrail, GuardrailContext, VerdictType, run_guardrails
+from cabal.core.guardrails_builtin import BUDGET_KEY
 from cabal.core.hooks.registry import HookName
 from cabal.core.llm.litellm_client import (
     CabalLLMError,
@@ -164,7 +165,7 @@ class LLMPersona:
         cannot see that, because that is the single shape where
         `build_messages` is on the path.
         """
-        used = task.metadata.get("cabal_delegation_budget")
+        used = task.metadata.get(BUDGET_KEY)
         if not used:
             return ""
         return (

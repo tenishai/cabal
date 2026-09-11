@@ -244,6 +244,11 @@ class DoomLoopGuardrail:
 #: misconfigured persona is in -- so the backstop lives here, in code.
 MAX_DELEGATIONS_PER_CONTEXT = 40
 
+#: Task metadata key carrying "<spent> of <limit> used" for the reader that
+#: folds it into a prompt (cabal#156). Named rather than repeated, because the
+#: stamp and its two readers live in three files.
+BUDGET_KEY = "cabal_delegation_budget"
+
 #: Bound on tracked conversations, mirroring DoomLoopGuardrail's outer LRU.
 #: Without it a long-lived process leaks one counter per context forever.
 _BUDGET_MAXSIZE = 512
@@ -351,6 +356,14 @@ class DelegationBudgetGuardrail:
         asked again roughly 270 times. The BLOCK message tells an agent the
         budget is EXHAUSTED; nothing told it the budget EXISTED while it still
         had room to spend deliberately.
+
+        TEST-FACING TODAY, and labelled rather than quietly load-bearing
+        (#156 r2 Nit). Nothing in `src/` calls this; the delivery path that
+        works is the metadata stamp below plus the reader in
+        `LLMPersona._delegation_budget_note`. It stays because a
+        non-incrementing read is the right shape for the question "how much is
+        left" and inventing it later under pressure would be worse -- but the
+        feature's thesis rests on the stamp, not on this.
         """
         entry = self._counts.get(session_key)
         return ((entry[0] if entry else 0), self._limit)
@@ -459,7 +472,7 @@ class DelegationBudgetGuardrail:
         # LLMPersona._delegation_budget_note, which folds it into system
         # content; the pre-pass that caught the gap is why it exists. Deleting
         # either end silently restores "stops at the wire".
-        task.metadata["cabal_delegation_budget"] = f"{count} of {self._limit} used"
+        task.metadata[BUDGET_KEY] = f"{count} of {self._limit} used"
 
         if count > self._limit:
             refill = (

@@ -84,7 +84,8 @@ class WrightPrimusPersona(PrimusPersona):
         model: str | None = None,
         max_tokens: int = 8192,
         doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
-        # cabal#156 — forwarded so a policy can LOWER the breadth ceiling.
+        # cabal#156 — forwarded so a CALLER can lower the breadth ceiling.
+        # Not a policy: there is no config path to it (#156 r2, cabal#172).
         max_legs: int = MAX_LEGS_PER_FANOUT,
     ) -> None:
         super().__init__(

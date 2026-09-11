@@ -579,9 +579,8 @@ def test_mason_system_prompt_frames_sre_and_reliability() -> None:
     assert "delegate" in low
 
 
-@pytest.mark.asyncio
-async def test_a_fan_out_wider_than_the_ceiling_is_refused() -> None:
-    """cabal#156 — breadth is its own axis.
+def test_a_fan_out_wider_than_the_ceiling_is_refused_at_construction() -> None:
+    """cabal#156 — breadth is its own axis, and it is a CONFIG error.
 
     #144 bounds how DEEP a chain runs; #146 bounds how MANY delegations a
     conversation makes in total. Neither bounds how many children one agent
@@ -589,32 +588,57 @@ async def test_a_fan_out_wider_than_the_ceiling_is_refused() -> None:
     inside a total budget of 40, by spending the whole budget in one burst.
     Concurrency costs connections and tokens simultaneously rather than over
     time, which is the liveness starvation that killed the container.
+
+    REFUSED AT CONSTRUCTION, and r1 is why. `leg_roles` is derived from
+    `subordinates`, which is assigned once and never mutated, so the comparison
+    is invariant for the life of the instance — it cannot depend on the task.
+    Checking it only at dispatch meant a deployment declaring nine legs
+    constructed fine and then failed EVERY dispatch forever, each one after
+    paying for a full plan call. It now fails at boot, for free.
+    """
+    subs = {f"impl{n}": _subordinate(_client(["out"])[0]) for n in range(5)}
+    with pytest.raises(ValueError, match="above the ceiling of 2"):
+        MasonPrimusPersona(
+            _client(["a plan"])[0], subordinates=subs, doom_loop=None, max_legs=2
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_dispatch_check_remains_as_a_backstop() -> None:
+    """The runtime check is unreachable through __init__ by design, so this
+    reaches it the only way anything could: by mutating `subordinates` after
+    construction — which is exactly the future change the backstop guards.
+
+    Kept rather than deleted because "never mutated" is a property of today's
+    code, not a guarantee, and the constructor check is the one that would go
+    stale if it ever stopped being true.
     """
     leg_calls = []
     subs = {}
-    for n in range(5):
+    for n in range(2):
         client, calls = _client(["out"])
         leg_calls.append(calls)
         subs[f"impl{n}"] = _subordinate(client)
     mason = MasonPrimusPersona(
-        _client(["a plan"])[0],
-        subordinates=subs,
-        doom_loop=None,
-        max_legs=2,
+        _client(["a plan"])[0], subordinates=subs, doom_loop=None, max_legs=2
     )
+    for n in range(2, 5):
+        client, calls = _client(["out"])
+        leg_calls.append(calls)
+        mason.subordinates[f"impl{n}"] = _subordinate(client)
+
     result = await mason.handle_task(_task_with_ctx("build"))
     text = " ".join(
         p.text for p in result.status.message.parts if isinstance(p, TextPart)
     ) if result.status.message else ""
-    assert "fans out to 5" in text
-    assert "limit of 2" in text
-    assert "rephrasing will not widen the limit" in text
+
+    assert "configured with 5" in text
+    assert "ceiling of 2" in text
+    assert "no plan can avoid it" in text
     # REFUSED BEFORE THE GATHER, not after (#156 r1 Important 2). The refusal
-    # text is byte-identical whether or not five legs were dispatched first, so
-    # moving the check below _dispatch_legs left the whole suite green -- in a
-    # test whose comment argues the placement is the point, because "the cost is
-    # paid at open time" and refusing once forty connections are open bounds
-    # nothing that matters. The legs are what the assertion has to look at.
+    # text is byte-identical whether or not legs were dispatched first, so
+    # moving the check below _dispatch_legs left the whole suite green. The
+    # legs are what the assertion has to look at.
     assert all(calls == [] for calls in leg_calls), (
         f"legs were dispatched before the breadth check refused: "
         f"{[len(c) for c in leg_calls]}"
@@ -708,3 +732,47 @@ async def test_the_plan_hop_is_told_the_budget() -> None:
     assert "of 20 used" not in aggregate_system, (
         "the aggregate hop spends nothing; telling it the budget is noise"
     )
+
+
+@pytest.mark.asyncio
+async def test_the_legs_are_not_told_a_budget_they_cannot_spend() -> None:
+    """cabal#156 r2 Nit — THE NOTE IS FOR SPENDERS.
+
+    `_aggregate` was excluded from the note on the stated rule that it joins
+    outputs and spends nothing, so telling it the budget is noise in a prompt
+    that is already long. A leg is a leaf by the same measure — a `Subordinate`
+    has no `tool_proxy` and cannot delegate — but it inherited the stamp
+    through `**parent_task.metadata` and folded it in via `build_messages`.
+
+    That is the same noise the one aggregate call was spared, multiplied by the
+    fan-out width, and the note's own text ("plan the ones you have left") asks
+    a leaf to do something it cannot. Not wrong, but not the rule the diff
+    states — and a rule applied to one of two identical cases is the kind of
+    thing that reads as an oversight later.
+
+    Asserts the plan hop KEEPS it in the same run, so a fix that strips the key
+    everywhere cannot pass.
+    """
+    from cabal.core.guardrails import GuardrailContext
+    from cabal.core.guardrails_builtin import DelegationBudgetGuardrail
+
+    primus_client, primus_calls = _client(["a plan", "a summary"])
+    sub_client, sub_calls = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+    )
+    task = _task_with_ctx("build")
+    await DelegationBudgetGuardrail(limit=20).check(
+        task, GuardrailContext(persona_name="caller", task_id=task.id, phase="router")
+    )
+
+    await mason.handle_task(task)
+
+    leg_system = sub_calls[0]["messages"][0]["content"]
+    assert "of 20 used" not in leg_system, (
+        "a leg that cannot delegate was handed a delegation budget to plan"
+    )
+    plan_system = primus_calls[0]["messages"][0]["content"]
+    assert "1 of 20 used" in plan_system, "the fix stripped the key from the spender too"

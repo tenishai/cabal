@@ -37,7 +37,7 @@ from cabal.core.a2a.codes import (
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import KIND_SUBORDINATE
 from cabal.core.guardrails import GuardrailContext, VerdictType
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import BUDGET_KEY, DoomLoopGuardrail
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient, LLMTruncatedError
 
@@ -73,9 +73,19 @@ class _DoomLoopError(Exception):
 
 #: The most subordinate legs one fan-out may open at once (cabal#156).
 #:
-#: A HARD CEILING IN CODE, mirroring MAX_DELEGATIONS_PER_CONTEXT: a policy may
-#: only lower it. A policy-only limit fails open exactly when the policy is
-#: missing, which is the deployment most likely to need it.
+#: A HARD CEILING IN CODE, and TODAY IT IS THE ONLY CEILING. There is no
+#: identity-config field for breadth: `max_legs` reaches a primus only through
+#: its constructor, and persona_factory passes none, so `_max_legs` is this
+#: constant in every shipped deployment and the only callers that can lower it
+#: are tests.
+#:
+#: SO DO NOT READ THE "CLAMPED, NOT HONOURED" STORY ONTO IT (#156 r2). That
+#: phrase is meaningful about MAX_DELEGATIONS_PER_CONTEXT because
+#: `delegation_budget_limit` IS operator-settable and reaches the guard, so
+#: there is something to clamp FROM. Here there is nothing, and three comments
+#: claimed a policy could lower this when no policy path exists. Wiring one is
+#: cabal#172; until it lands, this is a constructor seam for tests with the
+#: ceiling fixed in code.
 #:
 #: BREADTH IS ITS OWN AXIS and neither existing bound covers it. #144 bounds
 #: how DEEP a chain runs; #146 bounds how MANY delegations a conversation makes
@@ -137,10 +147,31 @@ class PrimusPersona(LLMPersona):
         doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
         max_legs: int = MAX_LEGS_PER_FANOUT,
     ) -> None:
-        if not any(role != "reviewer" for role in subordinates):
+        legs = [role for role in subordinates if role != "reviewer"]
+        if not legs:
             raise ValueError(
                 f"{name!r} requires at least one non-reviewer subordinate "
                 "(a fan-out leg); 'reviewer' alone has nothing to review"
+            )
+        # BREADTH IS A CONFIG ERROR, SO IT IS REFUSED WHERE THE CONFIG IS KNOWN
+        # (cabal#156 r1). `leg_roles` is derived from `subordinates`, which is
+        # assigned once and never mutated, and `_max_legs` is fixed here -- so
+        # the runtime comparison is INVARIANT for the life of the instance and
+        # cannot depend on the task. Leaving it only at dispatch meant a
+        # deployment declaring nine legs constructed fine and then failed EVERY
+        # dispatch forever, each one after paying for a full plan call.
+        #
+        # Raising rather than clamping, unlike `max_legs` below: a clamped
+        # breadth would silently drop subordinates the operator declared, and
+        # dropping work is worse than refusing to start. The ceiling is not
+        # policy-settable, so there is no "still boot, bounded" case to serve.
+        ceiling = max(1, min(max_legs, MAX_LEGS_PER_FANOUT))
+        if len(legs) > ceiling:
+            raise ValueError(
+                f"{name!r} declares {len(legs)} fan-out legs, above the ceiling "
+                f"of {ceiling}. Breadth is bounded because concurrency costs "
+                "connections and tokens at once rather than over time. Declare "
+                "fewer subordinates."
             )
         super().__init__(
             name=name,
@@ -163,10 +194,14 @@ class PrimusPersona(LLMPersona):
         self.hook_registry = hook_registry
         # doom_loop is default-on: a fresh guard is created unless the caller
         # explicitly passes None (disabled) or a custom DoomLoopGuardrail instance.
-        # CLAMPED, NOT HONOURED, mirroring DelegationBudgetGuardrail's limit
-        # (#146): a policy may only LOWER the ceiling. A deployment asking for
-        # more than the backstop should still boot, bounded, rather than
-        # refuse to start -- and must not be able to raise its own bound.
+        # CLAMPED RATHER THAN HONOURED so a caller cannot raise its own bound.
+        # The clamp is real and tested; what is NOT true is the "a policy may
+        # only lower it" framing an earlier comment carried, because there is
+        # no config path to `max_legs` at all (#156 r2 -- see
+        # MAX_LEGS_PER_FANOUT, and cabal#172 for wiring one). The floor exists
+        # so a sub-1 value is a working narrow fan-out rather than a boot
+        # failure; the ceiling check that CAN fail boot is above, on the
+        # declared subordinates, where dropping work would be the alternative.
         self._max_legs = max(1, min(max_legs, MAX_LEGS_PER_FANOUT))
         if doom_loop is _DOOM_LOOP_DEFAULT:
             self._doom_loop: DoomLoopGuardrail | None = DoomLoopGuardrail()
@@ -191,20 +226,31 @@ class PrimusPersona(LLMPersona):
         # to the old sequential behaviour (gather-of-one).
         leg_roles = [role for role in self.subordinates if role != "reviewer"]
         try:
-            # BOUND THE BREADTH BEFORE SPENDING ANYTHING (cabal#156). Refusing
-            # after the gather has already opened forty connections bounds
-            # nothing that matters -- the cost is paid at open time. INSIDE the
-            # try so it becomes an annotated policy-violation Task through the
-            # existing handler, rather than propagating as an exception the
-            # caller never asked to handle.
+            # A BACKSTOP, NOT THE BOUND. The bound is in __init__, where the
+            # input is known and nothing has been spent; this cannot be reached
+            # by a primus constructed through it, because `subordinates` is
+            # never mutated after construction.
+            #
+            # AN EARLIER COMMENT HERE SAID "BOUND THE BREADTH BEFORE SPENDING
+            # ANYTHING" AND IT WAS FALSE (#156 r1): `_plan` runs above this, so
+            # a refused dispatch had already paid for one full primus LLM call.
+            # What IS true, and is what the test pins, is the narrower claim --
+            # refusing after the gather has opened the connections bounds
+            # nothing, because the cost is paid at open time.
+            #
+            # INSIDE the try so it becomes an annotated policy-violation Task
+            # through the existing handler, rather than propagating as an
+            # exception the caller never asked to handle.
             if len(leg_roles) > self._max_legs:
                 raise _FanOutTooWideError(
-                    f"this plan fans out to {len(leg_roles)} subordinates, "
-                    f"above the limit of {self._max_legs}. Breadth is bounded "
-                    "separately from depth and from total volume because "
-                    "concurrency costs connections and tokens at once rather "
-                    "than over time. Narrow the plan; rephrasing will not "
-                    "widen the limit."
+                    f"this agent is configured with {len(leg_roles)} "
+                    f"subordinates, above the breadth ceiling of "
+                    f"{self._max_legs}. Breadth is bounded separately from "
+                    "depth and from total volume because concurrency costs "
+                    "connections and tokens at once rather than over time. "
+                    "This is a configuration error and no plan can avoid it -- "
+                    "an earlier wording said 'narrow the plan', which is advice "
+                    "the reader cannot act on (#156 r1)."
                 )
             leg_outputs = await self._dispatch_legs(task, leg_roles, plan_text)
             reviewer_critique: str | None = None
@@ -438,7 +484,18 @@ class PrimusPersona(LLMPersona):
                     message=Message(role="user", parts=[TextPart(text=instruction)]),
                 ),
                 "metadata": {
-                    **parent_task.metadata,
+                    **{
+                        k: v
+                        for k, v in parent_task.metadata.items()
+                        # THE BUDGET NOTE IS FOR SPENDERS (#156 r2 Nit). A leg
+                        # is a leaf -- no tool_proxy, so it cannot delegate --
+                        # and inheriting the stamp put "plan the delegations
+                        # you have left" in front of N subordinates that have
+                        # none to plan. That is the same noise the aggregate
+                        # hop was deliberately spared, multiplied by the
+                        # fan-out width. The primus keeps it; the legs do not.
+                        if k != BUDGET_KEY
+                    },
                     "cabal_parent_task": parent_task.id,
                     "cabal_subordinate_role": role,
                     "cabal_span_id": secrets.token_hex(8),
