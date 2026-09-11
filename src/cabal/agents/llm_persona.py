@@ -140,12 +140,40 @@ class LLMPersona:
             lines.append(f"- ({h.type}, {h.confidence}) {h.content}{tag_note}")
         return "\n".join(lines)
 
+    def _delegation_budget_note(self, task: Task) -> str:
+        """The delegation budget as a line the model reads, or empty string.
+
+        cabal#156 pre-pass, WRONG 7. `DelegationBudgetGuardrail` stamps
+        `cabal_delegation_budget` onto the task it checks, and the stamp reached
+        the wire -- present in the JSON `Task.metadata` of the response -- and
+        stopped there. Nothing folded it into a prompt, so "an agent that knows
+        it has three delegations left can plan" was true only of an external
+        client that parsed raw metadata itself.
+
+        HERE RATHER THAN IN THE GUARD, because the guard must stay await-free
+        and knows nothing about prompts, and because this is the one place every
+        persona's system content is composed. Same shape as `_recall_for_task`
+        directly below: absent key, empty string, no line.
+        """
+        used = task.metadata.get("cabal_delegation_budget")
+        if not used:
+            return ""
+        return (
+            f"\n\nDelegation budget: {used}. Every delegation counts regardless "
+            "of wording. Plan the ones you have left rather than spending them "
+            "one at a time and discovering the limit."
+        )
+
     def build_messages(self, task: Task) -> list[dict[str, Any]]:
         """Translate Task history + current message into chat messages.
 
         Default: [system+memories, ...history (user/agent alternating), current].
         """
-        system_content = self.system_prompt + self._recall_for_task(task)
+        system_content = (
+            self.system_prompt
+            + self._delegation_budget_note(task)
+            + self._recall_for_task(task)
+        )
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
         for hist in task.history:
             messages.append(_message_to_chat(hist))

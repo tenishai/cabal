@@ -450,6 +450,15 @@ class DelegationBudgetGuardrail:
         # AN AGENT THAT KNOWS IT HAS THREE DELEGATIONS LEFT CAN PLAN; AN AGENT
         # THAT DISCOVERS A WALL CAN ONLY RETRY. The BLOCK message tells it the
         # budget is EXHAUSTED; until now nothing told it the budget EXISTED.
+        #
+        # THE STAMP IS HALF THE PATH, AND THE HALF THAT IS EASY TO MISTAKE FOR
+        # ALL OF IT. Writing it here puts the number in Task.metadata and on the
+        # wire, where an external A2A client can read it -- but cabal's own
+        # personas do not read metadata into a prompt, so on its own this
+        # delivers the sentence above to nobody we ship. The reader is
+        # LLMPersona._delegation_budget_note, which folds it into system
+        # content; the pre-pass that caught the gap is why it exists. Deleting
+        # either end silently restores "stops at the wire".
         task.metadata["cabal_delegation_budget"] = f"{count} of {self._limit} used"
 
         if count > self._limit:

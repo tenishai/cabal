@@ -11,7 +11,7 @@ from cabal.agents.primus import MAX_LEGS_PER_FANOUT
 from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, reason_code
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import DelegationBudgetGuardrail, DoomLoopGuardrail
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
@@ -608,11 +608,41 @@ async def test_a_fan_out_wider_than_the_ceiling_is_refused() -> None:
 
 @pytest.mark.asyncio
 async def test_a_policy_cannot_raise_the_breadth_ceiling() -> None:
-    """CLAMPED, NOT HONOURED, mirroring #146's limit. A policy-only bound fails
-    open exactly when the policy is missing, and a deployment must not be able
-    to raise its own ceiling."""
+    """CLAMPED, NOT HONOURED, mirroring #146's limit at the CEILING. A
+    policy-only bound fails open exactly when the policy is missing, and a
+    deployment must not be able to raise its own ceiling."""
     subs = {"impl": _subordinate(_client(["out"])[0])}
     mason = MasonPrimusPersona(
         _client(["plan"])[0], subordinates=subs, doom_loop=None, max_legs=10_000
     )
     assert mason._max_legs == MAX_LEGS_PER_FANOUT
+
+
+@pytest.mark.parametrize("bad", [0, -5])
+def test_a_sub_one_breadth_is_clamped_up_rather_than_refused(bad: int) -> None:
+    """WHERE THIS STOPS MIRRORING #146's LIMIT, pinned because nothing did.
+
+    The #156 pre-pass found the PR claiming the two clamps mirror each other
+    *exactly*. At the ceiling they do -- both silently clamp down. At the floor
+    they diverge: `DelegationBudgetGuardrail(limit=0)` raises a documented
+    `ValueError`, while `max_legs=0` is quietly substituted with 1.
+
+    The divergence is left standing rather than fixed, and this test is the
+    reason it can be: substituting 1 is FAIL-CLOSED. A budget of 0 would be a
+    bound nothing can satisfy, so refusing to boot is the honest answer there;
+    a fan-out of 1 is a legal, working, maximally-narrow fan-out. Making it
+    raise would turn a config typo into a daemon that will not start, for no
+    safety gained.
+
+    What was actually wrong was the word "exactly", and that is now the PR's
+    problem rather than the code's. If this behaviour is ever changed to raise,
+    this test is where the argument above has to be answered.
+    """
+    subs = {"impl": _subordinate(_client(["out"])[0])}
+    mason = MasonPrimusPersona(
+        _client(["plan"])[0], subordinates=subs, doom_loop=None, max_legs=bad
+    )
+    assert mason._max_legs == 1
+
+    with pytest.raises(ValueError, match="limit must be >= 1"):
+        DelegationBudgetGuardrail(limit=bad)
