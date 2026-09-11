@@ -305,7 +305,8 @@ class GuardrailsConfig(_Open):
     delegation_budget: bool = True
     delegation_budget_limit: int = 20
     #: Seconds before a CALLER-keyed delegation budget refills. Only the caller
-    #: fallback is windowed; a conversation budget never refills (see
+    #: fallback is windowed; a conversation budget does not refill with time
+    #: (an LRU eviction can still retire a cold key -- see
     #: DelegationBudgetGuardrail). Without this a caller -- whose key is stable
     #: for the daemon's lifetime -- is blocked until restart once it is over
     #: budget, because retrying keeps its key too warm for the LRU to reclaim.

@@ -437,7 +437,10 @@ async def test_a_conversation_budget_does_not_refill(monkeypatch) -> None:
 
     clock["t"] += 86_400  # a day later
     v = await g.check(_task(context_id="one-conversation"), _ctx())
-    assert v.type is VerdictType.TERMINATE, "a conversation budget refilled with time"
+    assert v.type is VerdictType.TERMINATE, (
+        "a conversation budget refilled with TIME -- eviction is a separate "
+        "path and is not what this pins"
+    )
 
 
 @pytest.mark.asyncio
@@ -483,7 +486,10 @@ async def test_the_verdict_follows_the_key_class_not_the_guard() -> None:
     windowed = await g.check(_task(context_id=None, task_id="c-2"), caller)
 
     assert conversation.type is VerdictType.TERMINATE, (
-        "a conversation budget never refills, so its refusal is terminal"
+        "a conversation budget does not refill by waiting or rewording, so "
+        "its refusal is terminal (the LRU can still evict a cold key -- see "
+        "the class docstring; that needs 512 other conversations and is not "
+        "something the refused agent can cause)"
     )
     assert windowed.type is VerdictType.BLOCK, (
         "a windowed refusal the caller can wait out must not end the task"
