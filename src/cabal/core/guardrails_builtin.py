@@ -50,13 +50,17 @@ class DoomLoopGuardrail:
        routes propagate it onto the inbound ``Task``. When a client (or
        peer agent) supplies a stable ``contextId`` across hops, the router's
        ``input_guardrails`` can group those hops and detect the loop — but
-       ONLY on the non-streaming ``dispatch()`` path: ``dispatch_streaming``
-       does not run ``input_guardrails`` at all (and refuses federated
-       targets outright), so streaming hops are never router-guarded,
-       ``contextId`` or not. Without a caller-supplied ``contextId`` each hop
-       falls back to its fresh task uuid, so cross-hop detection on the
-       non-streaming path requires the client to thread the id (``cbl chat``
-       non-streaming reuses one context id per session — see "Original scope").
+       on BOTH dispatch paths since cabal#151 -- ``dispatch_streaming`` runs
+       the same ``input_guardrails`` chain, after its structural refusals and
+       before any delta is yielded, so a streamed hop is guarded exactly as a
+       non-streaming one is. (It still refuses federated targets outright.)
+       Before #151 streaming hops were never router-guarded at all, which
+       made every bound here opt-out by endpoint. Without a caller-supplied
+       ``contextId`` each hop falls back to its fresh task uuid, so cross-hop
+       detection on EITHER path requires the client to thread the id -- the
+       scoping to "the non-streaming path" here was left over from before
+       #151 and is no longer true (``cbl chat`` non-streaming reuses one
+       context id per session — see "Original scope").
 
        As of cabal#76 the production router (``app.py``
        ``build_router_input_guardrails``) wires a ``DoomLoopGuardrail`` as a
