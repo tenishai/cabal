@@ -98,11 +98,7 @@ class _FanOutTooWideError(_DoomLoopError):
     """
 
 
-
 @dataclass
-
-
-
 class PrimusPersona(LLMPersona):
     """Generic PLAN→IMPLEMENT→(REVIEW)→AGGREGATE primus base.
 
@@ -138,8 +134,8 @@ class PrimusPersona(LLMPersona):
         model: str | None = None,
         default_model: str,
         max_tokens: int = 8192,
-        doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,
-        max_legs: int = MAX_LEGS_PER_FANOUT,  # type: ignore[assignment]
+        doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
+        max_legs: int = MAX_LEGS_PER_FANOUT,
     ) -> None:
         if not any(role != "reviewer" for role in subordinates):
             raise ValueError(
@@ -351,8 +347,23 @@ class PrimusPersona(LLMPersona):
         )
 
     async def _plan(self, task: Task) -> str:
+        # THE BUDGET NOTE BELONGS ON THIS HOP, and reaching it needed a second
+        # site (cabal#156 r1 Important 1). It was folded into
+        # LLMPersona.build_messages under the belief that that is where every
+        # persona's system content is composed. A primus overrides handle_task
+        # and never calls build_messages: instrumented across a real Mason
+        # dispatch, the note landed on the LEG and on neither the plan nor the
+        # aggregate call. So the number reached a Subordinate, which is a leaf
+        # that cannot delegate, and was withheld from the one agent deciding
+        # how wide to fan out.
+        #
+        # NOT ON _aggregate, deliberately: it joins outputs and spends nothing,
+        # so telling it the budget is noise in a prompt that is already long.
         messages = [
-            {"role": "system", "content": self._plan_prompt},
+            {
+                "role": "system",
+                "content": self._plan_prompt + self._delegation_budget_note(task),
+            },
             *(_message_to_chat(m) for m in task.history),
         ]
         if task.status.message is not None:

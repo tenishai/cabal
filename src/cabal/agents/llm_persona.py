@@ -151,9 +151,18 @@ class LLMPersona:
         client that parsed raw metadata itself.
 
         HERE RATHER THAN IN THE GUARD, because the guard must stay await-free
-        and knows nothing about prompts, and because this is the one place every
-        persona's system content is composed. Same shape as `_recall_for_task`
-        above it: absent input, empty string, no line.
+        and knows nothing about prompts. Same shape as `_recall_for_task` above
+        it: absent input, empty string, no line.
+
+        NOT THE ONLY PLACE SYSTEM CONTENT IS COMPOSED, which this docstring
+        claimed and which was the load-bearing half of the claim (#156 r1
+        Important 1). `PrimusPersona` overrides `handle_task` and never calls
+        `build_messages`; its plan and aggregate stages build their own. So
+        `PrimusPersona._plan` calls this too -- and the primus is the only
+        class in the tree that fans out, which makes it the one caller the
+        feature was written for. A test constructing a bare `LLMPersona`
+        cannot see that, because that is the single shape where
+        `build_messages` is on the path.
         """
         used = task.metadata.get("cabal_delegation_budget")
         if not used:

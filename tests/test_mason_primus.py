@@ -590,7 +590,12 @@ async def test_a_fan_out_wider_than_the_ceiling_is_refused() -> None:
     Concurrency costs connections and tokens simultaneously rather than over
     time, which is the liveness starvation that killed the container.
     """
-    subs = {f"impl{n}": _subordinate(_client(["out"])[0]) for n in range(5)}
+    leg_calls = []
+    subs = {}
+    for n in range(5):
+        client, calls = _client(["out"])
+        leg_calls.append(calls)
+        subs[f"impl{n}"] = _subordinate(client)
     mason = MasonPrimusPersona(
         _client(["a plan"])[0],
         subordinates=subs,
@@ -604,6 +609,16 @@ async def test_a_fan_out_wider_than_the_ceiling_is_refused() -> None:
     assert "fans out to 5" in text
     assert "limit of 2" in text
     assert "rephrasing will not widen the limit" in text
+    # REFUSED BEFORE THE GATHER, not after (#156 r1 Important 2). The refusal
+    # text is byte-identical whether or not five legs were dispatched first, so
+    # moving the check below _dispatch_legs left the whole suite green -- in a
+    # test whose comment argues the placement is the point, because "the cost is
+    # paid at open time" and refusing once forty connections are open bounds
+    # nothing that matters. The legs are what the assertion has to look at.
+    assert all(calls == [] for calls in leg_calls), (
+        f"legs were dispatched before the breadth check refused: "
+        f"{[len(c) for c in leg_calls]}"
+    )
 
 
 @pytest.mark.asyncio
@@ -646,3 +661,50 @@ def test_a_sub_one_breadth_is_clamped_up_rather_than_refused(bad: int) -> None:
 
     with pytest.raises(ValueError, match="limit must be >= 1"):
         DelegationBudgetGuardrail(limit=bad)
+
+
+@pytest.mark.asyncio
+async def test_the_plan_hop_is_told_the_budget() -> None:
+    """cabal#156 r1 Important 1 — THE AGENT THAT SPENDS IT IS THE PRIMUS.
+
+    The note was folded into `LLMPersona.build_messages` alone, on the belief
+    that that is where every persona's system content is composed. A primus
+    overrides `handle_task` and never calls it: instrumented across a real
+    Mason dispatch, the note landed on the LEG and on neither the plan nor the
+    aggregate call. A `Subordinate` is a leaf that cannot delegate, so the
+    number reached the one agent that cannot spend it and was withheld from
+    the one deciding how wide to fan out.
+
+    A TEST ON A BARE `LLMPersona` CANNOT SEE THIS, which is why the first one
+    did not: that is the single shape where `build_messages` is on the path.
+    The guard's precondition selected the case that passes.
+
+    Drives the real guard and a real primus, and asserts on the PLAN call
+    specifically rather than on "some call saw it".
+    """
+    from cabal.core.guardrails_builtin import DelegationBudgetGuardrail
+
+    primus_client, primus_calls = _client(["a plan", "a summary"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+    )
+    from cabal.core.guardrails import GuardrailContext
+
+    task = _task_with_ctx("build")
+    await DelegationBudgetGuardrail(limit=20).check(
+        task, GuardrailContext(persona_name="caller", task_id=task.id, phase="router")
+    )
+
+    await mason.handle_task(task)
+
+    plan_system = primus_calls[0]["messages"][0]["content"]
+    assert "1 of 20 used" in plan_system, (
+        "the hop that decides how wide to fan out was not told its budget"
+    )
+    aggregate_system = primus_calls[-1]["messages"][0]["content"]
+    assert "of 20 used" not in aggregate_system, (
+        "the aggregate hop spends nothing; telling it the budget is noise"
+    )
