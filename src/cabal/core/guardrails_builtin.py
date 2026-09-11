@@ -651,15 +651,33 @@ class DelegationDepthGuardrail:
     ``_dispatch_subordinate`` calls ``handle_task`` directly, and the only
     guard with a dedicated call at that boundary is the doom-loop counter.
 
-    The consequence is bounded but real. A ``Subordinate`` is a plain
-    ``LLMPersona`` and cannot fan out again, so this is not unbounded local
-    recursion -- but a primus that arrived at the limit through a router hop
-    can still run one full local plan/dispatch/review/aggregate cycle, at real
-    cost, before depth is enforced again on its next router-mediated hop.
+    THE COUNTER AND THE CHECK NEVER MEET, and an earlier version of this
+    paragraph described the gap as one local cycle of slack "before depth is
+    enforced again on its next router-mediated hop" (#144 r2). There is no such
+    hop. ``next_delegation_depth`` has exactly one call site -- the sub_task
+    built in ``primus._dispatch_subordinate`` -- and that task goes straight to
+    ``subord.handle_task``, which the router never sees. A ``Subordinate`` has
+    no outbound surface, so the chain ends there. The increment is WRITE-ONLY:
+    nothing in this tree reads a fan-out-stamped depth at a decision point.
 
-    THE FIX IS NOT HERE. cabal#158 is the same gap for the budget and the
-    doom-loop counter, and it closes it by handing the primus the router's own
-    guard instance rather than by adding a second enforcement point. Depth
+    SO WHAT REACHES THIS GUARD IS ONLY WHAT A CALLER PUT ON THE WIRE. The
+    JSON-RPC and REST routes copy ``params.metadata`` verbatim, and a federated
+    hop forwards ``task.model_dump(...)`` whole WITHOUT incrementing. Cabal's
+    own delegation therefore cannot accumulate depth, and a cabal-to-cabal
+    A-to-B-to-A ping-pong carries a constant value for as many hops as it likes.
+    Accumulation requires an external client that increments -- which is exactly
+    what the companion daedalus#40 does, and is why that PR is a prerequisite
+    rather than a convenience.
+
+    WHAT THIS STILL BUYS, stated at its real size: an honest bound on a depth
+    an external chain declares, refused immediately and locally instead of by
+    spend. What it does NOT buy is a bound on delegation that cabal originates.
+    ``delegation_depth = true`` with a limit of 8 reads to an operator as the
+    second, and today it is only the first.
+
+    THE FIX IS NOT HERE. cabal#158 is the same shape of gap for the budget and
+    the doom-loop counter, and it closes it by handing the primus the router's
+    own guard instance rather than by adding a second enforcement point. Depth
     should join that mechanism once it lands -- filed as cabal#171 rather than
     smuggled into this PR, because doing it here would collide with #158 on the
     very constructor surface it is changing.
@@ -679,7 +697,7 @@ class DelegationDepthGuardrail:
         # defensible -- a depth of 1 is a working bound where a budget of 0 is
         # one nothing can satisfy -- but it is two shapes, not one.
         #
-        # IT IS THE SHAPE #156 GIVES THE PRIMUS'S max_legs, in the future tense
+        # IT IS THE SHAPE #156 WILL GIVE THE PRIMUS'S max_legs -- future tense
         # on purpose (#144 r1 Nit): that symbol does not exist in this tree yet
         # and a maintainer grepping the named precedent finds nothing. The
         # three-axis framing becomes true when #156 lands, not before.

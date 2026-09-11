@@ -582,10 +582,20 @@ def test_mason_system_prompt_frames_sre_and_reliability() -> None:
 async def test_the_fan_out_stamps_and_accumulates_depth() -> None:
     """cabal#144 — depth is a property of the CHAIN, not of one primus's view.
 
-    Inherited-plus-one rather than recomputed, so a chain that leaves this
-    process and comes back keeps counting. Without that, a cycle through a
-    remote peer resets to 1 on every return and the bound never fires —
-    which is the ledger -> gemini-one -> ledger shape from the incident.
+    Inherited-plus-one rather than recomputed, so a depth that ARRIVES from
+    outside keeps counting instead of resetting to 1.
+
+    THE ARITHMETIC IS WHAT THIS PINS, and only that. An earlier docstring here
+    went on to say the alternative was "a cycle through a remote peer resets to
+    1 on every return and the bound never fires" — describing a round trip this
+    tree cannot perform (#144 r2). The value stamped below never leaves the
+    process: its task goes straight to `subord.handle_task`, the router never
+    sees it, and a federated hop forwards metadata without incrementing. So
+    inheritance only ever matters for a depth an EXTERNAL client produced, which
+    is what daedalus#40 exists to send.
+
+    Recomputing would still be wrong, and that is worth a test — it is the
+    difference between believing an arriving chain and overwriting it.
     """
     from cabal.core.guardrails_builtin import DEPTH_KEY
 
