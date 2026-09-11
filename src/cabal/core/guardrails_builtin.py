@@ -315,14 +315,21 @@ class DelegationBudgetGuardrail:
         # THE FALLBACK IS THE CALLER, NOT THE TASK, AND THAT IS THE WHOLE
         # POINT OF THIS GUARD (#150 review, Critical).
         #
-        # context_id is preferred: it is stable across hops, sub-tasks inherit
-        # it (primus.py threads it into every leg), so a fan-out shares one
-        # budget with its children. That is the per-conversation budget this
+        # context_id is preferred: it is stable across hops, so the hops of one
+        # conversation share a budget. That is the per-conversation budget this
         # guard is named for.
         #
+        # NOT the primus fan-out, and an earlier version of this comment said
+        # otherwise (#150 pre-pass). This guard is wired ONLY into
+        # build_router_input_guardrails (app.py), and primus._dispatch_subordinate
+        # calls handle_task directly, bypassing the router. So subordinate legs
+        # never reach this check at all -- threading context_id into them makes
+        # them visible to the DoomLoopGuardrail instance primus holds itself,
+        # not to this budget. The two enforcement points are disjoint.
+        #
         # But context_id is CALLER-SUPPLIED AND OPTIONAL (a2a/jsonrpc.py:47
-        # defaults it to None) and every minting path generates a fresh uuid4
-        # per dispatch. So keying the fallback on task.id -- which is what
+        # defaults it to None) and a task id is a fresh uuid4 per dispatch at
+        # every site that mints one. So keying the fallback on task.id -- what
         # DoomLoopGuardrail does -- gives an un-threaded caller a NEW key on
         # every single dispatch, a count of 1 forever, and no bound at all.
         # Measured on the incident's own volume: 270 un-threaded delegations
