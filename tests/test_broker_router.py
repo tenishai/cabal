@@ -1116,17 +1116,19 @@ async def test_streaming_honours_a_rewrite_verdict(
 
 
 @pytest.mark.asyncio
-async def test_a_blocked_stream_is_reported_as_forbidden_not_a_server_fault(
+async def test_a_blocked_stream_raises_guardrail_blocked_not_a_bare_dispatch_error(
     sessionmaker, signing_key, jwks_provider, archivist_row
 ) -> None:
-    """#153 review, Important 1.
+    """#153 review, Important 1 -- THE TYPE CONTRACT ONLY.
 
-    A bare DispatchError reaches the SSE route's catch-all and is emitted as
-    ERROR_INTERNAL (-32603). -32603 says "server fault", and the conventional
-    response to a server fault is to RETRY -- so reporting a guardrail refusal
-    that way sustains, at the transport layer, the loop the guardrail exists
-    to break. GuardrailBlocked is a DispatchError subclass so every existing
-    handler keeps working, and the route reports it as ERROR_FORBIDDEN.
+    The router raises the SUBCLASS, and it remains a DispatchError so every
+    existing `except DispatchError` keeps working. That is all this asserts.
+
+    IT DOES NOT TEST THE WIRE CODE, and an earlier name and docstring here
+    claimed it did (r2 review). The frame's ERROR_FORBIDDEN is pinned by
+    tests/test_streaming.py::test_a_blocked_stream_reports_forbidden_on_the_wire,
+    which drives the real route -- necessarily, because the two `except` arms
+    are order-dependent and reordering them is invisible from here.
     """
     from cabal.core.broker.router import DispatchError, GuardrailBlocked
 

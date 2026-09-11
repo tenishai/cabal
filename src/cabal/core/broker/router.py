@@ -388,7 +388,8 @@ class DispatchRouter:
         # catches it. Yielding a delta instead would mean a blocked stream had
         # opened, which is the opposite of an *input* guardrail's contract.
         # BOOKKEEPING OPENS BEFORE THE GUARD, matching dispatch() (#153 review).
-        # dispatch() calls on_dispatch_start at :238 and a BLOCK then falls
+        # dispatch() calls on_dispatch_start before its own guard, and a
+        # BLOCK there then falls
         # through to on_dispatch_success, which writes the annotated
         # CODE_POLICY_VIOLATION task into Conversation.result_json with an Event
         # row -- so a non-streaming refusal is fully audited. Guarding first

@@ -465,3 +465,83 @@ async def test_stream_handler_exception_produces_error_event(
     # Must get an error event with partial text, not a server 500
     assert "event: error" in body_text
     assert "deliberate crash" in body_text or "stream failed" in body_text
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_stream_reports_forbidden_on_the_wire(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """#153 review r2, Important 1 — the wire code itself, not the exception type.
+
+    `GuardrailBlocked` subclasses `DispatchError`, so the two `except` arms in
+    `_stream_task_events` are ORDER-DEPENDENT and nothing but their order is
+    load-bearing. Moving `except GuardrailBlocked` below `except DispatchError`
+    is a routine tidy that ruff and a type checker both wave through, and it
+    silently reverts the frame to -32603 -- "server fault", whose conventional
+    response is to RETRY, which is the transport-layer amplification this whole
+    PR exists to remove.
+
+    The review demonstrated that: with the arm neutralised the frame carried
+    -32603 and the full suite still passed, 783 of them. So this asserts the
+    emitted code on a real SSE frame through the real route, the same way
+    test_stream_endpoint_404_for_unknown_agent pins -32003.
+    """
+
+    class FakeStreamer:
+        name = "guarded-stream"
+
+        async def astream_task(self, task: Task) -> AsyncIterator[str]:
+            yield "never reached"
+
+    class _BlockingGuard:
+        """BLOCKs every dispatch. The reason text is asserted on the frame."""
+
+        async def check(self, target: Any, ctx: Any) -> Any:
+            from cabal.core.guardrails import Verdict
+
+            return Verdict.block(reason="over budget")
+
+    app.state.dispatch_router.register_local(FakeStreamer())
+    app.state.dispatch_router._input_guardrails.append(_BlockingGuard())
+
+    from cabal.core.bulletin import store as bulletin_store
+    from cabal.core.db import open_session
+    from cabal.core.models import Persona
+
+    async with open_session(app.state.sessionmaker) as s:
+        s.add(Persona(name="guarded-stream", config_json={}))
+        await s.flush()
+        await bulletin_store.register_agent(
+            s,
+            name="guarded-stream",
+            persona_name="guarded-stream",
+            role="builtin",
+            endpoint="local://guarded-stream",
+            capabilities={},
+            safety_tier="strict",
+            agent_card_json={"name": "guarded-stream"},
+            agent_card_kid=app.state.active_kid,
+        )
+
+    token = await _bootstrap_token(app, client)
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "message/stream",
+        "params": {
+            "message": {"role": "user", "parts": [{"kind": "text", "text": "hi"}]}
+        },
+    }
+    async with client.stream(
+        "POST",
+        "/agents/guarded-stream/stream",
+        json=body,
+        headers={"Authorization": f"Bearer {token}"},
+    ) as resp:
+        body_text = "".join([chunk async for chunk in resp.aiter_text()])
+
+    assert "event: error" in body_text
+    # THE ASSERTION THAT DIES IF THE ARMS ARE REORDERED.
+    assert '"code": -32002' in body_text, body_text
+    assert "-32603" not in body_text, body_text
+    assert "over budget" in body_text
