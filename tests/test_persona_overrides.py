@@ -189,17 +189,25 @@ async def test_max_tokens_override_reaches_llm(
 
 
 @pytest.mark.asyncio
-async def test_commit_to_memory_override_can_disable_archivist(
+async def test_commit_to_memory_override_can_enable_archivist(
     tmp_path, stub_acompletion_captures
 ) -> None:
-    """Archivist default is True; operator can flip it off via identity.toml."""
+    """The default is now OFF (cabal#139); an operator can still turn it ON.
+
+    This test used to prove the opposite direction, which was the useful one
+    while the default was True. Flipping the default without flipping the test
+    would leave the knob untested in the direction that now matters -- an
+    operator who wants an accumulating Archivist must still be able to get one,
+    and `commit_to_memory` existing as config is the whole reason the default
+    is safe to change.
+    """
     fn, _ = stub_acompletion_captures
     identity = dedent(
         """
         [personas.archivist]
         role = "singleton"
         safety_tier = "moderate"
-        commit_to_memory = false
+        commit_to_memory = true
         """
     )
     fastapi_app = await _build_app(tmp_path, identity, fn)
@@ -207,7 +215,7 @@ async def test_commit_to_memory_override_can_disable_archivist(
         # Inspect the registered handler directly
         router = fastapi_app.state.dispatch_router
         handler = router._local["archivist"]  # type: ignore[attr-defined]
-        assert handler.commit_to_memory is False
+        assert handler.commit_to_memory is True
 
 
 @pytest.mark.asyncio
@@ -225,8 +233,11 @@ async def test_no_overrides_keeps_defaults(tmp_path, stub_acompletion_captures) 
     async with fastapi_app.router.lifespan_context(fastapi_app):
         router = fastapi_app.state.dispatch_router
         handler = router._local["archivist"]  # type: ignore[attr-defined]
-        # Archivist defaults: commit_to_memory=True, sonnet model
-        assert handler.commit_to_memory is True
+        # Archivist defaults: commit_to_memory=False (cabal#139), sonnet model
+        assert handler.commit_to_memory is False, (
+            "the Archivist must not write its own answers into the store it "
+            "searches unless an operator asks for it"
+        )
         assert "sonnet" in handler.model.lower()
 
 

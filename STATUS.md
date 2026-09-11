@@ -63,7 +63,7 @@ for the per-decision rationale log.
 | T (28) | streaming chat | +4 | `cbl chat` consumes SSE; prints deltas live; `--no-stream` fallback |
 | U (29) | conversations + tail | +13 | EventBus pub/sub; `/admin/conversations`, `/admin/events/stream`; `cbl conversations`, `cbl tail` |
 | V (30) | K8s manifests | (yaml) | `k8s/` with namespace + secrets template + ConfigMaps + PVCs + LiteLLM/cabal-core Deployments + Litestream sidecar + Kustomize base |
-| W (31) | memory accumulation | +8 | LLMPersona opt-in `commit_to_memory`; Archivist defaults true; Q&A pairs flow into the techne knowledge corpus on every successful dispatch (sync + streaming) |
+| W (31) | memory accumulation | +8 | LLMPersona opt-in `commit_to_memory`; Archivist defaulted true (flipped to false in cabal#139); Q&A pairs flow into the techne knowledge corpus on every successful dispatch (sync + streaming) |
 | X (32) | persona overrides | +5 | `system_prompt_override`, `model_override`, `max_tokens_override`, `commit_to_memory` per persona in identity.toml — operator tunes behavior without editing Python |
 | Y (33) | identity hot reload | +5 | `POST /admin/reload/identity` + `cbl reload identity`; rebuilds persona handlers without restarting; LiteLLMClient (breaker + budget state) preserved |
 | Z (34) | liminal integration | +6 | `cabal.core.tools.MCPToolProxy` + persona tool-use loop; end-to-end Cabal persona → liminal MCP gateway → handler with real JWT auth |
