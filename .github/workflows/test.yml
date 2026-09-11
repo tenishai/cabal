@@ -99,3 +99,31 @@ jobs:
       - name: Pytest (full suite)
         working-directory: cabal
         run: pytest -q
+
+  # ---- docker: the image builds, and the built venv imports cabal -----------
+  # Exists because PR #123's headline bug (a stale build/ dir shipping an
+  # empty cabal package) lived only inside a built image, where no pytest
+  # runs. The Dockerfile's own `import cabal; assert cabal.__version__`
+  # build proof is the guard; this job is what makes it fire in CI.
+  # Same gating as integration: techne is a private sibling brought in via
+  # --build-context, so this needs GH_PAT_REPOS. Manual dispatch only until
+  # that secret is added; then re-enable `|| github.ref == 'refs/heads/main'`.
+  docker:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout cabal
+        uses: actions/checkout@v4
+        with:
+          path: cabal
+
+      - name: Checkout techne
+        uses: actions/checkout@v4
+        with:
+          repository: dimartin/techne
+          token: ${{ secrets.GH_PAT_REPOS }}
+          path: techne
+
+      - name: Build the image (build proof asserts cabal imports with a version)
+        working-directory: cabal
+        run: docker build --build-context techne=../techne -t cabal:ci .

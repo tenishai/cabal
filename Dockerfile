@@ -31,7 +31,7 @@ RUN python3 -m venv /venv \
  && /venv/bin/pip install --no-cache-dir /build/techne \
  && mkdir -p src/cabal && touch src/cabal/__init__.py \
  && /venv/bin/pip install --no-cache-dir . \
- && rm -rf src
+ && rm -rf src build
 
 # MIGRATIONS ARRIVE VIA THE PACKAGE, NOT VIA A COPY (cabal#79). They live at
 # src/cabal/migrations and ship as package-data, so `COPY src ./src` carries
@@ -40,7 +40,18 @@ RUN python3 -m venv /venv \
 # root are gone because neither path exists any more -- and a COPY with an
 # absent source fails the build outright rather than skipping.
 COPY src ./src
-RUN /venv/bin/pip install --no-cache-dir --no-deps .
+# rm -rf build: the dep-caching install above leaves setuptools artifacts
+# built from the stub package; the stub __init__.py is newer by mtime than
+# the real COPY'd source, so a stale build/ dir ships an empty cabal
+# __init__ (no __version__) and the daemon dies at import.
+#
+# NOTE the two COPY lines that used to sit above this (`migrations`,
+# `alembic.ini`) are gone -- #79 moved migrations under src/cabal/ and ships
+# them as package-data, so `COPY src ./src` carries them and this install puts
+# them in /venv. Keeping them here would fail the build outright, the source
+# paths no longer existing.
+RUN rm -rf build && /venv/bin/pip install --no-cache-dir --no-deps . \
+ && /venv/bin/python -c "import cabal; assert cabal.__version__"
 
 # ----- Runtime stage --------------------------------------------------------
 FROM python:3.12-slim AS runtime
