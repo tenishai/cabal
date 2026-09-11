@@ -112,7 +112,7 @@ class PrimusPersona(LLMPersona):
         model: str | None = None,
         default_model: str,
         max_tokens: int = 8192,
-        doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,
+        doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
         delegation_budget: DelegationBudgetGuardrail | None = None,
     ) -> None:
         if not any(role != "reviewer" for role in subordinates):
@@ -452,7 +452,11 @@ class PrimusPersona(LLMPersona):
             # a `== BLOCK` check would dispatch the leg silently. It also
             # stops REWRITE being dropped on the floor, which the enumeration
             # did: neither guard here returns one, but ignoring it would have
-            # dispatched the UNREWRITTEN task.
+            # dispatched the UNREWRITTEN task. Note this REFUSES a rewrite
+            # rather than applying it -- the honest fail-closed reading, and
+            # unreachable besides: this boundary calls guard.check() directly
+            # rather than run_guardrails, so the PASS-carrying-`rewritten`
+            # shape never arises here and neither guard returns REWRITE.
             for guard in (self._doom_loop, self._delegation_budget):
                 if guard is None:
                     continue
