@@ -270,12 +270,18 @@ class DispatchRouter:
                 task.metadata["cabal_target_agent"] = target_agent
                 verdict = await run_guardrails(self._input_guardrails, task, guard_ctx)
                 if verdict.type == VerdictType.TERMINATE:
-                    # ENDS THE TASK (cabal#152). Reuses the machinery #153
-                    # built for the streaming path: GuardrailBlocked is
-                    # reported as ERROR_FORBIDDEN rather than ERROR_INTERNAL,
-                    # so a peer is told the refusal is about the caller and
-                    # will not change on retry -- which is the whole point of
-                    # a terminal verdict. A BLOCK below still advises.
+                    # ENDS THE TASK (cabal#152). GuardrailBlocked is the same
+                    # signal #153 raises from dispatch_streaming, but the
+                    # FORBIDDEN wiring was streaming-only: every caller of this
+                    # non-streaming method caught the DispatchError base and
+                    # answered 502 / ERROR_INTERNAL -- "server fault, retry" --
+                    # for a refusal that no retry changes. An earlier version of
+                    # this comment claimed the distinction already applied here;
+                    # it did not, and the #152 pre-pass caught it. Both callers
+                    # now have their own arm: routes/tasks.py (403) and
+                    # a2a_jsonrpc._message_send (ERROR_FORBIDDEN). Add one to any
+                    # third caller, or it will inherit 502 silently.
+                    # A BLOCK below still advises.
                     blocked = GuardrailBlocked(
                         f"router guardrail terminated the task: {verdict.reason}"
                     )

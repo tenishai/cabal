@@ -410,6 +410,14 @@ async def _message_send(
         return make_error_response(id=rpc_req.id, code=ERROR_AGENT_NOT_FOUND, message=str(exc))
     except CallerJWTError as exc:
         return make_error_response(id=rpc_req.id, code=ERROR_UNAUTHORIZED, message=str(exc))
+    # BEFORE DispatchError, WHICH IS ITS BASE (cabal#152). A terminal guardrail
+    # verdict is about the caller and will not change on retry, so ERROR_INTERNAL
+    # -- the code a peer reads as "server fault, try again" -- is the one answer
+    # that invites the storm this guard exists to end. The streaming path has
+    # reported FORBIDDEN since #153; until now `message/send` did not, and a
+    # comment in router.dispatch() claimed otherwise (#152 pre-pass, WRONG 1).
+    except GuardrailBlocked as exc:
+        return make_error_response(id=rpc_req.id, code=ERROR_FORBIDDEN, message=str(exc))
     except DispatchError as exc:
         return make_error_response(id=rpc_req.id, code=ERROR_INTERNAL, message=str(exc))
 

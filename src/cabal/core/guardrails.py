@@ -62,14 +62,22 @@ class VerdictType(StrEnum):
     #              something else" must not kill a task that may be one
     #              rephrase from succeeding. DoomLoopGuardrail keeps this
     #              contract, deliberately and since #42.
-    #   TERMINATE  a refusal that cannot be rephrased past. An authorization
-    #              edge (#154) is operator config -- no wording changes it. A
-    #              budget is spent -- no wording refills it.
+    #   TERMINATE  a refusal that cannot be rephrased past AND cannot be
+    #              waited out. An authorization edge (#154) is operator config
+    #              -- no wording changes it. A CONVERSATION budget is spent --
+    #              no wording refills it, and neither does time.
     #
-    # #146 reached terminal behaviour by ACCIDENT: its counter only rises, so
-    # once over budget every later delegation blocks too. That is a workaround
-    # exploiting monotonicity, not a terminal state, and a guard whose
-    # semantics were not monotonic would have had no such recourse.
+    # A BUDGET THAT REFILLS IS NOT TERMINAL. DelegationBudgetGuardrail returns
+    # TERMINATE on its conversation key only; its caller-keyed fallback is a
+    # rolling rate limit whose own refusal message names the refill window, and
+    # a refusal that tells the caller when to come back must not end the task.
+    # The #152 pre-pass caught the generalization this note used to make.
+    #
+    # #146 reached terminal behaviour by ACCIDENT, and only on the conversation
+    # key: that counter only rises, so once a conversation is over budget every
+    # later delegation blocks too. That is a workaround exploiting monotonicity,
+    # not a terminal state, and a guard whose semantics were not monotonic would
+    # have had no such recourse.
     TERMINATE = "terminate"
 
 
