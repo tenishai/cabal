@@ -105,14 +105,16 @@ async def test_an_infinite_depth_is_garbage_too_rather_than_an_exception() -> No
 
 
 def test_a_policy_cannot_raise_the_ceiling() -> None:
-    """CLAMPED, NOT HONOURED — the same shape as the primus's max_legs. A
-    policy-only limit fails open exactly when the policy is missing, which is
-    the state a misconfigured or newly-added persona is in.
+    """CLAMPED, NOT HONOURED. A policy-only limit fails open exactly when the
+    policy is missing, which is the state a misconfigured or newly-added
+    persona is in.
 
     NOT the same shape as the budget's limit, which an earlier version of this
-    docstring claimed (#144 pre-pass): the budget RAISES below 1 where breadth
-    and depth clamp up to it. See the config-validator test below for where the
-    three axes were made to agree and where they still do not.
+    docstring claimed (#144 pre-pass): the budget RAISES below 1 where this
+    clamps up to it. The shape this DOES match is the one #156 gives the
+    primus's `max_legs` — which is not in this tree yet, so read that as the
+    intended convergence rather than as a precedent you can grep (#144 r1).
+    See the config-validator test below for where the axes were made to agree.
     """
     assert DelegationDepthGuardrail(max_depth=10_000).max_depth == MAX_DELEGATION_DEPTH
     assert DelegationDepthGuardrail(max_depth=0).max_depth == 1

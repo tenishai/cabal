@@ -673,15 +673,20 @@ class DelegationDepthGuardrail:
     def __init__(self, max_depth: int = MAX_DELEGATION_DEPTH) -> None:
         # CLAMPED, NOT HONOURED -- a policy may only lower the backstop.
         #
-        # THE SAME SHAPE AS THE PRIMUS'S max_legs, not as the budget's limit,
-        # and an earlier version of this comment claimed all three matched
-        # (#144 pre-pass). They do at the ceiling and not at the floor: the
-        # budget RAISES below 1, here and at config load, where breadth and
-        # depth silently clamp up to 1. That is defensible -- a depth of 1 is a
-        # working bound where a budget of 0 is one nothing can satisfy -- but
-        # it is two shapes, not one. `delegation_depth_limit` does now get a
-        # config validator, so a typo in identity.toml is caught at load on
-        # every axis even where the guards differ.
+        # NOT THE SAME SHAPE AS THE BUDGET'S limit, which an earlier version of
+        # this comment claimed (#144 pre-pass). The budget RAISES below 1, in
+        # the guard and at config load; this clamps up to 1 silently. That is
+        # defensible -- a depth of 1 is a working bound where a budget of 0 is
+        # one nothing can satisfy -- but it is two shapes, not one.
+        #
+        # IT IS THE SHAPE #156 GIVES THE PRIMUS'S max_legs, in the future tense
+        # on purpose (#144 r1 Nit): that symbol does not exist in this tree yet
+        # and a maintainer grepping the named precedent finds nothing. The
+        # three-axis framing becomes true when #156 lands, not before.
+        #
+        # `delegation_depth_limit` does now get a config validator, so a typo
+        # in identity.toml is caught at load on every axis even where the
+        # guards themselves differ.
         self._max_depth = max(1, min(max_depth, MAX_DELEGATION_DEPTH))
 
     @property
