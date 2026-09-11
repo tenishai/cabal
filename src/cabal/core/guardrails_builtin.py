@@ -368,9 +368,24 @@ class DelegationBudgetGuardrail:
         # INSTANCE (persona_factory asks the router for it), so legs now reach
         # this check on every dispatch and the two points are one object.
         #
-        # The keying is what makes that safe: a sub-task inherits its parent's
-        # context_id, so both directions land on the same counter rather than
-        # on two allowances for one conversation.
+        # The keying is what makes that safe WHEN THERE IS A context_id: a
+        # sub-task inherits its parent's, so both directions land on the same
+        # counter rather than on two allowances for one conversation.
+        #
+        # UN-THREADED, THEY DO NOT (#158 r3). The two boundaries pick different
+        # caller keys -- the router keys on the CALLER
+        # (ctx.caller_persona or ctx.caller_agent), the primus on ITSELF
+        # (persona_name=self.name) -- so one un-threaded conversation gets two
+        # buckets, which is the shape this sharing exists to prevent. Worse on
+        # the primus side: its key is the persona name, so every operator and
+        # every unrelated un-threaded conversation shares one allowance, where
+        # the router's fallback at least distinguishes callers.
+        #
+        # NOT A REGRESSION, and that is why it is filed rather than fixed here:
+        # before #158 those legs hit this budget zero times, so un-threaded
+        # fan-out went from unbounded to bounded-but-coarsely. `cbl dispatch`
+        # is the live un-threaded path; `cbl chat` threads a contextId and gets
+        # the design as advertised.
         #
         # But context_id is CALLER-SUPPLIED AND OPTIONAL (a2a/jsonrpc.py:47
         # defaults it to None) and a task id is FRESH PER DISPATCH wherever one
@@ -438,12 +453,22 @@ class DelegationBudgetGuardrail:
         self._counts[session_key] = (count, window_start)
 
         if count > self._limit:
+            # THE TAIL IS DIFFERENT PER KEY CLASS, and the conversation one was
+            # missing (#158 r3 Nit). The windowed branch tells the caller when
+            # it refills; the conversation branch ended by telling an AGENT to
+            # stop re-asking, which is the right advice for the reader it was
+            # written for and no help at all to the human whose `cbl chat`
+            # session has just hit a wall that does not refill. This PR is what
+            # makes operators meet that message.
             refill = (
                 f" This budget refills {self._caller_window:.0f}s after its first "
                 "delegation; thread a contextId to get a per-conversation budget "
                 "instead."
                 if windowed
-                else ""
+                else (
+                    " This budget belongs to the conversation and does not "
+                    "refill; a new conversation starts a fresh one."
+                )
             )
             return Verdict.block(
                 reason=(

@@ -452,7 +452,16 @@ class PrimusPersona(LLMPersona):
             # a `== BLOCK` check would dispatch the leg silently. It also
             # stops REWRITE being dropped on the floor, which the enumeration
             # did: neither guard here returns one, but ignoring it would have
-            # dispatched the UNREWRITTEN task. Note this REFUSES a rewrite
+            # dispatched the UNREWRITTEN task.
+            #
+            # IT ABSORBS THE STOP, NOT THE DISTINCTION (#158 r3 Nit). Both
+            # verdicts funnel into _DoomLoopError(verdict.reason) and the type
+            # is DELIBERATELY FLATTENED here -- a terminal budget and an
+            # advisory doom-loop produce the same annotated failed Task,
+            # because _DoomLoopError already fails the whole fan-out and that
+            # is the "end the task" effect either way. Said explicitly so
+            # whoever merges #152 does not read "absorbs TERMINATE" as a reason
+            # to skip this site and go looking for a distinction to preserve. Note this REFUSES a rewrite
             # rather than applying it -- the honest fail-closed reading, and
             # unreachable besides: this boundary calls guard.check() directly
             # rather than run_guardrails, so the PASS-carrying-`rewritten`
