@@ -15,9 +15,8 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
+from cabal.core.app import _migrations_dir
 from cabal.core.models import Base
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_alembic_upgrade_head_matches_metadata(tmp_path: Path, monkeypatch) -> None:
@@ -25,8 +24,12 @@ def test_alembic_upgrade_head_matches_metadata(tmp_path: Path, monkeypatch) -> N
     db_url = f"sqlite:///{db_file}"
     monkeypatch.setenv("CABAL_DB_URL", db_url)
 
-    cfg = Config(str(REPO_ROOT / "alembic.ini"))
-    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    # ASK THE SYSTEM WHERE ITS MIGRATIONS ARE (#79). This used to hardcode
+    # REPO_ROOT / "migrations", a second definition of a path the application
+    # already owns -- so when the real one moved into the package, this test
+    # failed pointing at a directory nothing uses any more.
+    cfg = Config()
+    cfg.set_main_option("script_location", str(_migrations_dir()))
     command.upgrade(cfg, "head")
 
     engine = create_engine(db_url)

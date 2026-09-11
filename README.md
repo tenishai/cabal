@@ -6,7 +6,7 @@ the Mason primus run as agent modules registered with the bulletin board.
 
 ## Status
 
-**305 tests passing.** All phases through the security + hygiene sweep are complete:
+**The suite passes.** All phases through the security + hygiene sweep are complete:
 trust boundary enforcement, streaming dispatch router, techne correctness, async
 hygiene, SSRF defense, CI on all three repos, MCP spec compliance, and a full
 hygiene pass. The end-to-end demo (`make demo`) runs cleanly with Docker Compose.
@@ -41,8 +41,8 @@ src/cabal/
   cli/            cbl entrypoint
   personas/       LLMPersona, MasonPrimusPersona, EchoPersona
   config/         identity.toml loader
-migrations/       Alembic revisions
-tests/            pytest suite (305 tests)
+  migrations/     Alembic revisions (ship as package data; cabal#79)
+tests/            pytest suite
 scripts/          bootstrap.sh, demo.sh
 compose/          identity.dev.toml, litellm-config.yaml, litestream.yml
 ```
