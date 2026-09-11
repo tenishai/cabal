@@ -719,6 +719,16 @@ async def test_the_second_guard_at_the_boundary_still_reaches_its_own_limit() ->
     assert refusals, (
         f"the budget was listed second and never reached its limit of 2: {seen}"
     )
-    assert not any("loop" in t.lower() for t in seen), (
+    # THE DOOM GUARD WAS CONSULTED AND SIMPLY DID NOT TRIP, which is the half
+    # of "neither starves the other" that the line above cannot show. Reading
+    # its counter rather than its message: an earlier version of this assertion
+    # looked for "loop" in the refusal text, and DoomLoopGuardrail's message
+    # says "identical delegations ... pausing; change approach" -- no such
+    # substring, so it could not have failed whatever the guard did.
+    counted = [c for per_key in doom._state.values() for c, _ in per_key.values()]
+    assert counted and max(counted) == 3, (
+        f"the first-listed guard did not see all three dispatches: {counted}"
+    )
+    assert not any("identical delegations" in t for t in seen), (
         f"a doom threshold of 30 refused inside three dispatches: {seen}"
     )
