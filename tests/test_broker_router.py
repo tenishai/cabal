@@ -1259,3 +1259,68 @@ async def test_the_router_tells_a_guardrail_who_the_caller_is(
         "persona_name still carries the display identifier; caller_persona and "
         "caller_agent are the typed ones an authorization decision may use"
     )
+
+
+@pytest.mark.asyncio
+async def test_the_streaming_router_tells_a_guardrail_who_the_caller_is(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """cabal#154 r1 Important — the SAME identity contract, on the other path.
+
+    `dispatch_streaming` carries an authorization decision now, and nothing
+    covered it: removing `caller_persona` from its GuardrailContext left the
+    whole suite green, because the non-streaming test above is the only thing
+    asserting the wiring and it cannot see this call site.
+
+    That gap matters here more than coverage gaps usually do. The commit
+    immediately before this branch (a41edd5, #151) exists precisely because
+    `dispatch_streaming` had been forgotten by the router guardrail chain --
+    this path has a one-commit-old history of being the one that gets missed.
+
+    AND IT WOULD FAIL OPEN, not closed, for the shape that matters. A persona
+    caller would present as caller_persona=None and be REFUSED (a functional
+    break, loud). But a caller carrying BOTH an operator: sub and a persona
+    claim would take the exemption branch and bypass its edges entirely.
+    """
+    seen: list[GuardrailContext] = []
+
+    class _CaptureGuard:
+        async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+            seen.append(ctx)
+            return Verdict.pass_()
+
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[_CaptureGuard()],
+    )
+    router.register_local(FakeStreamingArchivist())
+
+    persona_token = mint(
+        signing_key=signing_key, sub="persona:mason", aud="archivist", persona="mason"
+    )
+    async for _ in router.dispatch_streaming(
+        target_agent="archivist",
+        target_generation=None,
+        task=_sample_task(),
+        caller_jwt=persona_token,
+    ):
+        pass
+    assert seen[-1].caller_persona == "mason"
+    assert seen[-1].caller_agent == "persona:mason"
+
+    operator_token = mint(
+        signing_key=signing_key, sub="operator:richard", aud="archivist"
+    )
+    second = _sample_task()
+    second.id = "t-003"  # conversations.task_id is UNIQUE
+    async for _ in router.dispatch_streaming(
+        target_agent="archivist",
+        target_generation=None,
+        task=second,
+        caller_jwt=operator_token,
+    ):
+        pass
+    assert seen[-1].caller_persona is None
+    assert seen[-1].caller_agent == "operator:richard"

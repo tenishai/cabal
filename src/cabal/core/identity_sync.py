@@ -37,9 +37,6 @@ def agent_name_for(persona_name: str, persona: PersonaConfig) -> str:
     return f"{persona_name}-primus" if persona.role == "primus" else persona_name
 
 
-#: Back-compat alias for in-module callers.
-_agent_name_for = agent_name_for
-
 
 def _build_agent_card(
     agent_name: str, persona_name: str, persona: PersonaConfig, generation: int
@@ -76,7 +73,7 @@ async def sync_personas(
                 )
                 await session.flush()
 
-            agent_name = _agent_name_for(persona_name, persona_cfg)
+            agent_name = agent_name_for(persona_name, persona_cfg)
             current = await bulletin_store.get_active(session, agent_name)
             if current is not None:
                 continue
