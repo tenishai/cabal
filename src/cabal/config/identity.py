@@ -200,6 +200,22 @@ class PersonaConfig(_Open):
     # and no explicit target gets routed to any persona whose capability
     # set is a superset of the requirement. Examples: ["architectural-advice"],
     # ["code-search", "blame"], ["team-memory.read"].
+    #: cabal#154 -- the personas this one may DELEGATE to. Operator-authored,
+    #: never agent-supplied; that is what makes it an authorization control.
+    #:
+    #: READ THE DEFAULT CAREFULLY, because it is the opposite of the one on
+    #: `mcp.allowed_handlers` a few lines up: omitting `allowed_handlers` means
+    #: UNRESTRICTED, while omitting `may_delegate_to` means NO DELEGATION. The
+    #: two are not siblings and the names are deliberately unalike so they do
+    #: not read as a pair. "No relationships declared permits no delegation" is
+    #: the property being borrowed; a permissive default would make this a
+    #: suggestion rather than a control.
+    #:
+    #: Inert unless `[guardrails] delegation_edges = true`.
+    #:
+    #: Names are PERSONAS. A role="primus" persona is reached under the agent
+    #: name "<persona>-primus"; the guard resolves that, so declare the persona.
+    may_delegate_to: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
     # Output format for code-editing personas. "search-replace" appends
     # aider-style SEARCH/REPLACE block instructions to the system prompt
@@ -259,6 +275,14 @@ class GuardrailsConfig(_Open):
     #: repeat quickly, this one catches the paraphrase storm that walks past it.
     #: A deployment may LOWER this; MAX_DELEGATIONS_PER_CONTEXT is the ceiling
     #: and a larger value is clamped, not honoured.
+    #: cabal#154 -- delegation is permitted where an edge was declared.
+    #: OPT-IN, and deliberately unlike its two neighbours, which default True.
+    #: The guard's own default is DENY (a persona with no `may_delegate_to`
+    #: may delegate to nobody), which is the load-bearing half of the control;
+    #: every room that exists today has no edges declared, so switching this on
+    #: by default would turn all delegation off at upgrade with no warning.
+    #: The default-deny lives in the guard; the migration lives here.
+    delegation_edges: bool = False
     delegation_budget: bool = True
     delegation_budget_limit: int = 20
     #: Seconds before a CALLER-keyed delegation budget refills. Only the caller

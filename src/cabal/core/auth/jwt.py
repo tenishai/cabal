@@ -26,6 +26,11 @@ from joserfc.jwk import KeySet, RSAKey
 
 from cabal.core.auth.keys import StoredKey
 
+#: The ``sub`` prefix an OPERATOR token carries (cabal#154). Defined here, at
+#: the module that mints them, because two copies of a string that grants an
+#: authorization exemption is one copy too many.
+OPERATOR_SUB_PREFIX = "operator:"
+
 DEFAULT_TTL_SECONDS = 5 * 60
 DEFAULT_ISS = "cabal-core"
 
