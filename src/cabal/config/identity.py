@@ -302,6 +302,11 @@ class GuardrailsConfig(_Open):
     #: by default would turn all delegation off at upgrade with no warning.
     #: The default-deny lives in the guard; the migration lives here.
     delegation_edges: bool = False
+    #: cabal#144 — bound how DEEP a delegation chain runs. Default-on like its
+    #: two neighbours; the guard's own ceiling (MAX_DELEGATION_DEPTH) is a hard
+    #: backstop a policy can only lower.
+    delegation_depth: bool = True
+    delegation_depth_limit: int = 8
     delegation_budget: bool = True
     delegation_budget_limit: int = 20
     #: Seconds before a CALLER-keyed delegation budget refills. Only the caller

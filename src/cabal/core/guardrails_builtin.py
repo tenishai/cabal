@@ -585,6 +585,87 @@ class DelegationEdgeGuardrail:
         )
 
 
+#: The deepest a delegation chain may run (cabal#144).
+#:
+#: A HARD BACKSTOP IN CODE, and the two-layer shape is the load-bearing part:
+#: a policy-only limit fails open whenever the policy is missing or unparsed,
+#: which is exactly the state a misconfigured or newly-added persona is in.
+#: A per-persona value may LOWER this and never raise it.
+#:
+#: WHY DEPTH RATHER THAN SPEND. cabal already bounds LLM calls -- core/llm/
+#: budget.py and circuit_breaker.py -- but neither bounds the delegation
+#: GRAPH. A subordinate that delegates onward is limited only by spend, so a
+#: cycle is not refused: it burns the budget and then trips the breaker. Those
+#: are not interchangeable. Budget exhaustion is indistinguishable from
+#: legitimate expensive work, arrives late, and takes the whole Task down. A
+#: depth refusal is immediate, local, and names the actual problem.
+#:
+#: DEPTH IS STRUCTURAL, so paraphrase cannot evade it -- unlike the sameness
+#: counter it sits beside. Borrowed from sympozium's spawn_router.go:32,
+#: `const maxDelegationDepth = 8`, an unconditional backstop with a separate
+#: policy that can only tighten.
+MAX_DELEGATION_DEPTH = 8
+
+#: Task metadata key carrying how many delegation hops led here.
+DEPTH_KEY = "cabal_delegation_depth"
+
+
+def delegation_depth(task: Task) -> int:
+    """Hops that led to this task. 0 for one a human started."""
+    raw = task.metadata.get(DEPTH_KEY, 0)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        # An unreadable depth is treated as the TOP of the chain rather than
+        # as an error, deliberately: a malformed value must not be a way to
+        # claim a lower depth than you have. Anything that then delegates
+        # onward is stamped 1 and bounded normally from there.
+        return 0
+
+
+def next_delegation_depth(task: Task) -> int:
+    """The depth to stamp on a task delegated FROM `task`."""
+    return delegation_depth(task) + 1
+
+
+class DelegationDepthGuardrail:
+    """Refuse a delegation that runs deeper than the chain is allowed (#144).
+
+    MUST REMAIN AWAIT-FREE, for the same reason its two siblings must: a
+    primus fan-out calls guardrails concurrently across legs sharing one
+    instance, and an await-free ``async def`` runs atomically to completion on
+    a cooperative event loop.
+    """
+
+    def __init__(self, max_depth: int = MAX_DELEGATION_DEPTH) -> None:
+        # CLAMPED, NOT HONOURED -- a policy may only lower the backstop. Same
+        # shape as DelegationBudgetGuardrail's limit and the primus's
+        # max_legs, so all three axes are bounded the same way rather than
+        # each inventing its own.
+        self._max_depth = max(1, min(max_depth, MAX_DELEGATION_DEPTH))
+
+    @property
+    def max_depth(self) -> int:
+        return self._max_depth
+
+    async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+        if not isinstance(target, Task):
+            return Verdict.pass_()
+        depth = delegation_depth(target)
+        if depth < self._max_depth:
+            return Verdict.pass_()
+        return Verdict.block(
+            reason=(
+                f"Delegation depth {depth} has reached the limit of "
+                f"{self._max_depth}. This chain is already "
+                f"{depth} hops from the request that started it; going deeper "
+                "is refused. Depth is counted structurally, so rewording will "
+                "not get through. Answer from what you have, or say you "
+                "cannot."
+            )
+        )
+
+
 class ValidateBeforeRecord:
     """Validate a mutating-tool result before it is appended to the conversation.
 

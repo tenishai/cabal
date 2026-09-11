@@ -116,9 +116,11 @@ def test_build_router_input_guardrails_opt_out() -> None:
     assert [g for g in wired if isinstance(g, DelegationBudgetGuardrail)]
 
 
-def test_both_guards_opt_out_independently() -> None:
+def test_every_router_guard_opts_out_independently() -> None:
     identity = IdentityConfig(
-        guardrails=GuardrailsConfig(doom_loop=False, delegation_budget=False)
+        guardrails=GuardrailsConfig(
+            doom_loop=False, delegation_budget=False, delegation_depth=False
+        )
     )
     assert build_router_input_guardrails(identity) == []
 
@@ -136,12 +138,16 @@ def test_delegation_budget_is_wired_with_its_configured_limit() -> None:
     assert budgets[0].limit == 7
 
 
-def test_both_guards_are_wired_by_default() -> None:
+def test_every_router_guard_is_wired_by_default() -> None:
     """Default-on for both. A deployment that never edits identity.toml gets
     the paraphrase bound as well as the sameness bound."""
     wired = build_router_input_guardrails(IdentityConfig())
     kinds = {type(g).__name__ for g in wired}
-    assert kinds == {"DoomLoopGuardrail", "DelegationBudgetGuardrail"}
+    assert kinds == {
+        "DoomLoopGuardrail",
+        "DelegationBudgetGuardrail",
+        "DelegationDepthGuardrail",
+    }
 
 
 # ======================================================================

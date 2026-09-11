@@ -576,3 +576,35 @@ def test_mason_system_prompt_frames_sre_and_reliability() -> None:
     assert "sre" in low or "reliability" in low
     assert "infrastructure" in low or "platform" in low
     assert "delegate" in low
+
+
+@pytest.mark.asyncio
+async def test_the_fan_out_stamps_and_accumulates_depth() -> None:
+    """cabal#144 — depth is a property of the CHAIN, not of one primus's view.
+
+    Inherited-plus-one rather than recomputed, so a chain that leaves this
+    process and comes back keeps counting. Without that, a cycle through a
+    remote peer resets to 1 on every return and the bound never fires —
+    which is the ledger -> gemini-one -> ledger shape from the incident.
+    """
+    from cabal.core.guardrails_builtin import DEPTH_KEY
+
+    seen: list[int] = []
+
+    class _Recording:
+        async def check(self, target, ctx):
+            from cabal.core.guardrails import Verdict
+
+            seen.append(target.metadata.get(DEPTH_KEY))
+            return Verdict.pass_()
+
+    mason = MasonPrimusPersona(
+        _client(["a plan", "sum"])[0],
+        subordinates={"implementer": _subordinate(_client(["impl"])[0])},
+        doom_loop=_Recording(),
+    )
+    # A task already three hops deep: its legs must be stamped four, not one.
+    task = _task_with_ctx("go")
+    task.metadata[DEPTH_KEY] = 3
+    await mason.handle_task(task)
+    assert seen == [4], f"expected the leg stamped at parent+1, got {seen}"
