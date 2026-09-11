@@ -115,6 +115,19 @@ class GuardrailContext:
     ``tool_arguments`` — the arguments dict for the current tool call; populated
                          for "tool_call" and "tool_result" phases (#43).
                          None in all other phases.
+    ``caller_persona`` — the CALLER's persona name at the router, or None when
+                         the caller is the operator (#154). Distinct from
+                         ``persona_name``, which collapses persona and operator
+                         into one display string and so cannot tell an agent
+                         from a human. An authorization decision needs that
+                         distinction on a typed field rather than by parsing a
+                         ``"operator:"`` prefix out of a fallback chain.
+
+                         NONE MEANS OPERATOR, by construction rather than by
+                         convention: ``routes/auth.py:61`` branches on
+                         ``persona_name is None`` and that is the only mint
+                         site producing a token without a ``cabal_persona``
+                         claim. Populated at the "router" phase only.
     """
 
     persona_name: str
@@ -122,6 +135,7 @@ class GuardrailContext:
     phase: str  # "input" | "output" | "router" | "tool_call" | "tool_result"
     tool_name: str | None = None
     tool_arguments: dict[str, Any] | None = None
+    caller_persona: str | None = None
 
 
 @runtime_checkable

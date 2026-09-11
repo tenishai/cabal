@@ -26,8 +26,19 @@ from cabal.core.models import Persona
 log = structlog.get_logger(__name__)
 
 
-def _agent_name_for(persona_name: str, persona: PersonaConfig) -> str:
+def agent_name_for(persona_name: str, persona: PersonaConfig) -> str:
+    """The bulletin agent name a persona is reached under.
+
+    PUBLIC because cabal#154's edge map must resolve a declared persona to the
+    agent name that actually arrives in `cabal_target_agent`, and a second copy
+    of this one-line rule in app.py would be a second definition free to drift
+    from this one.
+    """
     return f"{persona_name}-primus" if persona.role == "primus" else persona_name
+
+
+#: Back-compat alias for in-module callers.
+_agent_name_for = agent_name_for
 
 
 def _build_agent_card(

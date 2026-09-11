@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from cabal.core.a2a.types import Task
@@ -445,6 +445,112 @@ class DelegationBudgetGuardrail:
                 )
             )
         return Verdict.pass_()
+
+
+class DelegationEdgeGuardrail:
+    """Delegation is permitted where an edge was declared, and nowhere else (cabal#154).
+
+    The colleague list is a phone book: anything visible is askable. This makes
+    it an adjacency list. Verified on main before this guard existed: a grep for
+    ``authoriz|permit|may_ask|can_ask|allowed_targets|visib|edge`` across
+    ``core/broker/`` returned exactly one hit, the OUTBOUND ``Authorization``
+    header -- there was no caller-to-target authorization at dispatch at all.
+
+    **WHY THIS OUTRANKS THE CAPS.** #144 bounds depth, #146 bounds volume, #151
+    makes those bounds unbypassable. All three ration an affordance. This
+    removes it. In the incident behind #146 the two looping agents had no
+    business asking each other the question they asked ~270 times; no edge
+    would have existed, and the cap stops the 271st ask where an edge stops the
+    first. The caps remain the backstop for a *permitted* edge over-used.
+
+    **EDGES ARE OPERATOR-AUTHORED, NEVER AGENT-SUPPLIED.** That is the property
+    that makes this an authorization control rather than a suggestion. They are
+    read from ``identity.toml`` at startup and this guard holds an immutable
+    snapshot; nothing on the dispatch path can add one.
+
+    **NO DECLARED EDGES MEANS NO DELEGATION**, which is the load-bearing half of
+    the borrowed pattern -- a room with no relationships permits none rather
+    than permitting any-to-any. Because that default is breaking for every room
+    that exists today, the guard as a whole is OPT-IN for now
+    (``[guardrails] delegation_edges``, default false). The default-deny is
+    inside the guard where it belongs; the migration is outside it.
+
+    **THE CALLER IS IDENTIFIED BY A TYPED FIELD, NOT A PREFIX.**
+    ``ctx.caller_persona`` is None exactly when the caller is the operator,
+    because ``routes/auth.py:61`` branches on ``persona_name is None`` and that
+    is the only mint site producing a token with no ``cabal_persona`` claim. An
+    operator is exempt: edges govern agent-to-agent delegation, and a human at
+    the CLI is not delegating. The earlier shape of this check read
+    ``persona_name``, which collapses operator and persona into one display
+    string -- an authorization decision must not rest on parsing that apart.
+
+    **AN UNIDENTIFIABLE TARGET IS REFUSED, NOT WAVED THROUGH.** A default-deny
+    control that fails open on a missing field is not default-deny.
+
+    Borrowed from sympozium-ai/sympozium (MIT, Go), ``resolvePersonaTarget``,
+    whose threat model states the case: both the pack name and the target are
+    agent-supplied and therefore adversarial, so an ensemble with no
+    relationships must permit no delegation rather than allowing any-to-any.
+    """
+
+    def __init__(self, edges: Mapping[str, Iterable[str]]) -> None:
+        #: caller persona -> the AGENT names it may dispatch to. Agent names,
+        #: not persona names: identity_sync gives a role="primus" persona the
+        #: agent name "<persona>-primus", while an edge is declared against the
+        #: persona. Resolving that once here beats stripping a suffix at check
+        #: time, which would silently authorize a persona literally named
+        #: "x-primus" as though it were the primus of "x".
+        self._edges: dict[str, frozenset[str]] = {
+            caller: frozenset(targets) for caller, targets in edges.items()
+        }
+
+    def edges_for(self, caller_persona: str) -> frozenset[str]:
+        return self._edges.get(caller_persona, frozenset())
+
+    async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+        """PASS where an edge was declared; BLOCK otherwise.
+
+        MUST REMAIN AWAIT-FREE for the same reason the other two must -- a
+        primus fan-out calls guardrails concurrently across legs sharing one
+        instance, and an await-free ``async def`` runs atomically to completion
+        on a cooperative event loop.
+        """
+        if not isinstance(target, Task):
+            return Verdict.pass_()
+
+        caller = ctx.caller_persona
+        if caller is None:
+            # The operator. See the class docstring: None means operator by
+            # construction, not by convention.
+            return Verdict.pass_()
+
+        task: Task = target
+        target_agent = str(task.metadata.get("cabal_target_agent", "") or "")
+        if not target_agent:
+            return Verdict.block(
+                reason=(
+                    "Delegation refused: the target could not be identified, so "
+                    "no edge could be checked. This is a refusal rather than a "
+                    "pass because an authorization control that fails open on a "
+                    "missing field is not one."
+                )
+            )
+
+        if target_agent in self._edges.get(caller, frozenset()):
+            return Verdict.pass_()
+
+        declared = sorted(self._edges.get(caller, frozenset()))
+        may = ", ".join(declared) if declared else "nothing"
+        return Verdict.block(
+            reason=(
+                f"Delegation refused: no declared edge from '{caller}' to "
+                f"'{target_agent}'. {caller} may delegate to: {may}. Edges are "
+                "operator-authored config, so this will not change by retrying "
+                "or by rewording. If this delegation should be permitted, the "
+                f"operator adds '{target_agent}' to may_delegate_to under "
+                f"[personas.{caller}] in identity.toml."
+            )
+        )
 
 
 class ValidateBeforeRecord:

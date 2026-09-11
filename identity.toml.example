@@ -45,6 +45,29 @@ url = "http://liminal:9100"
 token_ttl_seconds = 3600
 jwt_aud = "liminal"
 
+# ----- Router-level guardrails -----
+# These run in DispatchRouter.dispatch BEFORE the local-vs-remote branch, so
+# they are the one enforcement point that also covers federated peers. The
+# in-process Mason doom-loop guard fires at the subordinate boundary only and
+# never reaches a remote hop.
+#
+# NOTE none of them sees a primus fan-out: _dispatch_subordinate calls
+# handle_task directly and bypasses the router (cabal#158).
+
+[guardrails]
+# doom_loop = true             # sameness counter; threshold below
+# doom_loop_threshold = 5
+# delegation_budget = true     # payload-independent per-conversation cap
+# delegation_budget_limit = 20
+# delegation_budget_caller_window_seconds = 3600.0
+
+# cabal#154 -- refuse a delegation with no declared edge. OFF by default, and
+# that is a migration decision rather than a judgement about the control: the
+# guard's OWN default is deny, so enabling this in a room with no
+# `may_delegate_to` lines turns ALL delegation off at once. Declare the edges
+# first (see [personas.archivist] below), then switch this on.
+# delegation_edges = false
+
 # ----- Singletons (built-in personas) -----
 # Each persona declared here gets a bulletin-board row at daemon startup.
 # Personas named in PERSONA_REGISTRY (archivist, architect, librarian,
@@ -56,6 +79,30 @@ jwt_aud = "liminal"
 description = "Memory and search"
 role = "singleton"
 safety_tier = "moderate"
+
+# ----- Delegation edges (cabal#154) -----
+# Which PERSONAS this one may delegate to. The colleague list is a phone book
+# -- anything visible is askable; this makes it an adjacency list.
+#
+# READ THE DEFAULT CAREFULLY. It is the OPPOSITE of `allowed_handlers` below:
+#   allowed_handlers omitted  ->  UNRESTRICTED (every handler is reachable)
+#   may_delegate_to  omitted  ->  NO DELEGATION (nobody is reachable)
+# That is deliberate and it is the point. "A room with no declared
+# relationships permits no delegation" is what makes this an authorization
+# control rather than a suggestion; a permissive default would give any agent
+# that can name a colleague the right to storm it.
+#
+# INERT UNLESS [guardrails] delegation_edges = true, which is currently false
+# by default -- every existing room has no edges declared, so switching it on
+# would turn all delegation off at once. Declare edges first, then enable.
+#
+# Edges are OPERATOR-AUTHORED and never agent-supplied: they are read from this
+# file at startup and nothing on the dispatch path can add one.
+#
+# Names are personas. A role = "primus" persona is reached under the agent name
+# "<persona>-primus"; cabal resolves that, so write the persona name.
+#
+# may_delegate_to = ["librarian", "architect"]
 
 # Archivist opts into liminal's tool surface (memory lookups, web fetch,
 # files, etc. — whatever liminal's registry serves). With [liminal]
