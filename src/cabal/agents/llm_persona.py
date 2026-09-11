@@ -236,11 +236,11 @@ class LLMPersona:
         """Run ``guardrails`` for ``phase`` against ``target``.
 
         Returns ``(possibly-rewritten target, None)`` on PASS/REWRITE.
-        Returns ``(original target, blocked_task)`` on BLOCK — the caller
-        must return ``blocked_task`` immediately.
+        Returns ``(original target, blocked_task)`` on ANY REFUSAL — BLOCK or
+        TERMINATE — and the caller must return ``blocked_task`` immediately.
 
         The caller is responsible for ending the session (session_tracker.end)
-        and dropping the checkpoint (checkpoint_store.drop) on BLOCK, to
+        and dropping the checkpoint (checkpoint_store.drop) on a refusal, to
         mirror the existing error-handling pattern in _run_dispatch.
         """
         if not guardrails:
@@ -266,7 +266,13 @@ class LLMPersona:
                 task,
                 CabalReason(
                     code=CODE_POLICY_VIOLATION,
-                    message=f"guardrail blocked ({phase}): {verdict.reason}",
+                    # The VERDICT in the message, not a fixed "blocked": a log
+                    # line trying to tell you which verdict fired should not
+                    # say the same word for both (#152 r2).
+                    message=(
+                        f"guardrail {verdict.type.value} ({phase}): "
+                        f"{verdict.reason}"
+                    ),
                 ),
             )
             return target, blocked
@@ -297,7 +303,9 @@ class LLMPersona:
         tools only).
 
         Returns ``(possibly-rewritten target, None)`` on PASS/REWRITE.
-        Returns ``(original target, block_reason)`` on BLOCK.
+        Returns ``(original target, refusal_reason)`` on BLOCK or TERMINATE.
+        A TERMINATE refuses the CALL here rather than the Task — see
+        ``Verdict.terminate``, which says so rather than promising otherwise.
         """
         if not guardrails:
             return target, None
