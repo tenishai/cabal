@@ -424,9 +424,26 @@ class PrimusPersona(LLMPersona):
             # saying a rephrased storm should read as an exhausted budget
             # rather than a sameness loop -- but rephrased legs never trip the
             # sameness counter at all (different key), so that conflict cannot
-            # occur. The two can only disagree on IDENTICAL repeats, where the
-            # doom threshold trips long before the budget limit. Matching the
-            # router's order stops the module contradicting itself.
+            # occur.
+            #
+            # WHY ORDER CANNOT MATTER, structurally rather than by threshold.
+            # Neither guard starves the other before the outcome is decided:
+            # both are checked on every call until one of them first refuses,
+            # so whichever is listed first still reaches its own natural trip
+            # point. The second is only skipped AFTER the first has begun
+            # refusing -- by which point the task is refused either way, and
+            # only the wording of the message differs.
+            #
+            # Said that way it holds for any configuration. An earlier version
+            # of this comment argued instead that "the doom threshold trips
+            # long before the budget limit", which is true of the shipped
+            # defaults (5 vs 20) and NOT enforced anywhere: the two limits have
+            # independent validators and no cross-field check, so
+            # doom_loop_threshold=30 with the default budget of 20 is a legal
+            # config in which the budget trips first. A default dressed as an
+            # invariant (#158 pre-pass, r2).
+            #
+            # Matching the router's order stops the module contradicting itself.
             #
             # ANY NON-PASS VERDICT STOPS, rather than an enumeration of the
             # ones that exist today. Fail-closed is the right default at a

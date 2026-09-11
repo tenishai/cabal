@@ -661,3 +661,64 @@ async def test_the_primus_shares_the_budget_instance_it_is_given() -> None:
         "the fan-out leg never touched the caller's counter, so the primus is "
         "not using the instance it was handed"
     )
+
+
+@pytest.mark.asyncio
+async def test_the_second_guard_at_the_boundary_still_reaches_its_own_limit() -> None:
+    """cabal#158 pre-pass r2 — WHY THE GUARD ORDER IS IMMATERIAL, structurally.
+
+    The comment at this boundary used to justify its order by saying the doom
+    threshold trips long before the budget limit. That is a fact about the
+    shipped defaults (5 vs 20), not about anything the code enforces: the two
+    limits have independent validators and no cross-field check.
+
+    So this runs the configuration the old justification forbids —
+    threshold=30, budget=2, with doom checked FIRST — and pins the property that
+    actually holds: neither guard starves the other before the outcome is
+    decided, so the second-listed one still reaches its own trip point. The
+    refusal must name the budget, which has not yet blocked anything, rather
+    than the doom guard, which never trips at all here.
+
+    IDENTICAL plan text every dispatch, deliberately: rephrased legs miss the
+    sameness counter by construction, so distinct text would make the doom guard
+    unable to compete and the test would prove nothing about order.
+    """
+    doom = DoomLoopGuardrail(threshold=30)
+    budget = DelegationBudgetGuardrail(limit=2)
+    primus_client, _ = _client(["same plan", "sum"] * 3)
+    sub_client, _ = _client(["impl"] * 3)
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=doom,
+        delegation_budget=budget,
+    )
+
+    seen = []
+    for n in range(3):
+        task = Task(
+            **{
+                "id": f"t-order-{n}",
+                "contextId": "one-conversation",
+                "status": TaskStatus(
+                    state="submitted",
+                    message=Message(role="user", parts=[TextPart(text="do the thing")]),
+                ),
+            }
+        )
+        result = await mason.handle_task(task)
+        seen.append(
+            " ".join(
+                p.text for p in result.status.message.parts if isinstance(p, TextPart)
+            )
+            if result.status.message
+            else ""
+        )
+
+    refusals = [t for t in seen if "budget" in t.lower()]
+    assert refusals, (
+        f"the budget was listed second and never reached its limit of 2: {seen}"
+    )
+    assert not any("loop" in t.lower() for t in seen), (
+        f"a doom threshold of 30 refused inside three dispatches: {seen}"
+    )
