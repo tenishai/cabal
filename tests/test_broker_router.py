@@ -1250,7 +1250,12 @@ async def test_the_router_tells_a_guardrail_who_the_caller_is(
         caller_jwt=operator_token,
     )
     assert seen[-1].caller_persona is None
+    assert seen[-1].caller_agent == "operator:richard", (
+        "the raw sub must reach the guard: caller_persona being None is NOT "
+        "evidence of an operator (admin.py mints persona-less service tokens "
+        "too), so an exemption needs the positive signal this field carries"
+    )
     assert seen[-1].persona_name == "operator:richard", (
-        "persona_name still carries the display identifier; caller_persona is "
-        "the typed one an authorization decision may use"
+        "persona_name still carries the display identifier; caller_persona and "
+        "caller_agent are the typed ones an authorization decision may use"
     )

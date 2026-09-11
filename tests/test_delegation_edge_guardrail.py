@@ -24,12 +24,15 @@ def _task(target_agent: str | None = "archivist") -> Task:
     return t
 
 
-def _ctx(caller_persona: str | None) -> GuardrailContext:
+def _ctx(
+    caller_persona: str | None, caller_agent: str | None = "operator:richard"
+) -> GuardrailContext:
     return GuardrailContext(
-        persona_name=caller_persona or "operator:richard",
+        persona_name=caller_persona or (caller_agent or ""),
         task_id="t-1",
         phase="router",
         caller_persona=caller_persona,
+        caller_agent=caller_agent,
     )
 
 
@@ -63,11 +66,39 @@ async def test_a_room_with_no_declared_edges_permits_no_delegation() -> None:
 @pytest.mark.asyncio
 async def test_the_operator_is_not_subject_to_edges() -> None:
     """Edges govern agent-to-agent delegation; a human at the CLI is not
-    delegating. `caller_persona is None` means operator BY CONSTRUCTION --
-    routes/auth.py branches on `persona_name is None` and that is the only mint
-    site producing a token with no cabal_persona claim."""
+    delegating. The exemption is granted on a POSITIVE signal -- an
+    `operator:` sub -- never on the absence of a persona claim."""
     g = DelegationEdgeGuardrail(edges={})
-    assert (await g.check(_task("archivist"), _ctx(None))).type is VerdictType.PASS
+    v = await g.check(_task("archivist"), _ctx(None, "operator:richard"))
+    assert v.type is VerdictType.PASS
+
+
+@pytest.mark.asyncio
+async def test_a_personaless_service_token_is_refused_not_exempted() -> None:
+    """THE PRE-PASS FINDING ON b606317, and the reason the exemption is now
+    positive rather than inferred.
+
+    The first version read "no cabal_persona claim" as "operator", justified by
+    routes/auth.py being the only mint site producing a claim-less token. It is
+    not: admin.py's mint_service_token takes an optional `persona` defaulting
+    to None. A service token was therefore claim-less AND exempt -- a bypass of
+    the whole control, arrived at by trusting an enumeration.
+
+    A default-deny control must not depend on a list of exceptions being
+    complete. This is the test that makes the dependency go the other way: an
+    unrecognised caller shape fails CLOSED.
+    """
+    g = DelegationEdgeGuardrail(edges={"mason": ["archivist"]})
+    v = await g.check(_task("archivist"), _ctx(None, "svc:indexer"))
+    assert v.type is VerdictType.BLOCK
+    assert v.reason is not None
+    assert "neither an identified persona nor the operator" in v.reason
+
+
+@pytest.mark.asyncio
+async def test_a_caller_with_no_identity_at_all_is_refused() -> None:
+    g = DelegationEdgeGuardrail(edges={})
+    assert (await g.check(_task("archivist"), _ctx(None, None))).type is VerdictType.BLOCK
 
 
 @pytest.mark.asyncio

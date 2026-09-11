@@ -116,18 +116,21 @@ class GuardrailContext:
                          for "tool_call" and "tool_result" phases (#43).
                          None in all other phases.
     ``caller_persona`` — the CALLER's persona name at the router, or None when
-                         the caller is the operator (#154). Distinct from
-                         ``persona_name``, which collapses persona and operator
-                         into one display string and so cannot tell an agent
-                         from a human. An authorization decision needs that
-                         distinction on a typed field rather than by parsing a
-                         ``"operator:"`` prefix out of a fallback chain.
+                         the token carries no ``cabal_persona`` claim (#154).
+                         Distinct from ``persona_name``, which collapses
+                         persona and operator into one display string.
 
-                         NONE MEANS OPERATOR, by construction rather than by
-                         convention: ``routes/auth.py:61`` branches on
-                         ``persona_name is None`` and that is the only mint
-                         site producing a token without a ``cabal_persona``
-                         claim. Populated at the "router" phase only.
+                         NONE DOES NOT MEAN OPERATOR. An earlier version of
+                         this docstring said it did, on the grounds that
+                         ``routes/auth.py`` was the only mint site producing a
+                         claim-less token. It is not: ``admin.py``'s
+                         ``mint_service_token`` takes an optional ``persona``
+                         defaulting to None, so a service token is claim-less
+                         too. None means "not identified as a persona", which
+                         is a reason to refuse, not to exempt.
+    ``caller_agent``   — the caller's raw ``sub``. Carried so a guard can make
+                         a POSITIVE identification rather than inferring one
+                         from an absence. Populated at the "router" phase only.
     """
 
     persona_name: str
@@ -136,6 +139,7 @@ class GuardrailContext:
     tool_name: str | None = None
     tool_arguments: dict[str, Any] | None = None
     caller_persona: str | None = None
+    caller_agent: str | None = None
 
 
 @runtime_checkable

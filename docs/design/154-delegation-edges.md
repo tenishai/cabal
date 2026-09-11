@@ -26,7 +26,7 @@ authorization at dispatch. The issue's claim holds exactly as written.
 
 **No, and not because it is exempt — because the guard never sees it.**
 
-`_dispatch_subordinate` (`agents/primus.py:363`) is in-process. It fires its own
+`_dispatch_subordinate` (`agents/primus.py`) is in-process. It fires its own
 `DoomLoopGuardrail` at the subordinate boundary, and `app.py:151-153` states the
 reason the router-level chain exists at all: *"The in-process Mason
 DoomLoopGuardrail (primus.py) fires at the subordinate boundary and never reaches
@@ -94,10 +94,11 @@ the default. Filed rather than built.
 
 **Capability routing must be edge-aware at selection, not only at the guard.**
 
-`select_by_capabilities` (`router.py:184`) resolves a target from
+`select_by_capabilities` (`core/broker/router.py`) resolves a target from
 `required_capabilities` when the caller names none. It is called at
-`routes/tasks.py:132`, i.e. *before* `dispatch()`. So the guard is safe — by the
-time `task.metadata["cabal_target_agent"]` is set at `router.py:256`, the target
+`routes/tasks.py`, in `submit_task`, i.e. *before* `dispatch()`. So the guard is
+safe — by the time `task.metadata["cabal_target_agent"]` is set in `dispatch()`,
+the target
 is already a concrete name, and an edge check reading it sees the real target.
 
 The failure is one of behaviour, not of enforcement. On this path the caller
@@ -107,7 +108,7 @@ refuses its own choice — an unreachable-by-policy agent shadows a reachable on
 that could have served the request.
 
 Selection must filter to edge-reachable targets first, then match capabilities.
-That is a change at `routes/tasks.py:132`, separate from the guardrail.
+That is a change in `submit_task` (`routes/tasks.py`), separate from the guardrail.
 
 **DEFERRED to cabal#162, and the reason matters.** There is no authorization
 hole: the guard sees the resolved target, so capabilities cannot be used to
@@ -133,9 +134,25 @@ own. The security property is complete without it.
 
 The caller had to become identifiable on a **typed field**. `GuardrailContext`
 carried only `persona_name`, which is `caller_persona or caller_agent or ""` —
-it collapses an agent and a human operator into one display string, so an
-authorization decision made from it would have rested on parsing an
-`"operator:"` prefix back out of a fallback chain. `GuardrailContext` now
-carries `caller_persona`, which is None exactly when the caller is the operator,
-by construction: `routes/auth.py:61` branches on `persona_name is None` and it
-is the only mint site producing a token with no `cabal_persona` claim.
+it collapses an agent and a human operator into one display string. It now
+carries `caller_persona` and `caller_agent` separately.
+
+**And the first attempt at the exemption was wrong, in exactly the way this
+project keeps being wrong.** It read "no `cabal_persona` claim" as "operator",
+justified by `routes/auth.py` being the only mint site producing a claim-less
+token. The pre-pass found a second: `admin.py`'s `mint_service_token` takes an
+optional `persona` defaulting to `None`, so a service token was claim-less too
+— and therefore exempt. A bypass of the whole control, arrived at by trusting
+an enumeration. Third one I got wrong on this codebase in a day.
+
+The repair is not a better enumeration. **A default-deny control must not
+depend on a list of exceptions being complete**, so the exemption is now
+granted on a signal being *present* — an `OPERATOR_SUB_PREFIX` sub — and every
+other unidentified caller is refused. A mint site nobody thought of now fails
+closed.
+
+Known weakness, recorded rather than hidden: the system's own definition of an
+operator is `"operator" in cabal_scope` (`_require_operator_claims`), which is
+the signal this *should* use. `routes/tasks.py` re-mints the dispatch token
+with `scope=["dispatch"]`, so operator scope does not survive to the router and
+the sub prefix is all that reaches the guard.

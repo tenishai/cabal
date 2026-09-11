@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from cabal.core.a2a.types import Task
+from cabal.core.auth.jwt import OPERATOR_SUB_PREFIX
 from cabal.core.guardrails import GuardrailContext, Verdict
 
 
@@ -475,14 +476,32 @@ class DelegationEdgeGuardrail:
     (``[guardrails] delegation_edges``, default false). The default-deny is
     inside the guard where it belongs; the migration is outside it.
 
-    **THE CALLER IS IDENTIFIED BY A TYPED FIELD, NOT A PREFIX.**
-    ``ctx.caller_persona`` is None exactly when the caller is the operator,
-    because ``routes/auth.py:61`` branches on ``persona_name is None`` and that
-    is the only mint site producing a token with no ``cabal_persona`` claim. An
-    operator is exempt: edges govern agent-to-agent delegation, and a human at
-    the CLI is not delegating. The earlier shape of this check read
-    ``persona_name``, which collapses operator and persona into one display
-    string -- an authorization decision must not rest on parsing that apart.
+    **THE OPERATOR EXEMPTION IS POSITIVE, AND THAT CORRECTS AN EARLIER SHAPE
+    OF THIS GUARD THAT WAS WRONG.** An operator is exempt -- edges govern
+    agent-to-agent delegation and a human at the CLI is not delegating -- but
+    the exemption is granted only on a token whose ``sub`` carries
+    ``OPERATOR_SUB_PREFIX``. Anything else that is not an identified persona is
+    REFUSED.
+
+    The first version inferred the exemption from an ABSENCE: no
+    ``cabal_persona`` claim meant operator, justified by ``routes/auth.py``
+    being "the only mint site producing a claim-less token". The pre-pass found
+    a second one -- ``admin.py``'s ``mint_service_token`` takes an optional
+    ``persona`` defaulting to None -- so a service token was claim-less too and
+    would have been waved through. That is the third enumeration I got wrong on
+    this codebase in a day, and the lesson is not "enumerate harder": a
+    default-deny control must not depend on a list of exceptions being
+    complete. It now depends on a signal being PRESENT, so a mint site nobody
+    thought of fails closed instead of open.
+
+    KNOWN WEAKNESS, and it is the sub prefix rather than the scope. The
+    system's own definition of an operator is ``"operator" in cabal_scope``
+    (``admin.py:_require_operator_claims``), which is the signal this SHOULD
+    use -- but ``routes/tasks.py`` re-mints the dispatch token with
+    ``scope=["dispatch"]``, so operator scope does not survive to the router
+    and the prefix is all that reaches here. Tracked separately; until then a
+    deliberately-minted service token with an ``operator:`` sub is exempt,
+    which requires operator power to create in the first place.
 
     **AN UNIDENTIFIABLE TARGET IS REFUSED, NOT WAVED THROUGH.** A default-deny
     control that fails open on a missing field is not default-deny.
@@ -520,9 +539,22 @@ class DelegationEdgeGuardrail:
 
         caller = ctx.caller_persona
         if caller is None:
-            # The operator. See the class docstring: None means operator by
-            # construction, not by convention.
-            return Verdict.pass_()
+            # NOT AUTOMATICALLY THE OPERATOR -- see the class docstring. Grant
+            # the exemption only on a positive signal, and refuse otherwise, so
+            # that a token shape nobody enumerated fails CLOSED.
+            sub = ctx.caller_agent or ""
+            if sub.startswith(OPERATOR_SUB_PREFIX):
+                return Verdict.pass_()
+            return Verdict.block(
+                reason=(
+                    "Delegation refused: the caller is neither an identified "
+                    f"persona nor the operator (sub={sub!r}). Delegation edges "
+                    "are checked against a caller persona, so a token carrying "
+                    "no cabal_persona claim cannot be authorized. A service "
+                    "token that needs to delegate should be minted with the "
+                    "persona it acts as."
+                )
+            )
 
         task: Task = target
         target_agent = str(task.metadata.get("cabal_target_agent", "") or "")

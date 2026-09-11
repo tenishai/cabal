@@ -262,6 +262,7 @@ class DispatchRouter:
                     task_id=task.id,
                     phase="router",
                     caller_persona=ctx.caller_persona,
+                    caller_agent=ctx.caller_agent,
                 )
                 # cabal#42 — expose the target agent name to router-level
                 # guardrails (e.g. DoomLoopGuardrail) via task metadata.
@@ -407,6 +408,7 @@ class DispatchRouter:
                 task_id=task.id,
                 phase="router",
                 caller_persona=ctx.caller_persona,
+                caller_agent=ctx.caller_agent,
             )
             # Same metadata contract as dispatch(): DoomLoopGuardrail keys its
             # delegation hash on this and would otherwise hash an empty target.
