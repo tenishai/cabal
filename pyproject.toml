@@ -29,6 +29,14 @@ dependencies = [
     "httpx>=0.27",
     "structlog>=24.4",
     "tomli>=2.0;python_version<'3.13'",
+    # HARD RUNTIME DEPENDENCY, declared nowhere until cabal#88. `import litellm`
+    # is deliberately LAZY (core/app.py, "heavy module", keeps tests offline),
+    # so `import cabal` succeeded without it and a clean install booted, reached
+    # the TUI, and died at FIRST DISPATCH with ModuleNotFoundError -- which
+    # reads as a runtime bug rather than a missing dependency. That is why it
+    # survived: every dev venv already had it from an earlier revision. Floor is
+    # the version the issue verified, not a guess.
+    "litellm>=1.92",
     # techne + liminal are optional extras (see [project.optional-dependencies]
     # below: `mcp`, `memory`, `full`). Neither is on a public index; the concrete
     # git sources are pinned in `requirements-sources.txt` for clean-machine
@@ -86,6 +94,14 @@ Source = "https://github.com/tenishai/cabal"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# MIGRATIONS SHIP WITH THE PACKAGE (cabal#79). They live under src/cabal/ and
+# carry no __init__.py, so `packages.find` does not pick them up -- without
+# this stanza a wheel contains no migrations and a non-editable install cannot
+# reach `upgrade head`. `versions/*.py` are data here, not modules: alembic
+# loads them by path.
+[tool.setuptools.package-data]
+cabal = ["migrations/env.py", "migrations/script.py.mako", "migrations/versions/*.py"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
@@ -95,6 +111,14 @@ markers = [
 
 [tool.ruff]
 line-length = 100
+# ALEMBIC-GENERATED REVISIONS ARE NOT LINTED, and this PRESERVES the existing
+# scope rather than newly exempting anything (cabal#79). They lived at the repo
+# root until the move, and CI runs `ruff check src tests` -- so they have never
+# been in the lint path. Making them shippable by moving them under src/ would
+# otherwise drag them in, and alembic's own template emits the shapes ruff
+# objects to (`Union[str, None]`, unsorted imports), so every future
+# `alembic revision` would fail lint on generated code nobody wrote.
+extend-exclude = ["src/cabal/migrations"]
 target-version = "py312"
 
 [tool.ruff.lint]
