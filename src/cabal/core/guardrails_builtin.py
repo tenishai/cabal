@@ -237,6 +237,216 @@ class DoomLoopGuardrail:
 # ---------------------------------------------------------------------------
 
 
+#: The ceiling no identity.toml can raise. A policy value may only LOWER the
+#: effective budget (cabal#146). A policy-only limit fails open exactly when
+#: the policy is missing or unparsed, which is the state a newly-added or
+#: misconfigured persona is in -- so the backstop lives here, in code.
+MAX_DELEGATIONS_PER_CONTEXT = 40
+
+#: Bound on tracked conversations, mirroring DoomLoopGuardrail's outer LRU.
+#: Without it a long-lived process leaks one counter per context forever.
+_BUDGET_MAXSIZE = 512
+
+#: How long a CALLER-keyed budget takes to refill, in seconds. Applies ONLY to
+#: the caller fallback, never to a conversation key -- see the "No TTL" note on
+#: DelegationBudgetGuardrail, which is correct for a conversation and wrong for
+#: a caller. A conversation ends and its key retires; a caller is stable for the
+#: daemon's lifetime, so without a window "no TTL" means "permanently blocked
+#: after `limit` un-threaded dispatches", recoverable only by a restart.
+CALLER_RATE_WINDOW_SECONDS = 3600
+
+
+class DelegationBudgetGuardrail:
+    """Bound the TOTAL delegations in one conversation, ignoring payload.
+
+    cabal#146. `DoomLoopGuardrail` counts *identical* delegations and is
+    defeated by paraphrase: its own BLOCK message tells the model to change
+    approach, a language model changes approach by rewording, and rewording
+    moves it off the `(target, payload)` key the counter watches. An incident
+    produced ~270 asks of materially one question across a dozen wordings,
+    each wording counting separately toward a threshold of 3.
+
+    So this counts nothing about the payload and nothing about the target --
+    only how many delegations a conversation has made. No amount of rewording
+    evades a counter that never looks at the words.
+
+    **No TTL for a CONVERSATION key, deliberately.** DoomLoopGuardrail lazily
+    resets a key after `ttl_seconds`, which is right for a sameness counter: a
+    repeat every ten minutes is not a runaway. It is wrong for a conversation
+    budget. A slow storm is still a storm, and a budget that forgets is not a
+    budget. The conversation is its own window -- it ends, and the key retires.
+
+    **A CALLER key does get a window**, because its subject never retires and
+    "no TTL" would there mean "blocked until the daemon restarts". See
+    `CALLER_RATE_WINDOW_SECONDS` and the key-class comment in `check()`. The
+    two classes want two policies: a budget for a conversation, a rate limit
+    for a caller.
+
+    **BLOCK is enough; this does not need to terminate.** The router turns
+    BLOCK into a policy-violation annotation rather than failing the task (see
+    its own "No hard-halt" note). Unlike the sameness counter this one never
+    decreases, so once a conversation is over budget EVERY later delegation
+    blocks too. The agent cannot reword its way through, which is the property
+    the incident actually needed.
+
+    **A delegation to an unreachable colleague DOES consume budget, and that
+    is deliberate.** The counter increments in `check()`, before the hop, and
+    there is no rollback -- so a failed dispatch costs the same as a successful
+    one. That is the behaviour the incident requires: the agents in it stormed
+    a colleague scaled to zero replicas, so if unreachable targets were free
+    the exact case this guard exists for would be unbounded. An agent that
+    chose to ask again spent an ask, whether or not anyone was listening.
+
+    What genuinely does NOT consume budget is a retry *inside* one dispatch:
+    `check()` runs once per `dispatch()` call, not once per connection attempt,
+    so transport-level retries beneath the router never re-enter it. Those two
+    were conflated in an earlier draft of this docstring, which claimed "one
+    unreachable colleague cannot eat the budget" -- backwards, and describing
+    behaviour that would reopen the hole.
+
+    MUST REMAIN AWAIT-FREE, for the same reason DoomLoopGuardrail must: a
+    primus fan-out (cabal#69) calls this concurrently across legs sharing one
+    instance, and an await-free `async def` runs atomically to completion on a
+    cooperative event loop. Any `await` here reintroduces a data race on the
+    counter -- guard the state, do not await inside it.
+    """
+
+    def __init__(
+        self,
+        limit: int = MAX_DELEGATIONS_PER_CONTEXT,
+        caller_window_seconds: float = CALLER_RATE_WINDOW_SECONDS,
+    ) -> None:
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1, got {limit}")
+        # A zero or negative window expires before every check, pinning the
+        # counter at 1 and silently disabling the caller-keyed budget (#159).
+        # Raised here as well as in the config model, matching `limit`: the
+        # guard is constructible directly, so the config validator is not the
+        # only door.
+        if caller_window_seconds <= 0:
+            raise ValueError(
+                f"caller_window_seconds must be > 0, got {caller_window_seconds}"
+            )
+        # A policy may only tighten. Clamping rather than raising is
+        # deliberate: a deployment asking for more than the backstop should
+        # still boot, bounded, rather than refuse to start.
+        self._limit = min(limit, MAX_DELEGATIONS_PER_CONTEXT)
+        #: key -> (count, window_start). window_start is only consulted for a
+        #: caller-keyed entry; a conversation entry carries it and ignores it.
+        self._counts: dict[str, tuple[int, float]] = {}
+        self._maxsize = _BUDGET_MAXSIZE
+        self._caller_window = caller_window_seconds
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+        """PASS until a conversation exceeds its budget, then BLOCK every time."""
+        if not isinstance(target, Task):
+            return Verdict.pass_()
+
+        task: Task = target
+        # THE FALLBACK IS THE CALLER, NOT THE TASK, AND THAT IS THE WHOLE
+        # POINT OF THIS GUARD (#150 review, Critical).
+        #
+        # context_id is preferred: it is stable across hops, so the hops of one
+        # conversation share a budget. That is the per-conversation budget this
+        # guard is named for.
+        #
+        # NOT the primus fan-out, and an earlier version of this comment said
+        # otherwise (#150 pre-pass). This guard is wired ONLY into
+        # build_router_input_guardrails (app.py), and primus._dispatch_subordinate
+        # calls handle_task directly, bypassing the router. So subordinate legs
+        # never reach this check at all -- threading context_id into them makes
+        # them visible to the DoomLoopGuardrail instance primus holds itself,
+        # not to this budget. The two enforcement points are disjoint.
+        #
+        # But context_id is CALLER-SUPPLIED AND OPTIONAL (a2a/jsonrpc.py:47
+        # defaults it to None) and a task id is FRESH PER DISPATCH wherever one
+        # is minted -- freshness is the load-bearing property here, not which
+        # generator produced it. So keying the fallback on task.id -- what
+        # DoomLoopGuardrail does -- gives an un-threaded caller a NEW key on
+        # every single dispatch, a count of 1 forever, and no bound at all.
+        # Measured on the incident's own volume: 270 un-threaded delegations
+        # at limit=20 produced 270 counters and zero blocks. DoomLoopGuardrail
+        # has carried that hole since cabal#59 and is honest about it; an
+        # earlier version of THIS docstring claimed the fallback was "weaker
+        # than intended, never absent", which was exactly backwards.
+        #
+        # Falling back to the CALLER bounds that traffic. It is deliberately
+        # coarser than per-conversation: one busy caller shares a budget across
+        # its unrelated conversations.
+        #
+        # TWO KEY CLASSES, TWO POLICIES, and the class is what decides whether
+        # the budget ever refills (#150 review r2, Critical).
+        #
+        # A conversation is its own window: it ends, its key goes cold, the LRU
+        # reclaims it. "No TTL" is correct there and stays.
+        #
+        # A CALLER NEVER RETIRES -- persona_name is stable for the daemon's
+        # lifetime -- so on this path "no TTL" does not mean "a slow storm is
+        # still a storm", it means PERMANENT. Measured: an operator is refused
+        # at un-threaded dispatch 21 and stays refused across 5000 unrelated
+        # conversations, because the increment reinserts at the most-recent end
+        # BEFORE the limit check, so a retried key can never become the LRU's
+        # eviction candidate. Retrying is what makes it permanent. Only a
+        # restart cleared it.
+        #
+        # So a caller key gets a refill window and a conversation key does not.
+        # NOT "skip the increment while blocked", which looks cheaper and would
+        # restore eviction as the recovery path: it regresses the no-refund
+        # property built in 9b22fa4 and breaks both guards that pin it.
+        if task.context_id:
+            session_key, windowed = task.context_id, False
+        elif ctx.persona_name:
+            session_key, windowed = ctx.persona_name, True
+        else:
+            # UN-KEYABLE, SO FAIL OPEN HONESTLY AND IN ONE PLACE. The old tail
+            # here was `or task.id`, which could never bound anything -- a task
+            # id is fresh per dispatch, so it minted one counter per call and
+            # blocked nothing. Its only reachable effect was to disguise this
+            # same fail-open as a working bound, which was r1's Critical.
+            return Verdict.pass_()
+
+        # `time.monotonic()` is not an await, so the atomicity invariant above
+        # holds: this method still runs to completion on a cooperative loop.
+        now = time.monotonic()
+        entry = self._counts.pop(session_key, None)
+        if entry is None:
+            count, window_start = 0, now
+        else:
+            count, window_start = entry
+            if windowed and (now - window_start) >= self._caller_window:
+                count, window_start = 0, now
+
+        # Outer LRU, matching DoomLoopGuardrail: pop-then-reinsert marks this
+        # conversation most-recent; a new one evicts the least-recent at cap.
+        count += 1
+        if len(self._counts) >= self._maxsize:
+            self._counts.pop(next(iter(self._counts)))
+        self._counts[session_key] = (count, window_start)
+
+        if count > self._limit:
+            refill = (
+                f" This budget refills {self._caller_window:.0f}s after its first "
+                "delegation; thread a contextId to get a per-conversation budget "
+                "instead."
+                if windowed
+                else ""
+            )
+            return Verdict.block(
+                reason=(
+                    f"Delegation budget exhausted: {self._limit} delegations "
+                    f"already made in this conversation (limit {self._limit}). Every "
+                    "delegation counts regardless of wording, so rephrasing will "
+                    "not get through. If you cannot answer from what you have, "
+                    f"say so and stop rather than asking again.{refill}"
+                )
+            )
+        return Verdict.pass_()
+
+
 class ValidateBeforeRecord:
     """Validate a mutating-tool result before it is appended to the conversation.
 
