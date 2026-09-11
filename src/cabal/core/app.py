@@ -53,6 +53,10 @@ from cabal.core.broker.router import DispatchRouter
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import DEFAULT_DB_URL, make_engine, make_sessionmaker, open_session
 from cabal.core.db_pragmas import install_sqlite_pragmas
+from cabal.core.dispatch_timeout import (
+    DISPATCH_CONNECT_TIMEOUT_S,  # noqa: F401  re-exported; imported from app by tests
+    dispatch_timeout,
+)
 from cabal.core.guardrails import Guardrail
 from cabal.core.guardrails_builtin import (
     DelegationBudgetGuardrail,
@@ -100,6 +104,19 @@ def _migrations_dir() -> Path:
     if override:
         return Path(override)
     return Path(str(resources.files("cabal") / "migrations"))
+
+# Re-exported from cabal.core.dispatch_timeout so the `cbl` CLI can resolve the
+# SAME ceiling without importing this module (which pulls FastAPI, alembic and
+# SQLAlchemy). The names stay bound here because the existing tests and call
+# sites import them from app; the definitions moved, the surface did not.
+_dispatch_timeout = dispatch_timeout
+
+# The doom-loop TTL must exceed the dispatch timeout by this factor. A hanging
+# federated peer burns the whole read ceiling before the guard is consulted
+# again, so the gap between two checks of the same delegation key is ~one
+# timeout; anything less than 1.0 here defeats the guard outright, and the
+# margin absorbs the rest of a hop (auth, bookkeeping, the peer's own work).
+DOOM_LOOP_TTL_SAFETY_FACTOR = 2.0
 
 
 def _ensure_sqlite_parent_dir(db_url: str) -> None:
@@ -174,7 +191,44 @@ def _default_acompletion() -> Callable[..., Any]:
     return litellm.acompletion
 
 
-def build_router_input_guardrails(identity: IdentityConfig | None) -> list[Guardrail]:
+def _doom_loop_ttl(configured: float | None, dispatch_timeout_s: float) -> float | None:
+    """Raise the doom-loop TTL when the dispatch timeout would defeat it.
+
+    ``DoomLoopGuardrail`` counts N repeats of a delegation key *within* its
+    TTL, resetting a key that hasn't recurred inside the window. A federated
+    peer that hangs burns the entire read ceiling per attempt, so with
+    ``CABAL_DISPATCH_TIMEOUT_S`` at or above the TTL every check falls outside
+    the window, the count resets to 1, and the guard silently never fires --
+    on the one path (``kind="federated"``) it is the sole enforcement point
+    for. Measured: with the 600s default TTL the guard fires at attempt 3 for
+    a 599s timeout and never for 601s.
+
+    Returning a widened TTL rather than rejecting the config is deliberate: a
+    long timeout is a legitimate deployment choice for a slow peer, and a
+    guard that is present-but-wider beats one that is silently inert. ``None``
+    (time-based reset disabled) is already immune and passes through.
+    """
+    if configured is None:
+        return None
+    required = dispatch_timeout_s * DOOM_LOOP_TTL_SAFETY_FACTOR
+    if configured >= required:
+        return configured
+    log.warning(
+        "guardrails.doom_loop_ttl_raised",
+        configured_s=configured,
+        raised_to_s=required,
+        dispatch_timeout_s=dispatch_timeout_s,
+        reason=(
+            "TTL at or below the dispatch timeout lets a hanging federated "
+            "peer reset the doom-loop count on every attempt"
+        ),
+    )
+    return required
+
+
+def build_router_input_guardrails(
+    identity: IdentityConfig | None, *, dispatch_timeout_s: float = 30.0
+) -> list[Guardrail]:
     """Router-level input guardrails for the production DispatchRouter (cabal#76).
 
     These run in ``DispatchRouter.dispatch`` BEFORE the local-vs-remote branch,
@@ -183,11 +237,23 @@ def build_router_input_guardrails(identity: IdentityConfig | None) -> list[Guard
     subordinate boundary and never reaches a remote hop, so without this a
     delegation to a federated peer gets JWT auth + bookkeeping + AbortGraph but
     ZERO guardrails. Default-on; identity.toml ``[guardrails]`` opts out.
+
+    ``dispatch_timeout_s`` is the federated read ceiling; it is needed because
+    the doom-loop TTL has to stay above it or the guard is silently defeated
+    (see ``_doom_loop_ttl``). The default matches the historical httpx timeout
+    so callers that don't tune dispatch keep today's behaviour -- it must stay
+    in step with ``resolve_dispatch_timeout_s``'s own "30" default, which is
+    the only other place that number lives.
     """
     gconf = identity.guardrails if identity is not None else GuardrailsConfig()
     guardrails: list[Guardrail] = []
     if gconf.doom_loop:
-        guardrails.append(DoomLoopGuardrail(threshold=gconf.doom_loop_threshold))
+        guardrails.append(
+            DoomLoopGuardrail(
+                threshold=gconf.doom_loop_threshold,
+                ttl_seconds=_doom_loop_ttl(gconf.doom_loop_ttl_s, dispatch_timeout_s),
+            )
+        )
     # ORDER MATTERS ONLY FOR THE MESSAGE, not for safety: the first BLOCK
     # short-circuits, so a tight repeat is reported as a doom loop and a
     # paraphrase storm as an exhausted budget. Both stop the dispatch.
@@ -430,7 +496,10 @@ def create_app(
         event_bus = EventBus()
         _app.state.event_bus = event_bus
 
-        http_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+        # Federated dispatch rides this client; see _dispatch_timeout for why
+        # the read ceiling is tunable and the connect ceiling is not.
+        resolved_dispatch_timeout = _dispatch_timeout()
+        http_client = httpx.AsyncClient(timeout=resolved_dispatch_timeout)
         bookkeeper = Bookkeeper(sessionmaker, event_bus=event_bus)
         dispatch_router = DispatchRouter(
             sessionmaker=sessionmaker,
@@ -440,7 +509,11 @@ def create_app(
             hook_registry=hook_registry,
             # cabal#76 — default-on router guardrails so FEDERATED dispatch is
             # doom-loop protected (the Mason DoomLoop never reaches remote hops).
-            input_guardrails=build_router_input_guardrails(identity),
+            # The read ceiling is passed through so the doom-loop TTL can be
+            # kept above it -- see _doom_loop_ttl.
+            input_guardrails=build_router_input_guardrails(
+                identity, dispatch_timeout_s=resolved_dispatch_timeout.read
+            ),
         )
         dispatch_router.register_local(EchoAgent())
 

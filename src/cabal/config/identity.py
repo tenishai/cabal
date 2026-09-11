@@ -269,6 +269,25 @@ class GuardrailsConfig(_Open):
 
     doom_loop: bool = True
     doom_loop_threshold: int = 5
+    # Per-key window in which repeats must recur to count toward the threshold;
+    # None disables the time-based reset. MUST stay comfortably above the
+    # federated dispatch timeout — a hanging peer burns the whole read ceiling
+    # per attempt, so if the TTL is at or below that ceiling every check lands
+    # outside the window, the count resets to 1, and the guard never fires.
+    # app.py raises this at wiring time rather than letting it be silently
+    # defeated; see _doom_loop_ttl.
+    doom_loop_ttl_s: float | None = 600.0
+
+    @field_validator("doom_loop_ttl_s")
+    @classmethod
+    def _ttl_positive(cls, v: float | None) -> float | None:
+        if v is not None and v <= 0:
+            raise ValueError(
+                f"guardrails.doom_loop_ttl_s must be > 0 (got {v}); "
+                "omit it for the default, or set it to null to disable the "
+                "time-based reset entirely"
+            )
+        return v
 
     #: cabal#146 -- total delegations per conversation, payload-independent.
     #: Complements doom_loop rather than replacing it: that one catches a tight
