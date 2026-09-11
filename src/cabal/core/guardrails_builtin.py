@@ -328,8 +328,9 @@ class DelegationBudgetGuardrail:
         # not to this budget. The two enforcement points are disjoint.
         #
         # But context_id is CALLER-SUPPLIED AND OPTIONAL (a2a/jsonrpc.py:47
-        # defaults it to None) and a task id is a fresh uuid4 per dispatch at
-        # every site that mints one. So keying the fallback on task.id -- what
+        # defaults it to None) and a task id is FRESH PER DISPATCH wherever one
+        # is minted -- freshness is the load-bearing property here, not which
+        # generator produced it. So keying the fallback on task.id -- what
         # DoomLoopGuardrail does -- gives an un-threaded caller a NEW key on
         # every single dispatch, a count of 1 forever, and no bound at all.
         # Measured on the incident's own volume: 270 un-threaded delegations
