@@ -308,7 +308,10 @@ class GuardrailsConfig(_Open):
     #: an operator turn costs 2 (the router hop plus the implementer leg) where
     #: it cost 1 -- and at the old default of 20 that halved `cbl chat` from
     #: twenty turns to ten, then blocked permanently, because a conversation
-    #: key never refills. Measured at r3: turn 11 refused, no recovery.
+    #: key does not refill with time. Measured at r3: turn 11 refused, no
+    #: recovery. (#152 adds the one exception: a cold key can be evicted by the
+    #: LRU, which needs 512 other conversations and is not something the
+    #: blocked operator can cause.)
     #:
     #: 40 RESTORES THE EFFECTIVE ALLOWANCE rather than raising the bound: it is
     #: the same twenty operator turns the old default bought, re-expressed in
@@ -321,7 +324,8 @@ class GuardrailsConfig(_Open):
     #: a wider fan-out.
     delegation_budget_limit: int = 40
     #: Seconds before a CALLER-keyed delegation budget refills. Only the caller
-    #: fallback is windowed; a conversation budget never refills (see
+    #: fallback is windowed; a conversation budget does not refill with time
+    #: (an LRU eviction can still retire a cold key -- see
     #: DelegationBudgetGuardrail). Without this a caller -- whose key is stable
     #: for the daemon's lifetime -- is blocked until restart once it is over
     #: budget, because retrying keeps its key too warm for the LRU to reclaim.
