@@ -7,7 +7,7 @@ are answered at the bottom.
 
 Every code fact below was verified against a clean worktree at `b08862b`. The
 gap itself was re-run at `825838a`, after #150 and #153 merged, and still stands:
-one hit, still the outbound header, now at `router.py:587`.
+one hit, and still the outbound header.
 
 ## The gap, re-verified
 
@@ -27,7 +27,8 @@ authorization at dispatch. The issue's claim holds exactly as written.
 **No, and not because it is exempt — because the guard never sees it.**
 
 `_dispatch_subordinate` (`agents/primus.py`) is in-process. It fires its own
-`DoomLoopGuardrail` at the subordinate boundary, and `app.py:151-153` states the
+`DoomLoopGuardrail` at the subordinate boundary, and `build_router_input_guardrails`
+states the
 reason the router-level chain exists at all: *"The in-process Mason
 DoomLoopGuardrail (primus.py) fires at the subordinate boundary and never reaches
 a remote hop."* The two paths do not meet.
@@ -37,7 +38,7 @@ primus→subordinate at all. Requiring every implementer/reviewer pair to be
 declared would add friction to a path the check cannot even observe.
 
 **The relation is already declared config anyway.** `PersonaConfig.subordinates`
-(`config/identity.py:179`) is a `dict[str, SubordinateConfig]`, operator-authored
+(`config/identity.py`) is a `dict[str, SubordinateConfig]`, operator-authored
 in `identity.toml`. The parent-child edge exists today. It is not agent-supplied,
 which is the property the acceptance criteria actually care about.
 
@@ -75,7 +76,7 @@ issue are the right three. What the code adds:
 
 Edge synthesis from observed traffic is cheap here. `Bookkeeper.on_dispatch_start`
 already writes a `Conversation` row per dispatch with caller and target
-(`bookkeeping.py:52-56`), so the observed adjacency list is already in the
+(`Bookkeeper.on_dispatch_start`), so the observed adjacency list is already in the
 database. A `cbl edges suggest` that reads it and emits a TOML block for the
 operator to paste, review, and edit is a small amount of work and turns a
 breaking upgrade into a reviewable diff.
