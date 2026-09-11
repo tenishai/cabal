@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +84,28 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
 
 
+def _migrations_dir() -> Path:
+    """Where alembic's scripts live, resolved INSIDE the installed package (#79).
+
+    The old resolution walked UP three parents to a repo root. That is correct
+    for an editable checkout and wrong for a non-editable `pip install cabal`,
+    where it lands in site-packages and finds neither `alembic.ini` nor
+    `migrations/`. The escape hatch (`CABAL_ALEMBIC_MIGRATIONS`, which Docker
+    sets) meant it failed loudly rather than silently, but a bare install plus
+    run-server on a clean machine broke with no indication that an undocumented
+    env var was the cure.
+
+    `migrations/` now lives under `src/cabal/` and ships as package data, so
+    this resolves the same way in both install shapes. `importlib.resources` is
+    the API that answers "where is this package's data", rather than inferring
+    it from a source file's position in a tree.
+    """
+    override = os.environ.get("CABAL_ALEMBIC_MIGRATIONS")
+    if override:
+        return Path(override)
+    return Path(str(resources.files("cabal") / "migrations"))
+
+
 def _ensure_sqlite_parent_dir(db_url: str) -> None:
     """Create the parent directory of a SQLite file DB before it is opened.
 
@@ -109,12 +132,19 @@ def _ensure_sqlite_parent_dir(db_url: str) -> None:
 
 
 def _run_migrations(db_url: str) -> None:
-    # In Docker / installed packages, REPO_ROOT points inside site-packages
-    # which doesn't have alembic.ini or migrations/. Env vars override.
-    ini = Path(os.environ.get("CABAL_ALEMBIC_INI", str(ALEMBIC_INI)))
-    migrations = os.environ.get("CABAL_ALEMBIC_MIGRATIONS", str(REPO_ROOT / "migrations"))
-    cfg = AlembicConfig(str(ini))
-    cfg.set_main_option("script_location", migrations)
+    """Bring the schema to head (#79).
+
+    THE CONFIG IS BUILT IN CODE, NOT READ FROM A FILE. `alembic.ini` carried
+    exactly two things this path needed -- `script_location`, which is set
+    below, and logging config, which is optional -- so requiring the file
+    bought a second thing to package and a second way to fail on a clean
+    install. It stays in the repo for the `alembic` CLI during development,
+    where the CLI genuinely wants it.
+
+    `CABAL_ALEMBIC_INI` is still honoured for a deployment that pins it.
+    """
+    cfg = AlembicConfig(os.environ.get("CABAL_ALEMBIC_INI") or None)
+    cfg.set_main_option("script_location", str(_migrations_dir()))
     os.environ["CABAL_DB_URL"] = db_url
     command.upgrade(cfg, "head")
 
