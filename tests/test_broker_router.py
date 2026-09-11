@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 import pytest
@@ -27,6 +28,7 @@ from cabal.core.broker.router import DispatchError, DispatchRouter
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import make_engine, make_sessionmaker
 from cabal.core.db_pragmas import install_sqlite_pragmas
+from cabal.core.guardrails import GuardrailContext, Verdict, VerdictType
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.models import Base, Conversation, Event, Persona
 
@@ -907,3 +909,289 @@ async def test_combined_session_passthrough_for_correctly_aimed_token(
     returned = await _resolve_dispatch_token(request, aimed_token, "archivist")
     # Must be the SAME token object, not a re-minted one.
     assert returned == aimed_token
+
+
+# ======================================================================
+# cabal#151 — the streaming path runs the SAME input guardrails
+# ======================================================================
+
+
+@dataclass(slots=True)
+class _RecordingGuard:
+    """A guardrail that records what it saw and returns a configured verdict."""
+
+    verdict: Verdict
+    calls: int = 0
+    seen_target: str | None = None
+
+    async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+        self.calls += 1
+        if isinstance(target, Task):
+            self.seen_target = str(target.metadata.get("cabal_target_agent", ""))
+        return self.verdict
+
+
+@pytest.mark.asyncio
+async def test_streaming_block_refuses_before_the_handler_streams(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """THE DEFECT IN #151: every router-level bound was opt-out by endpoint.
+
+    The handler's `streamed` flag is the load-bearing assertion — a guard that
+    fired but let the stream open would be no guard at all.
+    """
+    guard = _RecordingGuard(verdict=Verdict.block(reason="over budget"))
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[guard],
+    )
+    handler = FakeStreamingArchivist()
+    router.register_local(handler)
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
+
+    with pytest.raises(DispatchError, match="guardrail blocked"):
+        async for _ in router.dispatch_streaming(
+            target_agent="archivist",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=token,
+        ):
+            pass
+
+    assert guard.calls == 1
+    assert handler.streamed is False, "the stream opened despite a BLOCK verdict"
+
+
+@pytest.mark.asyncio
+async def test_streaming_pass_lets_the_stream_through(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """The guard must not break the ordinary path."""
+    guard = _RecordingGuard(verdict=Verdict.pass_())
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[guard],
+    )
+    handler = FakeStreamingArchivist()
+    router.register_local(handler)
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
+
+    chunks = [
+        d
+        async for d in router.dispatch_streaming(
+            target_agent="archivist",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=token,
+        )
+    ]
+    assert chunks == ["local-chunk"]
+    assert guard.calls == 1
+    assert handler.streamed is True
+
+
+@pytest.mark.asyncio
+async def test_streaming_guard_sees_the_target_agent_metadata(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """DoomLoopGuardrail keys its delegation hash on cabal_target_agent. If the
+    streaming path did not set it, every streamed delegation would hash an
+    empty target and collapse into one key."""
+    guard = _RecordingGuard(verdict=Verdict.pass_())
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[guard],
+    )
+    router.register_local(FakeStreamingArchivist())
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
+
+    async for _ in router.dispatch_streaming(
+        target_agent="archivist",
+        target_generation=None,
+        task=_sample_task(),
+        caller_jwt=token,
+    ):
+        pass
+    assert guard.seen_target == "archivist"
+
+
+@pytest.mark.asyncio
+async def test_a_structurally_impossible_stream_does_not_consume_the_guard(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """ORDERING MATTERS AND THIS PINS IT.
+
+    Guardrails run AFTER the structural refusals. A guard that ran first would
+    charge a delegation budget for a dispatch that could never have happened --
+    so an unreachable target would silently spend the caller's allowance.
+    """
+    guard = _RecordingGuard(verdict=Verdict.pass_())
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[guard],
+    )
+
+    class _NonStreaming:
+        name = "archivist"
+
+        async def handle_task(self, task: Task) -> Task:
+            return Task(id=task.id, status=TaskStatus(state="completed"))
+
+    router.register_local(_NonStreaming())
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
+
+    with pytest.raises(DispatchError, match="astream_task"):
+        async for _ in router.dispatch_streaming(
+            target_agent="archivist",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=token,
+        ):
+            pass
+    assert guard.calls == 0, "a guard ran for a stream that could never open"
+
+    # TEETH (#153 review): the assertion above is trivially true when no guard
+    # runs at all, so it survives a mutant that deletes the guard entirely. Pin
+    # that the guard DOES run for a stream that can open, on the same instance.
+    router.register_local(FakeStreamingArchivist())
+    async for _ in router.dispatch_streaming(
+        target_agent="archivist",
+        target_generation=None,
+        task=_sample_task(),
+        caller_jwt=token,
+    ):
+        pass
+    assert guard.calls == 1, "the guard did not run for a stream that could open"
+
+
+@pytest.mark.asyncio
+async def test_streaming_honours_a_rewrite_verdict(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """REWRITE threads through both paths or neither."""
+    replacement = _sample_task()
+    replacement.metadata["rewritten_by_guard"] = True
+    guard = _RecordingGuard(
+        verdict=Verdict(type=VerdictType.REWRITE, rewritten=replacement)
+    )
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[guard],
+    )
+
+    seen: dict = {}
+
+    @dataclass(slots=True)
+    class _Capturing:
+        name: str = "archivist"
+
+        async def handle_task(self, task: Task) -> Task:
+            return Task(id=task.id, status=TaskStatus(state="completed"))
+
+        async def astream_task(self, task: Task):
+            seen["metadata"] = dict(task.metadata)
+            yield "chunk"
+
+    router.register_local(_Capturing())
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
+
+    async for _ in router.dispatch_streaming(
+        target_agent="archivist",
+        target_generation=None,
+        task=_sample_task(),
+        caller_jwt=token,
+    ):
+        pass
+    assert seen["metadata"].get("rewritten_by_guard") is True
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_stream_raises_guardrail_blocked_not_a_bare_dispatch_error(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """#153 review, Important 1 -- THE TYPE CONTRACT ONLY.
+
+    The router raises the SUBCLASS, and it remains a DispatchError so every
+    existing `except DispatchError` keeps working. That is all this asserts.
+
+    IT DOES NOT TEST THE WIRE CODE, and an earlier name and docstring here
+    claimed it did (r2 review). The frame's ERROR_FORBIDDEN is pinned by
+    tests/test_streaming.py::test_a_blocked_stream_reports_forbidden_on_the_wire,
+    which drives the real route -- necessarily, because the two `except` arms
+    are order-dependent and reordering them is invisible from here.
+    """
+    from cabal.core.broker.router import DispatchError, GuardrailBlocked
+
+    guard = _RecordingGuard(verdict=Verdict.block(reason="over budget"))
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[guard],
+    )
+    router.register_local(FakeStreamingArchivist())
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
+
+    with pytest.raises(GuardrailBlocked) as caught:
+        async for _ in router.dispatch_streaming(
+            target_agent="archivist",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=token,
+        ):
+            pass
+    # Still a DispatchError, so nothing that catches the base class breaks.
+    assert isinstance(caught.value, DispatchError)
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_stream_is_recorded_not_silent(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """#153 review, Important 2.
+
+    dispatch() opens bookkeeping BEFORE its guard, so a non-streaming refusal
+    is fully audited. Guarding first here made streaming the one path where a
+    refusal left no trace -- the fail-silent shape removed from the presence
+    hook in #148. The refusal must both open and CLOSE its record; a started-
+    and-never-finished dispatch reads as an in-flight call that vanished.
+    """
+    calls: list[str] = []
+
+    class _SpyBookkeeper(Bookkeeper):
+        async def on_dispatch_start(self, *a, **k):
+            calls.append("start")
+            return await super().on_dispatch_start(*a, **k)
+
+        async def on_dispatch_failure(self, *a, **k):
+            calls.append("failure")
+            return await super().on_dispatch_failure(*a, **k)
+
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=_SpyBookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[_RecordingGuard(verdict=Verdict.block(reason="nope"))],
+    )
+    router.register_local(FakeStreamingArchivist())
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
+
+    with pytest.raises(DispatchError):
+        async for _ in router.dispatch_streaming(
+            target_agent="archivist",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=token,
+        ):
+            pass
+    assert calls == ["start", "failure"], f"refusal not audited: {calls}"
