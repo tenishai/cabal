@@ -3,9 +3,12 @@
 `_run_migrations` located `alembic.ini` and `migrations/` via
 `REPO_ROOT = Path(__file__).parents[3]`, which under a non-editable
 `pip install cabal` points into `site-packages`, where neither exists. It was
-mitigated by `CABAL_ALEMBIC_INI` / `CABAL_ALEMBIC_MIGRATIONS` (Docker sets
-them), so a bare `pip install cabal` + run-server on a clean machine broke
-unless the operator knew to set env vars nobody documents.
+mitigated by `CABAL_ALEMBIC_INI` / `CABAL_ALEMBIC_MIGRATIONS`, which the
+Dockerfile used to set, so a bare `pip install cabal` + run-server on a clean
+machine broke unless the operator knew to set env vars nobody documents. The
+Dockerfile no longer sets either: the #79 review found that the override takes
+precedence, so leaving it pointed at /app/migrations kept the container off
+the packaged path entirely.
 
 The issue names a prerequisite before the packaging change: there was NO test
 coverage for `_run_migrations` at all. These are that coverage, written first
@@ -68,8 +71,14 @@ def test_run_migrations_brings_a_fresh_database_to_head(tmp_path: Path) -> None:
 
 
 def test_an_env_override_still_wins(tmp_path: Path, monkeypatch) -> None:
-    """Docker sets CABAL_ALEMBIC_MIGRATIONS today. Packaging them correctly must
-    not break the escape hatch, or a deployment pinning it breaks on upgrade."""
+    """The escape hatch must keep working, even though nothing in this repo
+    sets it any more.
+
+    The Dockerfile DID set CABAL_ALEMBIC_MIGRATIONS until the #79 review -- and
+    that was the bug, because the override wins and kept the container off the
+    packaged path. Removing it there does not make the override dead config: a
+    deployment that relocates migrations still depends on it, and silently
+    dropping support would break that deployment on upgrade."""
     monkeypatch.setenv("CABAL_ALEMBIC_MIGRATIONS", str(tmp_path / "nowhere"))
     with pytest.raises(Exception):
         _run_migrations(f"sqlite:///{tmp_path / 'x.db'}")

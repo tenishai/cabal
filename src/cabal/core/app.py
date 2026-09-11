@@ -80,8 +80,6 @@ from cabal.core.routes import a2a_jsonrpc, admin, auth, healthz, tasks, well_kno
 log = structlog.get_logger(__name__)
 
 
-
-
 def _migrations_dir() -> Path:
     """Where alembic's scripts live, resolved INSIDE the installed package (#79).
 
