@@ -1272,10 +1272,10 @@ async def test_the_streaming_router_tells_a_guardrail_who_the_caller_is(
     whole suite green, because the non-streaming test above is the only thing
     asserting the wiring and it cannot see this call site.
 
-    That gap matters here more than coverage gaps usually do. The commit
-    immediately before this branch (a41edd5, #151) exists precisely because
+    That gap matters here more than coverage gaps usually do. a41edd5 (#151),
+    two commits before this branch's base, exists precisely because
     `dispatch_streaming` had been forgotten by the router guardrail chain --
-    this path has a one-commit-old history of being the one that gets missed.
+    this path has a recent history of being the one that gets missed.
 
     AND IT WOULD FAIL OPEN, not closed, for the shape that matters. A persona
     caller would present as caller_persona=None and be REFUSED (a functional

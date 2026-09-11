@@ -37,7 +37,6 @@ def agent_name_for(persona_name: str, persona: PersonaConfig) -> str:
     return f"{persona_name}-primus" if persona.role == "primus" else persona_name
 
 
-
 def _build_agent_card(
     agent_name: str, persona_name: str, persona: PersonaConfig, generation: int
 ) -> AgentCard:
