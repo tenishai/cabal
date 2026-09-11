@@ -1195,3 +1195,132 @@ async def test_a_blocked_stream_is_recorded_not_silent(
         ):
             pass
     assert calls == ["start", "failure"], f"refusal not audited: {calls}"
+
+
+@pytest.mark.asyncio
+async def test_the_router_tells_a_guardrail_who_the_caller_is(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """cabal#154 — `caller_persona` reaches the guard, and is None for an operator.
+
+    The whole edge check rests on this field: it is the only thing that
+    separates "agent mason is delegating" from "a human is at the CLI", and
+    `persona_name` cannot, because it collapses both into one display string.
+    Testing the guard in isolation would never catch the router failing to
+    populate it -- the guard would just see None and exempt everybody.
+    """
+    seen: list[GuardrailContext] = []
+
+    class _CaptureGuard:
+        async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+            seen.append(ctx)
+            return Verdict.pass_()
+
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[_CaptureGuard()],
+    )
+    router.register_local(FakeArchivist())
+
+    # A PERSONA caller: cabal_persona is on the token, so the guard can name it.
+    persona_token = mint(
+        signing_key=signing_key, sub="persona:mason", aud="archivist", persona="mason"
+    )
+    await router.dispatch(
+        target_agent="archivist",
+        target_generation=None,
+        task=_sample_task(),
+        caller_jwt=persona_token,
+    )
+    assert seen[-1].caller_persona == "mason"
+
+    # An OPERATOR: no persona claim, so None -- which the edge guard reads as
+    # "not an agent" and exempts. routes/auth.py produces exactly this shape.
+    operator_token = mint(
+        signing_key=signing_key, sub="operator:richard", aud="archivist"
+    )
+    second = _sample_task()
+    second.id = "t-002"  # distinct: conversations.task_id is UNIQUE
+    await router.dispatch(
+        target_agent="archivist",
+        target_generation=None,
+        task=second,
+        caller_jwt=operator_token,
+    )
+    assert seen[-1].caller_persona is None
+    assert seen[-1].caller_agent == "operator:richard", (
+        "the raw sub must reach the guard: caller_persona being None is NOT "
+        "evidence of an operator (admin.py mints persona-less service tokens "
+        "too), so an exemption needs the positive signal this field carries"
+    )
+    assert seen[-1].persona_name == "operator:richard", (
+        "persona_name still carries the display identifier; caller_persona and "
+        "caller_agent are the typed ones an authorization decision may use"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_streaming_router_tells_a_guardrail_who_the_caller_is(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """cabal#154 r1 Important — the SAME identity contract, on the other path.
+
+    `dispatch_streaming` carries an authorization decision now, and nothing
+    covered it: removing `caller_persona` from its GuardrailContext left the
+    whole suite green, because the non-streaming test above is the only thing
+    asserting the wiring and it cannot see this call site.
+
+    That gap matters here more than coverage gaps usually do. a41edd5 (#151),
+    two commits before this branch's base, exists precisely because
+    `dispatch_streaming` had been forgotten by the router guardrail chain --
+    this path has a recent history of being the one that gets missed.
+
+    AND IT WOULD FAIL OPEN, not closed, for the shape that matters. A persona
+    caller would present as caller_persona=None and be REFUSED (a functional
+    break, loud). But a caller carrying BOTH an operator: sub and a persona
+    claim would take the exemption branch and bypass its edges entirely.
+    """
+    seen: list[GuardrailContext] = []
+
+    class _CaptureGuard:
+        async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+            seen.append(ctx)
+            return Verdict.pass_()
+
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[_CaptureGuard()],
+    )
+    router.register_local(FakeStreamingArchivist())
+
+    persona_token = mint(
+        signing_key=signing_key, sub="persona:mason", aud="archivist", persona="mason"
+    )
+    async for _ in router.dispatch_streaming(
+        target_agent="archivist",
+        target_generation=None,
+        task=_sample_task(),
+        caller_jwt=persona_token,
+    ):
+        pass
+    assert seen[-1].caller_persona == "mason"
+    assert seen[-1].caller_agent == "persona:mason"
+
+    operator_token = mint(
+        signing_key=signing_key, sub="operator:richard", aud="archivist"
+    )
+    second = _sample_task()
+    second.id = "t-003"  # conversations.task_id is UNIQUE
+    async for _ in router.dispatch_streaming(
+        target_agent="archivist",
+        target_generation=None,
+        task=second,
+        caller_jwt=operator_token,
+    ):
+        pass
+    assert seen[-1].caller_persona is None
+    assert seen[-1].caller_agent == "operator:richard"

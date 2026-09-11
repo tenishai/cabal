@@ -55,10 +55,11 @@ from cabal.core.db_pragmas import install_sqlite_pragmas
 from cabal.core.guardrails import Guardrail
 from cabal.core.guardrails_builtin import (
     DelegationBudgetGuardrail,
+    DelegationEdgeGuardrail,
     DoomLoopGuardrail,
 )
 from cabal.core.hooks.registry import HookRegistry
-from cabal.core.identity_sync import sync_personas
+from cabal.core.identity_sync import agent_name_for, sync_personas
 from cabal.core.llm.budget import BudgetGuard
 from cabal.core.llm.litellm_client import LiteLLMClient
 from cabal.core.memory.session_tracker import (
@@ -171,7 +172,40 @@ def build_router_input_guardrails(identity: IdentityConfig | None) -> list[Guard
                 caller_window_seconds=gconf.delegation_budget_caller_window_seconds,
             )
         )
+    # LAST, AND THAT IS DELIBERATE THOUGH NOT LOAD-BEARING. Any BLOCK stops the
+    # dispatch, so order only decides which reason the caller is told. A caller
+    # storming a colleague it IS permitted to ask should hear "budget
+    # exhausted"; one asking a colleague it may not ask hears the edge refusal
+    # either way, because the budget guard passes it through.
+    if gconf.delegation_edges:
+        guardrails.append(DelegationEdgeGuardrail(edges=_delegation_edges(identity)))
     return guardrails
+
+
+def _delegation_edges(identity: IdentityConfig | None) -> dict[str, frozenset[str]]:
+    """Caller persona -> the AGENT names it may dispatch to (cabal#154).
+
+    Resolution happens ONCE, here, for two reasons. Edges are declared against
+    personas while `cabal_target_agent` carries an agent name, and those differ
+    for a role="primus" persona; doing it at check time would mean stripping a
+    suffix on the hot path, which would silently authorize a persona literally
+    named "x-primus" as though it were the primus of "x". And an edge map built
+    at startup from the config is one an agent cannot reach -- the property
+    that makes this authorization rather than advice.
+
+    A name that matches no declared persona passes through verbatim, so an edge
+    to a federated peer is expressible.
+    """
+    if identity is None or not identity.personas:
+        return {}
+    resolved = {
+        name: agent_name_for(name, persona)
+        for name, persona in identity.personas.items()
+    }
+    return {
+        caller: frozenset(resolved.get(t, t) for t in persona.may_delegate_to)
+        for caller, persona in identity.personas.items()
+    }
 
 
 #: The operator-facing text for a key that cannot decrypt the database.
