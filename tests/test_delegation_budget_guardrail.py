@@ -107,6 +107,14 @@ async def test_the_block_reason_tells_the_agent_rewording_will_not_help() -> Non
 
 @pytest.mark.asyncio
 async def test_separate_conversations_keep_separate_budgets() -> None:
+    """And a context id still WINS over the caller fallback (#150 review).
+
+    Both calls below come from one caller (`_ctx()` is a single persona), so
+    if the fallback were consulted when a context id is present these would
+    share a budget and the second would block. They do not, which is the whole
+    reason to thread a context id: it buys per-conversation granularity that
+    the per-caller fallback cannot.
+    """
     g = DelegationBudgetGuardrail(limit=1)
     assert (await g.check(_task(context_id="ctx-a"), _ctx())).type is VerdictType.PASS
     assert (await g.check(_task(context_id="ctx-b"), _ctx())).type is VerdictType.PASS
@@ -114,14 +122,76 @@ async def test_separate_conversations_keep_separate_budgets() -> None:
 
 
 @pytest.mark.asyncio
-async def test_without_a_context_id_the_budget_falls_back_to_the_task_id() -> None:
-    """Weaker than intended, never absent: an un-threaded caller still gets a
-    budget rather than an unbounded one."""
+async def test_an_un_threaded_caller_is_bounded_by_its_own_identity() -> None:
+    """THE #150 REVIEW'S CRITICAL, and the shape the old test could not see.
+
+    The previous version of this test passed `task_id="t-a"` to BOTH calls and
+    concluded the fallback was a bound. Reusing one task id across two
+    dispatches is a condition production never produces: every minting path
+    (`routes/a2a_jsonrpc.py`, `cli/client.py`) generates a fresh uuid4 per
+    dispatch, and `context_id` is caller-supplied and optional. So the real
+    shape is FRESH IDS EVERY TIME, and against that the old keying produced a
+    new counter per dispatch and never blocked -- 270 un-threaded delegations
+    at limit=20 gave 270 counters and zero blocks.
+
+    That is the incident's own volume, and the fan-out it describes is exactly
+    what `DoomLoopGuardrail` still cannot see (see that guard's own
+    `test_distinct_task_ids_without_context_id_never_block`, which documents
+    the same hole honestly).
+
+    Keying the fallback on the CALLER closes it. Fresh task ids, no context
+    id -- production's shape -- and the budget bounds them.
+    """
+    g = DelegationBudgetGuardrail(limit=20)
+    verdicts = [
+        await g.check(_task(context_id=None, task_id=f"fresh-{i}"), _ctx())
+        for i in range(30)
+    ]
+    blocked = [i for i, v in enumerate(verdicts) if v.type is VerdictType.BLOCK]
+    assert blocked, "an un-threaded caller was not bounded at all"
+    assert blocked[0] == 20, f"expected the 21st to be the first refusal, got {blocked}"
+
+
+@pytest.mark.asyncio
+async def test_two_un_threaded_callers_do_not_share_one_budget() -> None:
+    """The fallback is coarser than per-conversation, not coarser than per-caller.
+
+    One caller exhausting its budget must not refuse a different caller. This
+    is the assertion that fails if the fallback is ever widened to something
+    global.
+    """
     g = DelegationBudgetGuardrail(limit=1)
-    a = await g.check(_task(context_id=None, task_id="t-a"), _ctx())
-    b = await g.check(_task(context_id=None, task_id="t-a"), _ctx())
-    assert a.type is VerdictType.PASS
-    assert b.type is VerdictType.BLOCK
+    a = GuardrailContext(persona_name="caller-a", task_id="t-1", phase="router")
+    b = GuardrailContext(persona_name="caller-b", task_id="t-2", phase="router")
+    assert (await g.check(_task(context_id=None, task_id="x-1"), a)).type is VerdictType.PASS
+    assert (await g.check(_task(context_id=None, task_id="x-2"), a)).type is VerdictType.BLOCK
+    assert (await g.check(_task(context_id=None, task_id="x-3"), b)).type is VerdictType.PASS
+
+
+@pytest.mark.asyncio
+async def test_un_threaded_traffic_does_not_evict_a_real_conversation() -> None:
+    """THE #150 REVIEW'S IMPORTANT, which shared the Critical's root cause.
+
+    When every un-threaded task minted its own permanently-useless counter,
+    512 of them flushed the whole LRU -- so a conversation sitting exactly at
+    its budget was handed a fresh one by unrelated traffic. Not adversarial;
+    ordinary load.
+
+    With the caller fallback those dispatches collapse onto ONE counter per
+    caller instead of one per task, so they cannot flood the map. A victim at
+    its limit stays blocked.
+    """
+    g = DelegationBudgetGuardrail(limit=20)
+    victim = _ctx()
+    for _ in range(20):
+        await g.check(_task(context_id="victim-conversation"), victim)
+
+    noise = GuardrailContext(persona_name="noisy", task_id="n", phase="router")
+    for i in range(600):
+        await g.check(_task(context_id=None, task_id=f"noise-{i}"), noise)
+
+    after = await g.check(_task(context_id="victim-conversation"), victim)
+    assert after.type is VerdictType.BLOCK, "unrelated traffic reset a real budget"
 
 
 @pytest.mark.asyncio

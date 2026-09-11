@@ -312,11 +312,31 @@ class DelegationBudgetGuardrail:
             return Verdict.pass_()
 
         task: Task = target
-        # Same key as DoomLoopGuardrail: context_id is stable across hops and
-        # sub-tasks inherit it, so a fan-out shares one budget with its
-        # children. Falling back to task.id gives an un-threaded caller a
-        # budget of one task -- weaker than intended, never absent.
-        session_key = task.context_id or task.id
+        # THE FALLBACK IS THE CALLER, NOT THE TASK, AND THAT IS THE WHOLE
+        # POINT OF THIS GUARD (#150 review, Critical).
+        #
+        # context_id is preferred: it is stable across hops, sub-tasks inherit
+        # it (primus.py threads it into every leg), so a fan-out shares one
+        # budget with its children. That is the per-conversation budget this
+        # guard is named for.
+        #
+        # But context_id is CALLER-SUPPLIED AND OPTIONAL (a2a/jsonrpc.py:47
+        # defaults it to None) and every minting path generates a fresh uuid4
+        # per dispatch. So keying the fallback on task.id -- which is what
+        # DoomLoopGuardrail does -- gives an un-threaded caller a NEW key on
+        # every single dispatch, a count of 1 forever, and no bound at all.
+        # Measured on the incident's own volume: 270 un-threaded delegations
+        # at limit=20 produced 270 counters and zero blocks. DoomLoopGuardrail
+        # has carried that hole since cabal#59 and is honest about it; an
+        # earlier version of THIS docstring claimed the fallback was "weaker
+        # than intended, never absent", which was exactly backwards.
+        #
+        # Falling back to the CALLER bounds that traffic. It is deliberately
+        # coarser than per-conversation: one busy caller can exhaust its own
+        # budget across unrelated conversations. That is the accepted cost of
+        # a backstop that actually fires, and it is why context_id is still
+        # preferred whenever the client threads one.
+        session_key = task.context_id or ctx.persona_name or task.id
         if not session_key:
             return Verdict.pass_()
 
@@ -330,8 +350,8 @@ class DelegationBudgetGuardrail:
         if count > self._limit:
             return Verdict.block(
                 reason=(
-                    f"Delegation budget exhausted: {count - 1} delegations already "
-                    f"made in this conversation (limit {self._limit}). Every "
+                    f"Delegation budget exhausted: {self._limit} delegations "
+                    f"already made in this conversation (limit {self._limit}). Every "
                     "delegation counts regardless of wording, so rephrasing will "
                     "not get through. If you cannot answer from what you have, "
                     "say so and stop rather than asking again."
