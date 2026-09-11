@@ -80,8 +80,6 @@ from cabal.core.routes import a2a_jsonrpc, admin, auth, healthz, tasks, well_kno
 log = structlog.get_logger(__name__)
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-ALEMBIC_INI = REPO_ROOT / "alembic.ini"
 
 
 def _migrations_dir() -> Path:

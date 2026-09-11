@@ -18,8 +18,6 @@ from sqlalchemy import create_engine, inspect
 from cabal.core.app import _migrations_dir
 from cabal.core.models import Base
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
 
 def test_alembic_upgrade_head_matches_metadata(tmp_path: Path, monkeypatch) -> None:
     db_file = tmp_path / "migration_smoke.db"
