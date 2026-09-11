@@ -139,6 +139,29 @@ safety_tier = "moderate"
 # system_prompt_override = "You are my Architect. Recommend battle-tested patterns and call out the cost of every recommendation."
 # model_override = "anthropic/claude-opus-4-7"
 # max_tokens_override = 16384
+#
+# commit_to_memory — WRITE the persona's own Q&A back into its memory store.
+# OFF for every persona, including the Archivist (cabal#139). It was on for the
+# Archivist, which is the persona least able to afford it: every other persona
+# writing to memory pollutes a store someone ELSE reads, while the Archivist
+# pollutes the store IT searches, so its own answer is recallable on the next
+# dispatch. Reported in cabal#141: a recall returned two hits, both the
+# agent's prior answers, both carrying the same fabricated citation, from a
+# store of 1,118 curated rows.
+#
+# Turning it on is a legitimate choice for a persona whose exchanges you want
+# accumulated. Know what you are getting: rows land as type="fact" at medium
+# confidence -- the same standing as anything you curated by hand, and nothing
+# STRUCTURAL at recall time tells the two apart. (The `[archivist]` content
+# prefix and the `archivist` tag DO reach the prompt, on purpose, so search
+# results stay attributable -- but they are advisory text the model may ignore.
+# MemoryHit carries no source field, so nothing filters, ranks or gates on any
+# of it.) cabal#141 is the fix for that half.
+#
+# NOTE THE SECTION. This explanation sits under [personas.architect] because
+# that is where the generic override block lives -- so the line below would
+# enable accumulation on the ARCHITECT. To turn the ARCHIVIST's back on, put
+# `commit_to_memory = true` under [personas.archivist] above.
 # commit_to_memory = true
 # extra_kwargs — provider/model knobs Cabal has no field of its own for, passed
 # straight through to the LLM call. Example: switching OFF a local reasoning

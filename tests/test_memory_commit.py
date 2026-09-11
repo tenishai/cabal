@@ -83,13 +83,49 @@ async def test_commit_flag_persists_qa() -> None:
 
 
 @pytest.mark.asyncio
-async def test_archivist_commits_by_default() -> None:
-    """ArchivistPersona's __init__ default sets the flag."""
+async def test_archivist_does_not_commit_by_default() -> None:
+    """cabal#139 — the Archivist must not write its own answers into the store
+    it searches unless an operator asks for it.
+
+    This test asserted the OPPOSITE until the default flipped, and inverting it
+    is the point rather than collateral: the old behaviour meant one dispatch
+    put a `[archivist] Q: ... A: ...` row, typed `fact` at `medium` confidence,
+    into the very store the next dispatch recalls from. Reported in
+    cabal#141 from the incident behind cabal#138 -- inherited, not re-measured
+    by this change: a recall returned two hits, both the agent's own prior
+    answers, both repeating the same fabricated citation, from a store of 1,118
+    curated rows.
+
+    The assertion is on the ABSENCE of a write, which is the property #139 is
+    about. Asserting the flag's value instead would pass even if some other
+    path committed.
+    """
     store = RecordingStore()
     client = LiteLLMClient(
         acompletion_fn=_stub("memory answer"), hook_registry=HookRegistry()
     )
     archivist = ArchivistPersona(client, memory_store=store)
+    await archivist.handle_task(_task())
+    assert store.commits == [], (
+        "the Archivist wrote its own answer into the store it searches; "
+        "that is the feedback loop cabal#139 closes"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_operator_can_still_turn_archivist_accumulation_on() -> None:
+    """The default is safe to change precisely BECAUSE the knob survives.
+
+    An accumulating Archivist is a legitimate deployment choice; what was wrong
+    was making it the default on the one persona that reads what it writes. So
+    the opt-in has to keep working, and it has to be tested in the direction
+    that now matters.
+    """
+    store = RecordingStore()
+    client = LiteLLMClient(
+        acompletion_fn=_stub("memory answer"), hook_registry=HookRegistry()
+    )
+    archivist = ArchivistPersona(client, memory_store=store, commit_to_memory=True)
     await archivist.handle_task(_task())
     assert len(store.commits) == 1
 
