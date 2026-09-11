@@ -166,7 +166,10 @@ def build_router_input_guardrails(identity: IdentityConfig | None) -> list[Guard
     # paraphrase storm as an exhausted budget. Both stop the dispatch.
     if gconf.delegation_budget:
         guardrails.append(
-            DelegationBudgetGuardrail(limit=gconf.delegation_budget_limit)
+            DelegationBudgetGuardrail(
+                limit=gconf.delegation_budget_limit,
+                caller_window_seconds=gconf.delegation_budget_caller_window_seconds,
+            )
         )
     return guardrails
 

@@ -261,6 +261,12 @@ class GuardrailsConfig(_Open):
     #: and a larger value is clamped, not honoured.
     delegation_budget: bool = True
     delegation_budget_limit: int = 20
+    #: Seconds before a CALLER-keyed delegation budget refills. Only the caller
+    #: fallback is windowed; a conversation budget never refills (see
+    #: DelegationBudgetGuardrail). Without this a caller -- whose key is stable
+    #: for the daemon's lifetime -- is blocked until restart once it is over
+    #: budget, because retrying keeps its key too warm for the LRU to reclaim.
+    delegation_budget_caller_window_seconds: float = 3600.0
 
     @field_validator("delegation_budget_limit")
     @classmethod

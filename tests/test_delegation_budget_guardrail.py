@@ -253,7 +253,7 @@ async def test_no_input_shape_is_free() -> None:
     ]
     for t in shapes:
         assert (await g.check(t, _ctx())).type is VerdictType.PASS
-    assert g._counts["ctx-1"] == len(shapes), (
+    assert g._counts["ctx-1"][0] == len(shapes), (
         "some input shape was charged nothing -- if that is deliberate, the "
         "budget is no longer a count of delegations"
     )
@@ -287,7 +287,7 @@ def test_the_increment_is_unconditional() -> None:
     import inspect
 
     src = inspect.getsource(DelegationBudgetGuardrail.check)
-    before = src.split("count = self._counts.pop")[0]
+    before = src.split("entry = self._counts.pop")[0]
     assert before.count("return ") == 2, (
         "an early return was added or removed before the counter increments. "
         "Two are expected (non-Task target, missing session key). A third "
@@ -327,3 +327,75 @@ async def test_check_is_await_free() -> None:
 
     src = inspect.getsource(DelegationBudgetGuardrail.check)
     assert "await " not in src
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_caller_recovers_when_its_window_refills(monkeypatch) -> None:
+    """THE #150 r2 CRITICAL. A caller key never retires, so without a window
+    "no TTL" means blocked until the daemon restarts.
+
+    Measured on the real guard before the fix: an operator was refused at
+    un-threaded dispatch 21 and stayed refused across 5000 unrelated
+    conversations. Retrying is what made it permanent -- the increment
+    reinserts at the most-recent end BEFORE the limit check, so a retried key
+    can never become the LRU's eviction candidate.
+    """
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(
+        "cabal.core.guardrails_builtin.time.monotonic", lambda: clock["t"]
+    )
+    g = DelegationBudgetGuardrail(limit=20, caller_window_seconds=3600)
+    caller = _ctx()
+
+    for i in range(20):
+        assert (await g.check(_task(context_id=None, task_id=f"a-{i}"), caller)).type is (
+            VerdictType.PASS
+        )
+    assert (await g.check(_task(context_id=None, task_id="over"), caller)).type is (
+        VerdictType.BLOCK
+    )
+
+    # Retrying inside the window must NOT refill it -- that is the no-refund rule.
+    clock["t"] += 3599
+    assert (await g.check(_task(context_id=None, task_id="retry"), caller)).type is (
+        VerdictType.BLOCK
+    ), "the window refilled early, or a retry reset it"
+
+    # Past the window, the caller is serviceable again.
+    clock["t"] += 2
+    assert (await g.check(_task(context_id=None, task_id="after"), caller)).type is (
+        VerdictType.PASS
+    ), "a caller key never refilled -- it is blocked until the daemon restarts"
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_budget_does_not_refill(monkeypatch) -> None:
+    """The window is for callers ONLY. A conversation is its own window, and a
+    budget that forgets is not a budget -- so no amount of elapsed time hands a
+    conversation a fresh allowance."""
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(
+        "cabal.core.guardrails_builtin.time.monotonic", lambda: clock["t"]
+    )
+    g = DelegationBudgetGuardrail(limit=1, caller_window_seconds=1)
+    for _ in range(2):
+        await g.check(_task(context_id="one-conversation"), _ctx())
+
+    clock["t"] += 86_400  # a day later
+    v = await g.check(_task(context_id="one-conversation"), _ctx())
+    assert v.type is VerdictType.BLOCK, "a conversation budget refilled with time"
+
+
+@pytest.mark.asyncio
+async def test_an_unkeyable_delegation_fails_open_in_one_place() -> None:
+    """The old `or task.id` tail could never bound anything -- a task id is
+    fresh per dispatch, so it minted one counter per call and blocked nothing.
+    Its only reachable effect was to disguise this fail-open as a working
+    bound, which was r1's Critical. With no context id and no caller, PASS --
+    and crucially, mint no counter while doing it."""
+    g = DelegationBudgetGuardrail(limit=1)
+    blank = GuardrailContext(persona_name="", task_id="t", phase="router")
+    for i in range(50):
+        v = await g.check(_task(context_id=None, task_id=f"u-{i}"), blank)
+        assert v.type is VerdictType.PASS
+    assert g._counts == {}, "an un-keyable delegation minted a counter"
