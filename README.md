@@ -142,6 +142,38 @@ public_key_env = "LANGFUSE_PUBLIC_KEY"
 secret_key_env = "LANGFUSE_SECRET_KEY"
 ```
 
+### `CABAL_DISPATCH_TIMEOUT_S`
+
+Environment variable (not identity.toml). Bounds the read ceiling of the
+HTTP client used for federated dispatch — default 30s, the historical
+hardcoded value. Raise it if a federated peer fronts a real model call and
+can legitimately take minutes; connect stays pinned at 10s regardless, so an
+unreachable peer still fails fast rather than hanging for the full read
+ceiling. Must parse as a finite number > 0.
+
+Coupled to the doom-loop guardrail: `DoomLoopGuardrail`'s TTL (default 600s,
+`guardrails.doom_loop_ttl_s`) has to stay above the dispatch timeout or a
+hanging federated peer resets the guard's repeat count on every attempt
+before it ever reaches its threshold. Rather than requiring operators to
+hand-tune both, cabal auto-widens the TTL to `2 * CABAL_DISPATCH_TIMEOUT_S`
+whenever the configured TTL would fall below that, logging
+`guardrails.doom_loop_ttl_raised` when it does. In practice: raising this
+above 300s (half the default TTL) triggers the widening automatically.
+
+**`cbl` follows it automatically, on dispatch routes only.** The CLI's own HTTP
+client used to be pinned at 30s, so raising this variable produced a daemon
+that waited minutes and a `cbl` that gave up at 30s — the exact failure the
+knob exists to prevent, on the route the knob is for. `cbl` now resolves the
+same variable and allows `2 * CABAL_DISPATCH_TIMEOUT_S` for the two routes
+that trigger a federated dispatch (`cbl dispatch` / `cbl chat`), since the client
+additionally waits on auth, bookkeeping and the response trip. Most other
+`cbl` calls keep the short 30s ceiling on purpose: a hung daemon should not
+make `cbl agents list` sit for minutes. The session-presence calls
+(`register_session`, `heartbeat_session`, `end_session`) are tighter still at
+5s: they run from a Stop hook on every turn, so a firewall that DROPs rather
+than refuses would stall the turn itself. An unparseable value fails the CLI
+the same way it aborts the daemon, rather than silently falling back to 30.
+
 ## Recovering a lost master key
 
 `CABAL_MASTER_KEY` encrypts the `signing_keys` and `secrets` tables. Start cabal
