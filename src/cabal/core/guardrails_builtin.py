@@ -355,13 +355,22 @@ class DelegationBudgetGuardrail:
         # conversation share a budget. That is the per-conversation budget this
         # guard is named for.
         #
-        # NOT the primus fan-out, and an earlier version of this comment said
-        # otherwise (#150 pre-pass). This guard is wired ONLY into
-        # build_router_input_guardrails (app.py), and primus._dispatch_subordinate
-        # calls handle_task directly, bypassing the router. So subordinate legs
-        # never reach this check at all -- threading context_id into them makes
-        # them visible to the DoomLoopGuardrail instance primus holds itself,
-        # not to this budget. The two enforcement points are disjoint.
+        # AND THE PRIMUS FAN-OUT, since #158 -- which is the reverse of what
+        # this comment said through two prior corrections, so read the history
+        # rather than trusting either version blind.
+        #
+        # It ONCE claimed a fan-out shared one budget with its children (wrong:
+        # nothing connected them). It was then corrected to say subordinate legs
+        # "never reach this check at all" and the two enforcement points are
+        # "disjoint" -- true at the time, because this guard was wired only into
+        # build_router_input_guardrails and primus._dispatch_subordinate calls
+        # handle_task directly. #158 made it false by giving the primus THE SAME
+        # INSTANCE (persona_factory asks the router for it), so legs now reach
+        # this check on every dispatch and the two points are one object.
+        #
+        # The keying is what makes that safe: a sub-task inherits its parent's
+        # context_id, so both directions land on the same counter rather than
+        # on two allowances for one conversation.
         #
         # But context_id is CALLER-SUPPLIED AND OPTIONAL (a2a/jsonrpc.py:47
         # defaults it to None) and a task id is FRESH PER DISPATCH wherever one

@@ -303,6 +303,14 @@ class GuardrailsConfig(_Open):
     #: The default-deny lives in the guard; the migration lives here.
     delegation_edges: bool = False
     delegation_budget: bool = True
+    #: NOTE THE MEANING SHIFTED WITH #158 without this number changing. The
+    #: budget now counts fan-out legs as well as router hops, so on the shipped
+    #: config an operator turn costs 2 (the router hop plus the implementer
+    #: leg) where it cost 1 -- fewer turns to the limit, and fewer still with a
+    #: reviewer configured. That is the fix working: the field's own "total
+    #: delegations per conversation" is MORE true than before. But a
+    #: conversation key never refills, so an operator who tuned 20 against the
+    #: old meaning will reach a permanent block sooner than they expect.
     delegation_budget_limit: int = 20
     #: Seconds before a CALLER-keyed delegation budget refills. Only the caller
     #: fallback is windowed; a conversation budget never refills (see

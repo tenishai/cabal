@@ -190,7 +190,7 @@ class DispatchRouter:
             capabilities=sorted(self._capabilities[agent]),
         )
 
-    def input_guardrail_of(self, kind: type) -> Any:
+    def input_guardrail_of[T](self, kind: type[T]) -> T | None:
         """The router's own instance of `kind`, or None (cabal#158).
 
         Exists so a caller can SHARE a guard rather than construct a second

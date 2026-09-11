@@ -61,7 +61,12 @@ class _LegFailedError(Exception):
 
 
 class _DoomLoopError(Exception):
-    """Internal signal: doom-loop guardrail blocked a subordinate dispatch.
+    """Internal signal: A ROUTER-LEVEL GUARD refused a subordinate dispatch.
+
+    Named for the doom-loop guard because it was the only one at this boundary
+    until #158 added the delegation budget. Kept rather than renamed: the name
+    is internal, and the user-visible message carries the refusing guard's own
+    reason, so an operator reads "budget exhausted" rather than "doom loop".
 
     Raised inside _dispatch_subordinate and caught in handle_task so the
     primus can return an annotated failed Task to its own caller.
@@ -414,14 +419,28 @@ class PrimusPersona(LLMPersona):
             guard_ctx = GuardrailContext(
                 persona_name=self.name, task_id=sub_task.id, phase="router"
             )
-            # Budget first: it is the payload-independent bound, so a storm of
-            # rephrased legs should be reported as an exhausted budget rather
-            # than as a sameness loop it evades by construction.
-            for guard in (self._delegation_budget, self._doom_loop):
+            # ORDER MATCHES build_router_input_guardrails, and it is immaterial
+            # either way. An earlier comment here justified budget-first by
+            # saying a rephrased storm should read as an exhausted budget
+            # rather than a sameness loop -- but rephrased legs never trip the
+            # sameness counter at all (different key), so that conflict cannot
+            # occur. The two can only disagree on IDENTICAL repeats, where the
+            # doom threshold trips long before the budget limit. Matching the
+            # router's order stops the module contradicting itself.
+            #
+            # ANY NON-PASS VERDICT STOPS, rather than an enumeration of the
+            # ones that exist today. Fail-closed is the right default at a
+            # guard boundary, and it absorbs #152's TERMINATE without anyone
+            # remembering to come back -- a terminating budget falling through
+            # a `== BLOCK` check would dispatch the leg silently. It also
+            # stops REWRITE being dropped on the floor, which the enumeration
+            # did: neither guard here returns one, but ignoring it would have
+            # dispatched the UNREWRITTEN task.
+            for guard in (self._doom_loop, self._delegation_budget):
                 if guard is None:
                     continue
                 verdict = await guard.check(sub_task, guard_ctx)
-                if verdict.type == VerdictType.BLOCK:
+                if verdict.type is not VerdictType.PASS:
                     raise _DoomLoopError(verdict.reason)
 
         # cabal#11 — register the subordinate under the parent so an abort of

@@ -360,3 +360,48 @@ def test_the_factory_hands_a_primus_the_routers_own_budget_instance() -> None:
         "the primus holds a different budget object than the router, so a "
         "conversation gets two allowances instead of one"
     )
+
+
+def test_every_primus_subclass_forwards_the_budget_it_is_given() -> None:
+    """cabal#158 r1 Important 2 — the failure this pins is SILENT.
+
+    Mason's forwarding was held down by three tests; Wright's by nothing.
+    Deleting `delegation_budget=delegation_budget` from wright.py left the
+    whole suite green — signature still advertising the parameter, factory
+    still passing it, mypy and ruff clean, CI green, and `wright-primus`'s
+    fan-out unguarded. It matters more for Wright than Mason because
+    identity.mtplx.toml configures wright as the deployed primus: the one
+    persona actually running was the one whose forwarding nothing held.
+
+    WALKS THE REGISTRY rather than naming Wright, so a subclass added later is
+    covered the day it appears. A subclass that does not ACCEPT the kwarg
+    fails loudly at startup with a TypeError — the factory passes it
+    unconditionally — so accept-and-drop is the only silent shape, and it is
+    exactly what this catches.
+    """
+    from cabal.agents.personas import PERSONA_REGISTRY
+    from cabal.agents.primus import PrimusPersona
+    from cabal.agents.subordinate import Subordinate
+    from cabal.core.guardrails_builtin import DelegationBudgetGuardrail
+
+    sentinel = DelegationBudgetGuardrail(limit=5)
+    subclasses = [
+        (name, cls)
+        for name, cls in PERSONA_REGISTRY.items()
+        if isinstance(cls, type) and issubclass(cls, PrimusPersona)
+    ]
+    assert subclasses, "no primus subclasses found — the walk is testing nothing"
+
+    for name, cls in subclasses:
+        sub = Subordinate(
+            primus=name, role="implementer", llm_client=_client(), model="m"
+        )
+        primus = cls(
+            _client(),
+            subordinates={"implementer": sub},
+            delegation_budget=sentinel,
+        )
+        assert primus._delegation_budget is sentinel, (
+            f"{name} accepted delegation_budget and dropped it: its fan-out is "
+            "unbounded while the signature and the factory both say otherwise"
+        )
