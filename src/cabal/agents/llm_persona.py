@@ -153,7 +153,7 @@ class LLMPersona:
         HERE RATHER THAN IN THE GUARD, because the guard must stay await-free
         and knows nothing about prompts, and because this is the one place every
         persona's system content is composed. Same shape as `_recall_for_task`
-        directly below: absent key, empty string, no line.
+        above it: absent input, empty string, no line.
         """
         used = task.metadata.get("cabal_delegation_budget")
         if not used:
