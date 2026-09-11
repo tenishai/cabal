@@ -592,13 +592,19 @@ class DelegationEdgeGuardrail:
 #: which is exactly the state a misconfigured or newly-added persona is in.
 #: A per-persona value may LOWER this and never raise it.
 #:
-#: WHY DEPTH RATHER THAN SPEND. cabal already bounds LLM calls -- core/llm/
-#: budget.py and circuit_breaker.py -- but neither bounds the delegation
-#: GRAPH. A subordinate that delegates onward is limited only by spend, so a
-#: cycle is not refused: it burns the budget and then trips the breaker. Those
-#: are not interchangeable. Budget exhaustion is indistinguishable from
-#: legitimate expensive work, arrives late, and takes the whole Task down. A
-#: depth refusal is immediate, local, and names the actual problem.
+#: WHY DEPTH RATHER THAN SPEND. cabal's core/llm/budget.py and
+#: circuit_breaker.py bound LLM CALLS and know nothing about the delegation
+#: graph, so a cycle that reaches them is refused late, by exhaustion --
+#: indistinguishable from legitimate expensive work, and it takes the whole
+#: Task down. A depth refusal is immediate, local, and names the problem.
+#:
+#: A CYCLE IS NOT UNREFUSED WITHOUT THIS, and an earlier version of this
+#: comment said it was. DelegationBudgetGuardrail (#146) already bounds the
+#: graph by COUNT rather than by spend, default-on in the same builder, so a
+#: runaway chain stops at MAX_DELEGATIONS_PER_CONTEXT however it is worded.
+#: What depth adds is precision and earliness: 40 hops of real work before a
+#: refusal is a bound, but it is not a useful one, and the budget cannot tell
+#: a deep chain from a wide conversation.
 #:
 #: DEPTH IS STRUCTURAL, so paraphrase cannot evade it -- unlike the sameness
 #: counter it sits beside. Borrowed from sympozium's spawn_router.go:32,
@@ -615,11 +621,19 @@ def delegation_depth(task: Task) -> int:
     raw = task.metadata.get(DEPTH_KEY, 0)
     try:
         return max(0, int(raw))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         # An unreadable depth is treated as the TOP of the chain rather than
         # as an error, deliberately: a malformed value must not be a way to
         # claim a lower depth than you have. Anything that then delegates
         # onward is stamped 1 and bounded normally from there.
+        #
+        # OverflowError IS NOT REDUNDANT (#144 pre-pass). `int(float("inf"))`
+        # raises it rather than ValueError, and an infinity reaches here: the
+        # Task model keeps the value unvalidated, and Python's own json module
+        # accepts a bare `Infinity` token. Without this arm the one shape most
+        # obviously meant as an attack is the one that crashes the dispatch --
+        # in a function whose entire purpose is that garbage costs a hop of
+        # slack instead. (`nan` lands on ValueError and always did.)
         return 0
 
 
@@ -631,6 +645,25 @@ def next_delegation_depth(task: Task) -> int:
 class DelegationDepthGuardrail:
     """Refuse a delegation that runs deeper than the chain is allowed (#144).
 
+    WHERE THIS RUNS, AND WHERE IT DOES NOT (#144 pre-pass). It is wired into
+    ``build_router_input_guardrails`` and therefore runs on every hop that
+    crosses ``DispatchRouter``. It does NOT run on the primus's own fan-out:
+    ``_dispatch_subordinate`` calls ``handle_task`` directly, and the only
+    guard with a dedicated call at that boundary is the doom-loop counter.
+
+    The consequence is bounded but real. A ``Subordinate`` is a plain
+    ``LLMPersona`` and cannot fan out again, so this is not unbounded local
+    recursion -- but a primus that arrived at the limit through a router hop
+    can still run one full local plan/dispatch/review/aggregate cycle, at real
+    cost, before depth is enforced again on its next router-mediated hop.
+
+    THE FIX IS NOT HERE. cabal#158 is the same gap for the budget and the
+    doom-loop counter, and it closes it by handing the primus the router's own
+    guard instance rather than by adding a second enforcement point. Depth
+    should join that mechanism once it lands -- filed as cabal#171 rather than
+    smuggled into this PR, because doing it here would collide with #158 on the
+    very constructor surface it is changing.
+
     MUST REMAIN AWAIT-FREE, for the same reason its two siblings must: a
     primus fan-out calls guardrails concurrently across legs sharing one
     instance, and an await-free ``async def`` runs atomically to completion on
@@ -638,10 +671,17 @@ class DelegationDepthGuardrail:
     """
 
     def __init__(self, max_depth: int = MAX_DELEGATION_DEPTH) -> None:
-        # CLAMPED, NOT HONOURED -- a policy may only lower the backstop. Same
-        # shape as DelegationBudgetGuardrail's limit and the primus's
-        # max_legs, so all three axes are bounded the same way rather than
-        # each inventing its own.
+        # CLAMPED, NOT HONOURED -- a policy may only lower the backstop.
+        #
+        # THE SAME SHAPE AS THE PRIMUS'S max_legs, not as the budget's limit,
+        # and an earlier version of this comment claimed all three matched
+        # (#144 pre-pass). They do at the ceiling and not at the floor: the
+        # budget RAISES below 1, here and at config load, where breadth and
+        # depth silently clamp up to 1. That is defensible -- a depth of 1 is a
+        # working bound where a budget of 0 is one nothing can satisfy -- but
+        # it is two shapes, not one. `delegation_depth_limit` does now get a
+        # config validator, so a typo in identity.toml is caught at load on
+        # every axis even where the guards differ.
         self._max_depth = max(1, min(max_depth, MAX_DELEGATION_DEPTH))
 
     @property

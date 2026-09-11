@@ -316,6 +316,23 @@ class GuardrailsConfig(_Open):
     #: budget, because retrying keeps its key too warm for the LRU to reclaim.
     delegation_budget_caller_window_seconds: float = 3600.0
 
+    @field_validator("delegation_depth_limit")
+    @classmethod
+    def _depth_at_least_one(cls, v: int) -> int:
+        # ADDED BY THE #144 PRE-PASS, which found depth was the one bounded
+        # axis with no config validator: delegation_depth_limit = 0 loaded
+        # silently and the guard floored it to 1, where the same typo in
+        # delegation_budget_limit refuses to start. The guard still clamps
+        # rather than raising -- a depth of 1 is a working bound, unlike a
+        # budget of 0 -- but a value the operator cannot have meant should be
+        # named at load on every axis.
+        if v < 1:
+            raise ValueError(
+                f"guardrails.delegation_depth_limit must be >= 1 (got {v}); "
+                "raise it or disable the guard with delegation_depth = false"
+            )
+        return v
+
     @field_validator("delegation_budget_limit")
     @classmethod
     def _budget_at_least_one(cls, v: int) -> int:

@@ -57,21 +57,85 @@ async def test_an_unreadable_depth_is_treated_as_the_top_of_the_chain() -> None:
     Treating it as 0 means anything delegating onward is stamped 1 and bounded
     normally from there, so a garbage value costs one hop of slack rather than
     either crashing the dispatch or disabling the bound."""
-    for junk in ("nonsense", None, [], {"a": 1}, -5):
+    for junk in ("nonsense", None, [], {"a": 1}, -5, float("nan")):
         t = _task()
         t.metadata[DEPTH_KEY] = junk
         assert delegation_depth(t) == 0, junk
         assert next_delegation_depth(t) == 1, junk
 
 
+@pytest.mark.asyncio
+async def test_an_infinite_depth_is_garbage_too_rather_than_an_exception() -> None:
+    """cabal#144 pre-pass, WRONG 1 — THE SHAPE THE LIST ABOVE DID NOT HAVE.
+
+    `int(float("inf"))` raises `OverflowError`, which is neither `TypeError`
+    nor `ValueError`, so the only filter this function had let it straight
+    through — turning "a garbage value costs one hop of slack rather than
+    crashing the dispatch" into its opposite for the one value most obviously
+    chosen on purpose. `nan` lands on `ValueError` and always worked, which is
+    why the hole was invisible: the neighbouring float shape was fine.
+
+    GOES THROUGH `model_validate` RATHER THAN ASSIGNING METADATA, because the
+    finding is about reachability as much as arithmetic. Pydantic keeps the
+    value unchanged, and Python's own `json` module parses a bare `Infinity`
+    token into this float, so it arrives over the wire and not only from a
+    test.
+    """
+    import json
+
+    for token, value in (("Infinity", float("inf")), ("-Infinity", float("-inf"))):
+        assert json.loads(f'{{"d": {token}}}')["d"] == value, token
+        t = Task.model_validate(
+            {
+                "id": "t-inf",
+                "status": {"state": "submitted"},
+                "metadata": {DEPTH_KEY: value},
+            }
+        )
+        assert t.metadata[DEPTH_KEY] == value, "pydantic changed the value"
+        assert delegation_depth(t) == 0, token
+        assert next_delegation_depth(t) == 1, token
+
+    guard = DelegationDepthGuardrail(max_depth=3)
+    t = _task()
+    t.metadata[DEPTH_KEY] = float("inf")
+    assert (await guard.check(t, _ctx())).type is VerdictType.PASS, (
+        "an infinite claimed depth must read as the top of the chain, not crash"
+    )
+
+
 def test_a_policy_cannot_raise_the_ceiling() -> None:
-    """CLAMPED, NOT HONOURED — the same shape as the budget's limit and the
-    primus's max_legs, so all three axes are bounded the same way. A
+    """CLAMPED, NOT HONOURED — the same shape as the primus's max_legs. A
     policy-only limit fails open exactly when the policy is missing, which is
-    the state a misconfigured or newly-added persona is in."""
+    the state a misconfigured or newly-added persona is in.
+
+    NOT the same shape as the budget's limit, which an earlier version of this
+    docstring claimed (#144 pre-pass): the budget RAISES below 1 where breadth
+    and depth clamp up to it. See the config-validator test below for where the
+    three axes were made to agree and where they still do not.
+    """
     assert DelegationDepthGuardrail(max_depth=10_000).max_depth == MAX_DELEGATION_DEPTH
     assert DelegationDepthGuardrail(max_depth=0).max_depth == 1
     assert DelegationDepthGuardrail(max_depth=3).max_depth == 3
+
+
+def test_a_depth_limit_below_one_is_refused_at_config_load() -> None:
+    """The axis that had no config validator (#144 pre-pass, WRONG 6).
+
+    `delegation_depth_limit = 0` in identity.toml loaded silently and the guard
+    floored it to 1; the same typo in `delegation_budget_limit` refuses to
+    start. The guard's clamp stays — a depth of 1 is a working bound, unlike a
+    budget of 0 — so this is about the operator hearing about a value they
+    cannot have meant, not about what the guard does with it.
+    """
+    from pydantic import ValidationError
+
+    from cabal.config.identity import GuardrailsConfig
+
+    assert GuardrailsConfig().delegation_depth_limit == 8
+    for bad in (0, -1):
+        with pytest.raises(ValidationError, match="delegation_depth_limit must be >= 1"):
+            GuardrailsConfig(delegation_depth_limit=bad)
 
 
 @pytest.mark.asyncio
