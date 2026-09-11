@@ -190,6 +190,20 @@ class DispatchRouter:
             capabilities=sorted(self._capabilities[agent]),
         )
 
+    def input_guardrail_of(self, kind: type) -> Any:
+        """The router's own instance of `kind`, or None (cabal#158).
+
+        Exists so a caller can SHARE a guard rather than construct a second
+        one. The delegation budget is per-conversation and keyed on
+        context_id, so two instances would hand one conversation two separate
+        allowances -- an agent mixing router hops with primus fan-out legs
+        would get double the budget while looking bounded.
+        """
+        for guard in self._input_guardrails:
+            if isinstance(guard, kind):
+                return guard
+        return None
+
     def capabilities_for(self, agent: str) -> set[str]:
         return set(self._capabilities.get(agent, set()))
 

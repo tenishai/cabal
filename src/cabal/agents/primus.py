@@ -37,7 +37,7 @@ from cabal.core.a2a.codes import (
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import KIND_SUBORDINATE
 from cabal.core.guardrails import GuardrailContext, VerdictType
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import DelegationBudgetGuardrail, DoomLoopGuardrail
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient, LLMTruncatedError
 
@@ -107,7 +107,8 @@ class PrimusPersona(LLMPersona):
         model: str | None = None,
         default_model: str,
         max_tokens: int = 8192,
-        doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
+        doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,
+        delegation_budget: DelegationBudgetGuardrail | None = None,
     ) -> None:
         if not any(role != "reviewer" for role in subordinates):
             raise ValueError(
@@ -139,6 +140,21 @@ class PrimusPersona(LLMPersona):
             self._doom_loop: DoomLoopGuardrail | None = DoomLoopGuardrail()
         else:
             self._doom_loop = doom_loop
+        # cabal#158 — the SAME DelegationBudgetGuardrail instance the router
+        # holds, not a second one, and that is the whole point.
+        #
+        # The budget is per-conversation and keyed on context_id. Two instances
+        # would give one conversation two separate allowances, so an agent that
+        # mixed router hops with fan-out legs would get double the budget --
+        # which is worse than the gap being closed, because it would look
+        # bounded. Sharing the instance makes a conversation's delegations
+        # count once, wherever they happen.
+        #
+        # None when the operator disabled the budget, or when a primus is
+        # constructed outside app.py (tests, direct use). Nothing here creates
+        # one by default: an unshared default would be exactly the second
+        # instance this comment exists to prevent.
+        self._delegation_budget = delegation_budget
 
     async def handle_task(self, task: Task) -> Task:
         # cabal#11 — the parent dispatch node (task.id) is registered by the
@@ -387,14 +403,26 @@ class PrimusPersona(LLMPersona):
         # the router's input_guardrails check (cabal#42) for the primus fan-out
         # path, which bypasses the router entirely. The guard runs BEFORE we
         # register the abort node so there is nothing to clean up on a BLOCK.
-        if self._doom_loop is not None:
+        # BOTH GUARDS RUN HERE, and #158 is that only the first one did. The
+        # router chain never sees a subordinate leg -- handle_task is called
+        # directly below -- so a delegation budget wired only into the router
+        # bounds router-mediated delegation and nothing else. That left fan-out
+        # legs bounded by the sameness counter alone, which is the counter #146
+        # exists precisely because rewording defeats.
+        if self._doom_loop is not None or self._delegation_budget is not None:
             sub_task.metadata["cabal_target_agent"] = role
             guard_ctx = GuardrailContext(
                 persona_name=self.name, task_id=sub_task.id, phase="router"
             )
-            verdict = await self._doom_loop.check(sub_task, guard_ctx)
-            if verdict.type == VerdictType.BLOCK:
-                raise _DoomLoopError(verdict.reason)
+            # Budget first: it is the payload-independent bound, so a storm of
+            # rephrased legs should be reported as an exhausted budget rather
+            # than as a sameness loop it evades by construction.
+            for guard in (self._delegation_budget, self._doom_loop):
+                if guard is None:
+                    continue
+                verdict = await guard.check(sub_task, guard_ctx)
+                if verdict.type == VerdictType.BLOCK:
+                    raise _DoomLoopError(verdict.reason)
 
         # cabal#11 — register the subordinate under the parent so an abort of
         # the parent reaches its in-flight LLM call. The primus calls

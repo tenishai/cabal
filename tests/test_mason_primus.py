@@ -10,7 +10,10 @@ from cabal.agents.personas.mason import MASON_SYSTEM_PROMPT, MasonPrimusPersona
 from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, reason_code
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import (
+    DelegationBudgetGuardrail,
+    DoomLoopGuardrail,
+)
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
@@ -576,3 +579,85 @@ def test_mason_system_prompt_frames_sre_and_reliability() -> None:
     assert "sre" in low or "reliability" in low
     assert "infrastructure" in low or "platform" in low
     assert "delegate" in low
+
+
+@pytest.mark.asyncio
+async def test_the_fan_out_is_bounded_by_the_delegation_budget() -> None:
+    """cabal#158 — the primus path never reaches the router's guardrail chain.
+
+    `_dispatch_subordinate` calls `handle_task` directly, so a delegation
+    budget wired only into `build_router_input_guardrails` bounds
+    router-mediated delegation and nothing else. That left fan-out legs
+    bounded by the sameness counter alone -- the counter #146 exists precisely
+    because rewording defeats it.
+
+    DISTINCT plan text per dispatch, so the doom-loop guard cannot be what
+    stops this: if it passed with the budget removed, the test would be
+    measuring the wrong guard.
+    """
+    budget = DelegationBudgetGuardrail(limit=2)
+    primus_client, _ = _client(["plan one", "sum", "plan two", "sum", "plan three", "sum"])
+    sub_client, _ = _client(["impl"] * 3)
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_budget=budget,
+    )
+
+    seen = []
+    for n in range(3):
+        task = Task(
+            **{
+                "id": f"t-budget-{n}",
+                "contextId": "one-conversation",
+                "status": TaskStatus(
+                    state="submitted",
+                    message=Message(role="user", parts=[TextPart(text=f"do {n}")]),
+                ),
+            }
+        )
+        result = await mason.handle_task(task)
+        seen.append(" ".join(
+            p.text for p in result.status.message.parts if isinstance(p, TextPart)
+        ) if result.status.message else "")
+
+    assert any("budget" in t.lower() for t in seen), (
+        f"three fan-outs under a budget of 2 were not bounded: {seen}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_primus_shares_the_budget_instance_it_is_given() -> None:
+    """THE PROPERTY THAT MAKES THIS WORTH DOING, and the one a second instance
+    would quietly break.
+
+    The budget is per-conversation, keyed on context_id. Two instances would
+    give one conversation two separate allowances -- an agent mixing router
+    hops with fan-out legs would get double the budget while LOOKING bounded,
+    which is worse than the gap it replaces.
+    """
+    budget = DelegationBudgetGuardrail(limit=50)
+    primus_client, _ = _client(["a plan", "a summary"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_budget=budget,
+    )
+    task = Task(
+        **{
+            "id": "t-share",
+            "contextId": "shared-conversation",
+            "status": TaskStatus(
+                state="submitted",
+                message=Message(role="user", parts=[TextPart(text="go")]),
+            ),
+        }
+    )
+    await mason.handle_task(task)
+    assert budget._counts, (
+        "the fan-out leg never touched the caller's counter, so the primus is "
+        "not using the instance it was handed"
+    )
