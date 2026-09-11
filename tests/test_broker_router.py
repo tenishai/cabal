@@ -1058,6 +1058,19 @@ async def test_a_structurally_impossible_stream_does_not_consume_the_guard(
             pass
     assert guard.calls == 0, "a guard ran for a stream that could never open"
 
+    # TEETH (#153 review): the assertion above is trivially true when no guard
+    # runs at all, so it survives a mutant that deletes the guard entirely. Pin
+    # that the guard DOES run for a stream that can open, on the same instance.
+    router.register_local(FakeStreamingArchivist())
+    async for _ in router.dispatch_streaming(
+        target_agent="archivist",
+        target_generation=None,
+        task=_sample_task(),
+        caller_jwt=token,
+    ):
+        pass
+    assert guard.calls == 1, "the guard did not run for a stream that could open"
+
 
 @pytest.mark.asyncio
 async def test_streaming_honours_a_rewrite_verdict(
@@ -1100,3 +1113,83 @@ async def test_streaming_honours_a_rewrite_verdict(
     ):
         pass
     assert seen["metadata"].get("rewritten_by_guard") is True
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_stream_is_reported_as_forbidden_not_a_server_fault(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """#153 review, Important 1.
+
+    A bare DispatchError reaches the SSE route's catch-all and is emitted as
+    ERROR_INTERNAL (-32603). -32603 says "server fault", and the conventional
+    response to a server fault is to RETRY -- so reporting a guardrail refusal
+    that way sustains, at the transport layer, the loop the guardrail exists
+    to break. GuardrailBlocked is a DispatchError subclass so every existing
+    handler keeps working, and the route reports it as ERROR_FORBIDDEN.
+    """
+    from cabal.core.broker.router import DispatchError, GuardrailBlocked
+
+    guard = _RecordingGuard(verdict=Verdict.block(reason="over budget"))
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[guard],
+    )
+    router.register_local(FakeStreamingArchivist())
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
+
+    with pytest.raises(GuardrailBlocked) as caught:
+        async for _ in router.dispatch_streaming(
+            target_agent="archivist",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=token,
+        ):
+            pass
+    # Still a DispatchError, so nothing that catches the base class breaks.
+    assert isinstance(caught.value, DispatchError)
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_stream_is_recorded_not_silent(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """#153 review, Important 2.
+
+    dispatch() opens bookkeeping BEFORE its guard, so a non-streaming refusal
+    is fully audited. Guarding first here made streaming the one path where a
+    refusal left no trace -- the fail-silent shape removed from the presence
+    hook in #148. The refusal must both open and CLOSE its record; a started-
+    and-never-finished dispatch reads as an in-flight call that vanished.
+    """
+    calls: list[str] = []
+
+    class _SpyBookkeeper(Bookkeeper):
+        async def on_dispatch_start(self, *a, **k):
+            calls.append("start")
+            return await super().on_dispatch_start(*a, **k)
+
+        async def on_dispatch_failure(self, *a, **k):
+            calls.append("failure")
+            return await super().on_dispatch_failure(*a, **k)
+
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=_SpyBookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[_RecordingGuard(verdict=Verdict.block(reason="nope"))],
+    )
+    router.register_local(FakeStreamingArchivist())
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
+
+    with pytest.raises(DispatchError):
+        async for _ in router.dispatch_streaming(
+            target_agent="archivist",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=token,
+        ):
+            pass
+    assert calls == ["start", "failure"], f"refusal not audited: {calls}"

@@ -47,6 +47,18 @@ class AgentNotFoundError(DispatchError):
     """Target agent has no registered or stored bulletin entry."""
 
 
+class GuardrailBlocked(DispatchError):
+    """An input guardrail refused this dispatch (cabal#151, #153 review).
+
+    A SUBCLASS so every existing `except DispatchError` keeps working, and a
+    distinct type so the streaming route can report it as ERROR_FORBIDDEN
+    rather than ERROR_INTERNAL. That distinction is not cosmetic: -32603 says
+    "server fault", and the conventional response to a server fault is to
+    retry -- so reporting a guardrail refusal as one sustains, at the
+    transport layer, the loop the guardrail exists to break.
+    """
+
+
 class CallerJWTError(DispatchError):
     """Caller JWT failed verification at the router boundary."""
 
@@ -375,6 +387,18 @@ class DispatchRouter:
         # emits an error frame carrying partial_text (a2a_jsonrpc.py), the TUI
         # catches it. Yielding a delta instead would mean a blocked stream had
         # opened, which is the opposite of an *input* guardrail's contract.
+        # BOOKKEEPING OPENS BEFORE THE GUARD, matching dispatch() (#153 review).
+        # dispatch() calls on_dispatch_start at :238 and a BLOCK then falls
+        # through to on_dispatch_success, which writes the annotated
+        # CODE_POLICY_VIOLATION task into Conversation.result_json with an Event
+        # row -- so a non-streaming refusal is fully audited. Guarding first
+        # here would have made streaming the one path where a refusal leaves no
+        # trace, which is the fail-silent shape #148 removed from the presence
+        # hook. It also contradicted this method's own docstring promise of
+        # "Conversation/Event bookkeeping".
+        task = _ensure_trace(task)
+        await self._bookkeeper.on_dispatch_start(task, ctx.target, ctx.caller_agent)
+
         if self._input_guardrails:
             guard_ctx = GuardrailContext(
                 persona_name=ctx.caller_persona or ctx.caller_agent or "",
@@ -386,12 +410,14 @@ class DispatchRouter:
             task.metadata["cabal_target_agent"] = target_agent
             verdict = await run_guardrails(self._input_guardrails, task, guard_ctx)
             if verdict.type == VerdictType.BLOCK:
-                raise DispatchError(f"router guardrail blocked: {verdict.reason}")
+                blocked = GuardrailBlocked(f"router guardrail blocked: {verdict.reason}")
+                # CLOSE the record we just opened. Without this the refusal
+                # leaves a started-and-never-finished dispatch, which is worse
+                # than no row: it reads as an in-flight call that vanished.
+                await self._bookkeeper.on_dispatch_failure(task, blocked)
+                raise blocked
             if verdict.rewritten is not None:
                 task = verdict.rewritten
-
-        task = _ensure_trace(task)
-        await self._bookkeeper.on_dispatch_start(task, ctx.target, ctx.caller_agent)
 
         is_session_root = "cabal_session_started" not in task.metadata
         if is_session_root:

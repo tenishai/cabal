@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from cabal.core.a2a.jsonrpc import (
     ERROR_AGENT_NOT_FOUND,
+    ERROR_FORBIDDEN,
     ERROR_INTERNAL,
     ERROR_INVALID_PARAMS,
     ERROR_INVALID_REQUEST,
@@ -42,6 +43,7 @@ from cabal.core.broker.router import (
     CallerJWTError,
     ConfigurationError,
     DispatchError,
+    GuardrailBlocked,
 )
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
@@ -290,6 +292,14 @@ async def _stream_task_events(
         return
     except CallerJWTError as exc:
         yield _sse_event("error", {"jsonrpc": "2.0", "id": request_id, "error": {"code": ERROR_UNAUTHORIZED, "message": str(exc), "partial_text": full_text}})
+        return
+    # BEFORE the bare DispatchError arm below, which reports ERROR_INTERNAL.
+    # -32603 says "server fault" and the conventional response to one is to
+    # retry -- so reporting a guardrail refusal that way sustains the very
+    # loop the guardrail exists to break (#153 review). FORBIDDEN says the
+    # refusal is about the caller and will not change on retry.
+    except GuardrailBlocked as exc:
+        yield _sse_event("error", {"jsonrpc": "2.0", "id": request_id, "error": {"code": ERROR_FORBIDDEN, "message": str(exc), "partial_text": full_text}})
         return
     except DispatchError as exc:
         yield _sse_event(
