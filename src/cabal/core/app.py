@@ -53,7 +53,10 @@ from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import DEFAULT_DB_URL, make_engine, make_sessionmaker, open_session
 from cabal.core.db_pragmas import install_sqlite_pragmas
 from cabal.core.guardrails import Guardrail
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import (
+    DelegationBudgetGuardrail,
+    DoomLoopGuardrail,
+)
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.identity_sync import sync_personas
 from cabal.core.llm.budget import BudgetGuard
@@ -158,6 +161,16 @@ def build_router_input_guardrails(identity: IdentityConfig | None) -> list[Guard
     guardrails: list[Guardrail] = []
     if gconf.doom_loop:
         guardrails.append(DoomLoopGuardrail(threshold=gconf.doom_loop_threshold))
+    # ORDER MATTERS ONLY FOR THE MESSAGE, not for safety: the first BLOCK
+    # short-circuits, so a tight repeat is reported as a doom loop and a
+    # paraphrase storm as an exhausted budget. Both stop the dispatch.
+    if gconf.delegation_budget:
+        guardrails.append(
+            DelegationBudgetGuardrail(
+                limit=gconf.delegation_budget_limit,
+                caller_window_seconds=gconf.delegation_budget_caller_window_seconds,
+            )
+        )
     return guardrails
 
 

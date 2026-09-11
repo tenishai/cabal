@@ -254,6 +254,53 @@ class GuardrailsConfig(_Open):
     doom_loop: bool = True
     doom_loop_threshold: int = 5
 
+    #: cabal#146 -- total delegations per conversation, payload-independent.
+    #: Complements doom_loop rather than replacing it: that one catches a tight
+    #: repeat quickly, this one catches the paraphrase storm that walks past it.
+    #: A deployment may LOWER this; MAX_DELEGATIONS_PER_CONTEXT is the ceiling
+    #: and a larger value is clamped, not honoured.
+    delegation_budget: bool = True
+    delegation_budget_limit: int = 20
+    #: Seconds before a CALLER-keyed delegation budget refills. Only the caller
+    #: fallback is windowed; a conversation budget never refills (see
+    #: DelegationBudgetGuardrail). Without this a caller -- whose key is stable
+    #: for the daemon's lifetime -- is blocked until restart once it is over
+    #: budget, because retrying keeps its key too warm for the LRU to reclaim.
+    delegation_budget_caller_window_seconds: float = 3600.0
+
+    @field_validator("delegation_budget_limit")
+    @classmethod
+    def _budget_at_least_one(cls, v: int) -> int:
+        # Mirrors the doom_loop validator: surface a field-named error at
+        # config load rather than aborting create_app inside router
+        # construction. The guard itself also raises for < 1.
+        if v < 1:
+            raise ValueError(
+                f"guardrails.delegation_budget_limit must be >= 1 (got {v}); "
+                "raise it or disable the guard with delegation_budget = false"
+            )
+        return v
+
+    @field_validator("delegation_budget_caller_window_seconds")
+    @classmethod
+    def _caller_window_is_positive(cls, v: float) -> float:
+        # THE DANGEROUS DIRECTION HERE IS DOWNWARD, which is why this needs a
+        # floor at all (#159). For delegation_budget_limit, weakening the guard
+        # means raising the number, and that is clamped at the ceiling. For the
+        # window, weakening means LOWERING it -- and at 0 the window expires
+        # before every check, so the counter is pinned at 1 and the caller-keyed
+        # budget is silently off. An operator shortening the window to help
+        # blocked callers recover sooner is walking toward disabling the
+        # backstop, and without this gets no error on arrival.
+        if v <= 0:
+            raise ValueError(
+                "guardrails.delegation_budget_caller_window_seconds must be > 0 "
+                f"(got {v}); a window of zero silently disables the caller-keyed "
+                "budget. Disable the guard with delegation_budget = false if that "
+                "is what you mean."
+            )
+        return v
+
     @field_validator("doom_loop_threshold")
     @classmethod
     def _threshold_at_least_one(cls, v: int) -> int:
