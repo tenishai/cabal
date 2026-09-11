@@ -62,7 +62,7 @@ async def test_rewording_does_not_evade_the_budget() -> None:
         VerdictType.PASS,
         VerdictType.PASS,
         VerdictType.PASS,
-        VerdictType.BLOCK,
+        VerdictType.TERMINATE,
     ]
 
 
@@ -73,7 +73,7 @@ async def test_a_different_target_does_not_get_a_fresh_budget() -> None:
     g = DelegationBudgetGuardrail(limit=2)
     assert (await g.check(_task(target_agent="a"), _ctx())).type is VerdictType.PASS
     assert (await g.check(_task(target_agent="b"), _ctx())).type is VerdictType.PASS
-    assert (await g.check(_task(target_agent="c"), _ctx())).type is VerdictType.BLOCK
+    assert (await g.check(_task(target_agent="c"), _ctx())).type is VerdictType.TERMINATE
 
 
 @pytest.mark.asyncio
@@ -88,7 +88,7 @@ async def test_every_delegation_after_the_cap_also_blocks() -> None:
     assert (await g.check(_task("first"), _ctx())).type is VerdictType.PASS
     for i in range(5):
         v = await g.check(_task(f"attempt {i}"), _ctx())
-        assert v.type is VerdictType.BLOCK, f"attempt {i} slipped through"
+        assert v.type is VerdictType.TERMINATE, f"attempt {i} slipped through"
 
 
 @pytest.mark.asyncio
@@ -99,7 +99,7 @@ async def test_the_block_reason_tells_the_agent_rewording_will_not_help() -> Non
     g = DelegationBudgetGuardrail(limit=1)
     await g.check(_task(), _ctx())
     v = await g.check(_task(), _ctx())
-    assert v.type is VerdictType.BLOCK
+    assert v.type is VerdictType.TERMINATE
     assert v.reason is not None
     assert "rephrasing" in v.reason
     assert "limit 1" in v.reason
@@ -118,7 +118,7 @@ async def test_separate_conversations_keep_separate_budgets() -> None:
     g = DelegationBudgetGuardrail(limit=1)
     assert (await g.check(_task(context_id="ctx-a"), _ctx())).type is VerdictType.PASS
     assert (await g.check(_task(context_id="ctx-b"), _ctx())).type is VerdictType.PASS
-    assert (await g.check(_task(context_id="ctx-a"), _ctx())).type is VerdictType.BLOCK
+    assert (await g.check(_task(context_id="ctx-a"), _ctx())).type is VerdictType.TERMINATE
 
 
 @pytest.mark.asyncio
@@ -147,7 +147,7 @@ async def test_an_un_threaded_caller_is_bounded_by_its_own_identity() -> None:
         await g.check(_task(context_id=None, task_id=f"fresh-{i}"), _ctx())
         for i in range(30)
     ]
-    blocked = [i for i, v in enumerate(verdicts) if v.type is VerdictType.BLOCK]
+    blocked = [i for i, v in enumerate(verdicts) if v.type is VerdictType.TERMINATE]
     assert blocked, "an un-threaded caller was not bounded at all"
     assert blocked[0] == 20, f"expected the 21st to be the first refusal, got {blocked}"
 
@@ -164,7 +164,7 @@ async def test_two_un_threaded_callers_do_not_share_one_budget() -> None:
     a = GuardrailContext(persona_name="caller-a", task_id="t-1", phase="router")
     b = GuardrailContext(persona_name="caller-b", task_id="t-2", phase="router")
     assert (await g.check(_task(context_id=None, task_id="x-1"), a)).type is VerdictType.PASS
-    assert (await g.check(_task(context_id=None, task_id="x-2"), a)).type is VerdictType.BLOCK
+    assert (await g.check(_task(context_id=None, task_id="x-2"), a)).type is VerdictType.TERMINATE
     assert (await g.check(_task(context_id=None, task_id="x-3"), b)).type is VerdictType.PASS
 
 
@@ -191,7 +191,7 @@ async def test_un_threaded_traffic_does_not_evict_a_real_conversation() -> None:
         await g.check(_task(context_id=None, task_id=f"noise-{i}"), noise)
 
     after = await g.check(_task(context_id="victim-conversation"), victim)
-    assert after.type is VerdictType.BLOCK, "unrelated traffic reset a real budget"
+    assert after.type is VerdictType.TERMINATE, "unrelated traffic reset a real budget"
 
 
 @pytest.mark.asyncio
@@ -222,7 +222,7 @@ async def test_budget_is_charged_at_attempt_time_with_no_refund() -> None:
         assert (await g.check(_task(), _ctx())).type is VerdictType.PASS
     # Whatever the caller went on to do with those two dispatches -- succeed,
     # time out, hit a dead endpoint -- the third is refused.
-    assert (await g.check(_task(), _ctx())).type is VerdictType.BLOCK
+    assert (await g.check(_task(), _ctx())).type is VerdictType.TERMINATE
 
 @pytest.mark.asyncio
 async def test_no_input_shape_is_free() -> None:
@@ -331,6 +331,19 @@ def test_the_config_refuses_a_zero_caller_window_too() -> None:
 
     from cabal.config.identity import GuardrailsConfig
 
+# cabal#152 — these guards now return TERMINATE, not BLOCK.
+#
+# The change is semantic, not cosmetic, and updating the assertion is the
+# point rather than collateral. A BLOCK advises and lets the task continue;
+# in the storm behind #146 an agent took that advice ~270 times, because an
+# agent with no terminal state has exactly one move when stuck. Neither of
+# these refusals can be rephrased past: an edge is operator config and a
+# spent budget is spent. So they END the task.
+#
+# The budget previously reached terminal behaviour by ACCIDENT -- its counter
+# only rises, so once over budget every later delegation blocked too. That was
+# a workaround exploiting monotonicity, not a terminal state.
+
     assert GuardrailsConfig().delegation_budget_caller_window_seconds == 3600.0
     for bad in (0.0, -5.0):
         with pytest.raises(ValidationError, match="must be > 0"):
@@ -381,13 +394,13 @@ async def test_a_blocked_caller_recovers_when_its_window_refills(monkeypatch) ->
             VerdictType.PASS
         )
     assert (await g.check(_task(context_id=None, task_id="over"), caller)).type is (
-        VerdictType.BLOCK
+        VerdictType.TERMINATE
     )
 
     # Retrying inside the window must NOT refill it -- that is the no-refund rule.
     clock["t"] += 3599
     assert (await g.check(_task(context_id=None, task_id="retry"), caller)).type is (
-        VerdictType.BLOCK
+        VerdictType.TERMINATE
     ), "the window refilled early, or a retry reset it"
 
     # Past the window, the caller is serviceable again.
@@ -412,7 +425,7 @@ async def test_a_conversation_budget_does_not_refill(monkeypatch) -> None:
 
     clock["t"] += 86_400  # a day later
     v = await g.check(_task(context_id="one-conversation"), _ctx())
-    assert v.type is VerdictType.BLOCK, "a conversation budget refilled with time"
+    assert v.type is VerdictType.TERMINATE, "a conversation budget refilled with time"
 
 
 @pytest.mark.asyncio

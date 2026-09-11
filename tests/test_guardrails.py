@@ -685,3 +685,47 @@ async def test_run_guardrails_taskaborted_propagates() -> None:
 
     with pytest.raises(TaskAborted):
         await run_guardrails([_Aborter()], "x", _ctx())
+
+
+@pytest.mark.asyncio
+async def test_terminate_short_circuits_the_chain_like_block() -> None:
+    """cabal#152 — both refusals stop the chain; they differ only in what the
+    router does with them. A TERMINATE that let later guardrails run could be
+    overwritten by a PASS, and the task would proceed after a refusal that
+    cannot be rephrased past."""
+
+    class _Terminating:
+        async def check(self, target, ctx):
+            return Verdict.terminate("spent")
+
+    class _Counting:
+        def __init__(self):
+            self.calls = 0
+
+        async def check(self, target, ctx):
+            self.calls += 1
+            return Verdict.pass_()
+
+    after = _Counting()
+    v = await run_guardrails([_Terminating(), after], "t", _ctx())
+    assert v.type is VerdictType.TERMINATE
+    assert after.calls == 0, "a guardrail after TERMINATE must not run"
+
+
+@pytest.mark.asyncio
+async def test_a_raising_guardrail_still_fails_closed_as_block_not_terminate() -> None:
+    """The fail-closed path is deliberately the ADVISORY refusal.
+
+    An unexpected exception in a safety check says nothing about whether the
+    caller could succeed by trying differently -- it says the check broke. A
+    guard that crashes should not silently acquire the power to end tasks,
+    which is the strongest verdict in the system.
+    """
+
+    class _Raising:
+        async def check(self, target, ctx):
+            raise RuntimeError("boom")
+
+    v = await run_guardrails([_Raising()], "t", _ctx())
+    assert v.type is VerdictType.BLOCK
+    assert "boom" in (v.reason or "")

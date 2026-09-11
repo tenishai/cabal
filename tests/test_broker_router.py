@@ -1324,3 +1324,99 @@ async def test_the_streaming_router_tells_a_guardrail_who_the_caller_is(
         pass
     assert seen[-1].caller_persona is None
     assert seen[-1].caller_agent == "operator:richard"
+
+
+class _VerdictGuard:
+    """Returns a configured verdict, and records that it ran."""
+
+    def __init__(self, verdict: Verdict) -> None:
+        self.verdict = verdict
+        self.calls = 0
+
+    async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+        self.calls += 1
+        return self.verdict
+
+
+@pytest.mark.asyncio
+async def test_terminate_ends_the_task_while_block_lets_it_continue(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """cabal#152 — the two refusals differ in what the ROUTER does with them.
+
+    This is the whole issue in one test. BLOCK advises: the router turns it
+    into a policy-violation Task and hands it back, and in the storm behind
+    #146 an agent took that advice roughly 270 times, because an agent with no
+    terminal state has exactly one move when stuck. TERMINATE ends the task.
+
+    Both assertions matter. Losing the second would mean TERMINATE worked and
+    nobody noticed BLOCK had stopped advising -- which would break
+    DoomLoopGuardrail's contract, deliberate since #42, on a guard that SHOULD
+    let a task continue because the next rephrase may succeed.
+    """
+    from cabal.core.broker.router import GuardrailBlocked
+
+    def _router(verdict: Verdict) -> tuple[DispatchRouter, _VerdictGuard]:
+        guard = _VerdictGuard(verdict)
+        r = DispatchRouter(
+            sessionmaker=sessionmaker,
+            bookkeeper=Bookkeeper(sessionmaker),
+            jwks_provider=jwks_provider,
+            input_guardrails=[guard],
+        )
+        r.register_local(FakeArchivist())
+        return r, guard
+
+    token = mint(signing_key=signing_key, sub="persona:mason", aud="archivist", persona="mason")
+
+    # BLOCK: advisory. A Task comes back; nothing raises.
+    r, guard = _router(Verdict.block("try something else"))
+    blocked_task = _sample_task()
+    blocked_task.id = "t-block"
+    response = await r.dispatch(
+        target_agent="archivist", target_generation=None,
+        task=blocked_task, caller_jwt=token,
+    )
+    assert response is not None, "BLOCK must still hand back a Task, not raise"
+    assert guard.calls == 1
+
+    # TERMINATE: the task ends.
+    r2, guard2 = _router(Verdict.terminate("no edge, and no wording changes that"))
+    term_task = _sample_task()
+    term_task.id = "t-term"
+    with pytest.raises(GuardrailBlocked) as caught:
+        await r2.dispatch(
+            target_agent="archivist", target_generation=None,
+            task=term_task, caller_jwt=token,
+        )
+    assert "terminated the task" in str(caught.value)
+    assert "no wording changes that" in str(caught.value)
+    assert guard2.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_terminate_ends_a_streaming_dispatch_too(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """The streaming path has no advisory mode -- there is no partial Task to
+    annotate -- so both refusals end the stream. The WORDING must still follow
+    the verdict, or a caller cannot tell a spent budget from a nudge."""
+    from cabal.core.broker.router import GuardrailBlocked
+
+    guard = _VerdictGuard(Verdict.terminate("budget exhausted"))
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        input_guardrails=[guard],
+    )
+    router.register_local(FakeStreamingArchivist())
+    token = mint(signing_key=signing_key, sub="persona:mason", aud="archivist", persona="mason")
+
+    with pytest.raises(GuardrailBlocked) as caught:
+        async for _ in router.dispatch_streaming(
+            target_agent="archivist", target_generation=None,
+            task=_sample_task(), caller_jwt=token,
+        ):
+            pass
+    assert "terminated the task" in str(caught.value)

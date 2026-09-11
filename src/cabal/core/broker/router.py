@@ -269,6 +269,18 @@ class DispatchRouter:
                 # Consistent with cabal_trace_id / cabal_span_id convention.
                 task.metadata["cabal_target_agent"] = target_agent
                 verdict = await run_guardrails(self._input_guardrails, task, guard_ctx)
+                if verdict.type == VerdictType.TERMINATE:
+                    # ENDS THE TASK (cabal#152). Reuses the machinery #153
+                    # built for the streaming path: GuardrailBlocked is
+                    # reported as ERROR_FORBIDDEN rather than ERROR_INTERNAL,
+                    # so a peer is told the refusal is about the caller and
+                    # will not change on retry -- which is the whole point of
+                    # a terminal verdict. A BLOCK below still advises.
+                    blocked = GuardrailBlocked(
+                        f"router guardrail terminated the task: {verdict.reason}"
+                    )
+                    await self._bookkeeper.on_dispatch_failure(task, blocked)
+                    raise blocked
                 if verdict.type == VerdictType.BLOCK:
                     response = annotate(
                         task,
@@ -414,8 +426,17 @@ class DispatchRouter:
             # delegation hash on this and would otherwise hash an empty target.
             task.metadata["cabal_target_agent"] = target_agent
             verdict = await run_guardrails(self._input_guardrails, task, guard_ctx)
-            if verdict.type == VerdictType.BLOCK:
-                blocked = GuardrailBlocked(f"router guardrail blocked: {verdict.reason}")
+            if verdict.type in (VerdictType.BLOCK, VerdictType.TERMINATE):
+                # The streaming path has no advisory mode: there is no partial
+                # Task to annotate and hand back, so a BLOCK already ends the
+                # stream. TERMINATE lands here identically, and the wording
+                # follows the verdict so the caller can tell which it was.
+                word = (
+                    "terminated the task"
+                    if verdict.type == VerdictType.TERMINATE
+                    else "blocked"
+                )
+                blocked = GuardrailBlocked(f"router guardrail {word}: {verdict.reason}")
                 # CLOSE the record we just opened. Without this the refusal
                 # leaves a started-and-never-finished dispatch, which is worse
                 # than no row: it reads as an in-flight call that vanished.

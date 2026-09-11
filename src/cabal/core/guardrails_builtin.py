@@ -436,7 +436,7 @@ class DelegationBudgetGuardrail:
                 if windowed
                 else ""
             )
-            return Verdict.block(
+            return Verdict.terminate(
                 reason=(
                     f"Delegation budget exhausted: {self._limit} delegations "
                     f"already made in this conversation (limit {self._limit}). Every "
@@ -545,7 +545,7 @@ class DelegationEdgeGuardrail:
             sub = ctx.caller_agent or ""
             if sub.startswith(OPERATOR_SUB_PREFIX):
                 return Verdict.pass_()
-            return Verdict.block(
+            return Verdict.terminate(
                 reason=(
                     "Delegation refused: the caller is neither an identified "
                     f"persona nor the operator (sub={sub!r}). Delegation edges "
@@ -559,7 +559,7 @@ class DelegationEdgeGuardrail:
         task: Task = target
         target_agent = str(task.metadata.get("cabal_target_agent", "") or "")
         if not target_agent:
-            return Verdict.block(
+            return Verdict.terminate(
                 reason=(
                     "Delegation refused: the target could not be identified, so "
                     "no edge could be checked. This is a refusal rather than a "
@@ -573,7 +573,7 @@ class DelegationEdgeGuardrail:
 
         declared = sorted(self._edges.get(caller, frozenset()))
         may = ", ".join(declared) if declared else "nothing"
-        return Verdict.block(
+        return Verdict.terminate(
             reason=(
                 f"Delegation refused: no declared edge from '{caller}' to "
                 f"'{target_agent}'. {caller} may delegate to: {may}. Edges are "

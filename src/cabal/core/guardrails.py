@@ -48,6 +48,29 @@ class VerdictType(StrEnum):
     PASS = "pass"
     BLOCK = "block"
     REWRITE = "rewrite"
+    # TERMINATE ends the task. BLOCK advises and lets it continue (cabal#152).
+    #
+    # THE DISTINCTION IS THE INCIDENT'S LESSON, not a taxonomy exercise. A
+    # terminal error closes ONE AFFORDANCE; it does not terminate the task. In
+    # the A2A storm behind #146 an agent received BLOCK's advice roughly 270
+    # times and each time did the only thing an agent with no terminal state
+    # can do: try again. Every affordance needs a matching terminal state -- if
+    # it can ask, it must be able to give up.
+    #
+    # WHICH VERDICT A GUARD RETURNS IS A PROPERTY OF WHAT IT MEASURES:
+    #   BLOCK      a SAMENESS counter. "You have asked this three times, try
+    #              something else" must not kill a task that may be one
+    #              rephrase from succeeding. DoomLoopGuardrail keeps this
+    #              contract, deliberately and since #42.
+    #   TERMINATE  a refusal that cannot be rephrased past. An authorization
+    #              edge (#154) is operator config -- no wording changes it. A
+    #              budget is spent -- no wording refills it.
+    #
+    # #146 reached terminal behaviour by ACCIDENT: its counter only rises, so
+    # once over budget every later delegation blocks too. That is a workaround
+    # exploiting monotonicity, not a terminal state, and a guard whose
+    # semantics were not monotonic would have had no such recourse.
+    TERMINATE = "terminate"
 
 
 @dataclass(frozen=True)
@@ -77,6 +100,15 @@ class Verdict:
     def block(cls, reason: str) -> Verdict:
         """Block dispatch with a human-readable reason."""
         return cls(type=VerdictType.BLOCK, reason=reason)
+
+    @classmethod
+    def terminate(cls, reason: str) -> Verdict:
+        """End the task. The reason reaches the caller as a refusal, not advice.
+
+        Use where no rephrasing can change the outcome (cabal#152). If the
+        agent could plausibly succeed by trying differently, that is a BLOCK.
+        """
+        return cls(type=VerdictType.TERMINATE, reason=reason)
 
     @classmethod
     def rewrite(cls, value: Any, reason: str = "") -> Verdict:
@@ -166,7 +198,9 @@ async def run_guardrails(
     """Run ``guardrails`` in order; return the final Verdict.
 
     Semantics (documented at the module level):
-    - First BLOCK short-circuits — remaining guardrails are skipped.
+    - First BLOCK **or TERMINATE** short-circuits — remaining guardrails are
+      skipped. Both are refusals; they differ in what the ROUTER does with
+      them, not in whether the chain continues (cabal#152).
     - A REWRITE threads its value into the next guardrail's target.
     - A guardrail whose ``check()`` RAISES is treated as a **fail-closed
       BLOCK** naming the guardrail — an unexpected error in a safety check
@@ -202,7 +236,7 @@ async def run_guardrails(
             return Verdict.block(
                 f"guardrail {name!r} raised {type(exc).__name__}: {exc}"
             )
-        if v.type == VerdictType.BLOCK:
+        if v.type in (VerdictType.BLOCK, VerdictType.TERMINATE):
             return v
         if v.type == VerdictType.REWRITE:
             current = v.rewritten
