@@ -342,6 +342,19 @@ class DelegationBudgetGuardrail:
     def limit(self) -> int:
         return self._limit
 
+    def usage(self, session_key: str) -> tuple[int, int]:
+        """(spent, limit) for a key. cabal#156.
+
+        AN AGENT THAT KNOWS IT HAS THREE DELEGATIONS LEFT CAN PLAN; AN AGENT
+        THAT DISCOVERS A WALL CAN ONLY RETRY. That is the incident in one
+        sentence -- it hit a limit it could not see, concluded nothing, and
+        asked again roughly 270 times. The BLOCK message tells an agent the
+        budget is EXHAUSTED; nothing told it the budget EXISTED while it still
+        had room to spend deliberately.
+        """
+        entry = self._counts.get(session_key)
+        return ((entry[0] if entry else 0), self._limit)
+
     async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
         """PASS until a conversation exceeds its budget, then BLOCK every time."""
         if not isinstance(target, Task):
@@ -427,6 +440,17 @@ class DelegationBudgetGuardrail:
         if len(self._counts) >= self._maxsize:
             self._counts.pop(next(iter(self._counts)))
         self._counts[session_key] = (count, window_start)
+
+        # RIDE BACK IN THE REPLY (cabal#156). The cheapest of the three places
+        # the issue considers -- a system prompt is stale the moment anything
+        # is spent, and per-turn injection needs a path that does not exist --
+        # and the most accurate, because it is written at the moment of
+        # spending rather than recalled later.
+        #
+        # AN AGENT THAT KNOWS IT HAS THREE DELEGATIONS LEFT CAN PLAN; AN AGENT
+        # THAT DISCOVERS A WALL CAN ONLY RETRY. The BLOCK message tells it the
+        # budget is EXHAUSTED; until now nothing told it the budget EXISTED.
+        task.metadata["cabal_delegation_budget"] = f"{count} of {self._limit} used"
 
         if count > self._limit:
             refill = (

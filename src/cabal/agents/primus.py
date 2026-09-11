@@ -71,7 +71,38 @@ class _DoomLoopError(Exception):
         self.reason = reason
 
 
+#: The most subordinate legs one fan-out may open at once (cabal#156).
+#:
+#: A HARD CEILING IN CODE, mirroring MAX_DELEGATIONS_PER_CONTEXT: a policy may
+#: only lower it. A policy-only limit fails open exactly when the policy is
+#: missing, which is the deployment most likely to need it.
+#:
+#: BREADTH IS ITS OWN AXIS and neither existing bound covers it. #144 bounds
+#: how DEEP a chain runs; #146 bounds how MANY delegations a conversation makes
+#: in total. Forty concurrent legs sit inside a depth bound of 8 and inside a
+#: total budget of 40 -- by spending the whole budget in one burst. Concurrency
+#: has costs total-volume cannot express: connections, tokens, and the liveness
+#: starvation that killed the container in the incident behind #146.
+#:
+#: Sympozium checks the same thing at spawn_router.go:422, with a policy
+#: default of 3 children against a controller constant.
+MAX_LEGS_PER_FANOUT = 8
+
+
+class _FanOutTooWideError(_DoomLoopError):
+    """The plan fans out past MAX_LEGS_PER_FANOUT (cabal#156).
+
+    A SUBCLASS so handle_task's existing `except _DoomLoopError` turns it into
+    the same annotated policy-violation Task -- no second refusal path -- while
+    the type stays honest about which bound was hit.
+    """
+
+
+
 @dataclass
+
+
+
 class PrimusPersona(LLMPersona):
     """Generic PLAN→IMPLEMENT→(REVIEW)→AGGREGATE primus base.
 
@@ -107,7 +138,8 @@ class PrimusPersona(LLMPersona):
         model: str | None = None,
         default_model: str,
         max_tokens: int = 8192,
-        doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
+        doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,
+        max_legs: int = MAX_LEGS_PER_FANOUT,  # type: ignore[assignment]
     ) -> None:
         if not any(role != "reviewer" for role in subordinates):
             raise ValueError(
@@ -135,6 +167,11 @@ class PrimusPersona(LLMPersona):
         self.hook_registry = hook_registry
         # doom_loop is default-on: a fresh guard is created unless the caller
         # explicitly passes None (disabled) or a custom DoomLoopGuardrail instance.
+        # CLAMPED, NOT HONOURED, mirroring DelegationBudgetGuardrail's limit
+        # (#146): a policy may only LOWER the ceiling. A deployment asking for
+        # more than the backstop should still boot, bounded, rather than
+        # refuse to start -- and must not be able to raise its own bound.
+        self._max_legs = max(1, min(max_legs, MAX_LEGS_PER_FANOUT))
         if doom_loop is _DOOM_LOOP_DEFAULT:
             self._doom_loop: DoomLoopGuardrail | None = DoomLoopGuardrail()
         else:
@@ -158,6 +195,21 @@ class PrimusPersona(LLMPersona):
         # to the old sequential behaviour (gather-of-one).
         leg_roles = [role for role in self.subordinates if role != "reviewer"]
         try:
+            # BOUND THE BREADTH BEFORE SPENDING ANYTHING (cabal#156). Refusing
+            # after the gather has already opened forty connections bounds
+            # nothing that matters -- the cost is paid at open time. INSIDE the
+            # try so it becomes an annotated policy-violation Task through the
+            # existing handler, rather than propagating as an exception the
+            # caller never asked to handle.
+            if len(leg_roles) > self._max_legs:
+                raise _FanOutTooWideError(
+                    f"this plan fans out to {len(leg_roles)} subordinates, "
+                    f"above the limit of {self._max_legs}. Breadth is bounded "
+                    "separately from depth and from total volume because "
+                    "concurrency costs connections and tokens at once rather "
+                    "than over time. Narrow the plan; rephrasing will not "
+                    "widen the limit."
+                )
             leg_outputs = await self._dispatch_legs(task, leg_roles, plan_text)
             reviewer_critique: str | None = None
             self.abort_coordinator.raise_if_aborted(task.id)

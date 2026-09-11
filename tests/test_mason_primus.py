@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from cabal.agents.personas.mason import MASON_SYSTEM_PROMPT, MasonPrimusPersona
+from cabal.agents.primus import MAX_LEGS_PER_FANOUT
 from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, reason_code
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
@@ -576,3 +577,42 @@ def test_mason_system_prompt_frames_sre_and_reliability() -> None:
     assert "sre" in low or "reliability" in low
     assert "infrastructure" in low or "platform" in low
     assert "delegate" in low
+
+
+@pytest.mark.asyncio
+async def test_a_fan_out_wider_than_the_ceiling_is_refused() -> None:
+    """cabal#156 — breadth is its own axis.
+
+    #144 bounds how DEEP a chain runs; #146 bounds how MANY delegations a
+    conversation makes in total. Neither bounds how many children one agent
+    opens AT ONCE — forty concurrent legs sit inside a depth bound of 8 and
+    inside a total budget of 40, by spending the whole budget in one burst.
+    Concurrency costs connections and tokens simultaneously rather than over
+    time, which is the liveness starvation that killed the container.
+    """
+    subs = {f"impl{n}": _subordinate(_client(["out"])[0]) for n in range(5)}
+    mason = MasonPrimusPersona(
+        _client(["a plan"])[0],
+        subordinates=subs,
+        doom_loop=None,
+        max_legs=2,
+    )
+    result = await mason.handle_task(_task_with_ctx("build"))
+    text = " ".join(
+        p.text for p in result.status.message.parts if isinstance(p, TextPart)
+    ) if result.status.message else ""
+    assert "fans out to 5" in text
+    assert "limit of 2" in text
+    assert "rephrasing will not widen the limit" in text
+
+
+@pytest.mark.asyncio
+async def test_a_policy_cannot_raise_the_breadth_ceiling() -> None:
+    """CLAMPED, NOT HONOURED, mirroring #146's limit. A policy-only bound fails
+    open exactly when the policy is missing, and a deployment must not be able
+    to raise its own ceiling."""
+    subs = {"impl": _subordinate(_client(["out"])[0])}
+    mason = MasonPrimusPersona(
+        _client(["plan"])[0], subordinates=subs, doom_loop=None, max_legs=10_000
+    )
+    assert mason._max_legs == MAX_LEGS_PER_FANOUT

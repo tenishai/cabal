@@ -428,3 +428,35 @@ async def test_an_unkeyable_delegation_fails_open_in_one_place() -> None:
         v = await g.check(_task(context_id=None, task_id=f"u-{i}"), blank)
         assert v.type is VerdictType.PASS
     assert g._counts == {}, "an un-keyable delegation minted a counter"
+
+
+@pytest.mark.asyncio
+async def test_every_dispatch_carries_the_budget_back_to_the_agent() -> None:
+    """cabal#156 — an agent that knows it has three delegations left can plan;
+    an agent that discovers a wall can only retry.
+
+    That is the incident in one sentence: it hit a limit it could not see,
+    concluded nothing, and asked again roughly 270 times. The BLOCK message
+    says the budget is EXHAUSTED. Nothing said the budget EXISTED while there
+    was still room to spend it deliberately.
+
+    Stamped at the moment of spending rather than recalled later, so it cannot
+    be stale.
+    """
+    g = DelegationBudgetGuardrail(limit=20)
+    ctx = _ctx()
+    for expected in (1, 2, 3):
+        task = _task(context_id="c")
+        await g.check(task, ctx)
+        assert task.metadata["cabal_delegation_budget"] == f"{expected} of 20 used"
+
+
+@pytest.mark.asyncio
+async def test_usage_reports_spend_without_spending() -> None:
+    """A reader must be able to ask without consuming — otherwise every
+    attempt to check the budget would itself cost one."""
+    g = DelegationBudgetGuardrail(limit=20)
+    assert g.usage("unseen") == (0, 20)
+    await g.check(_task(context_id="c"), _ctx())
+    assert g.usage("c") == (1, 20)
+    assert g.usage("c") == (1, 20), "reading the budget must not spend it"

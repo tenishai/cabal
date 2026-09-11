@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from cabal.agents.primus import (
     _DOOM_LOOP_DEFAULT,
+    MAX_LEGS_PER_FANOUT,
     PrimusPersona,
     _DoomLoopError,
 )
@@ -81,6 +82,8 @@ class MasonPrimusPersona(PrimusPersona):
         model: str | None = None,
         max_tokens: int = 8192,
         doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
+        # cabal#156 — forwarded so a policy can LOWER the breadth ceiling.
+        max_legs: int = MAX_LEGS_PER_FANOUT,
     ) -> None:
         super().__init__(
             llm_client,
@@ -93,4 +96,5 @@ class MasonPrimusPersona(PrimusPersona):
             default_model=DEFAULT_MODEL,
             max_tokens=max_tokens,
             doom_loop=doom_loop,
+            max_legs=max_legs,
         )
