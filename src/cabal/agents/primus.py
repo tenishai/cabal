@@ -37,7 +37,11 @@ from cabal.core.a2a.codes import (
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import KIND_SUBORDINATE
 from cabal.core.guardrails import GuardrailContext, VerdictType
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import (
+    DEPTH_KEY,
+    DoomLoopGuardrail,
+    next_delegation_depth,
+)
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient, LLMTruncatedError
 
@@ -378,6 +382,11 @@ class PrimusPersona(LLMPersona):
                     **parent_task.metadata,
                     "cabal_parent_task": parent_task.id,
                     "cabal_subordinate_role": role,
+                    # cabal#144 — the hop counter. Inherited-plus-one rather
+                    # than recomputed, so a chain that leaves this process and
+                    # comes back keeps counting; depth is a property of the
+                    # CHAIN, not of one primus's view of it.
+                    DEPTH_KEY: next_delegation_depth(parent_task),
                     "cabal_span_id": secrets.token_hex(8),
                 },
             }
