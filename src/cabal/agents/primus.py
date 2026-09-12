@@ -41,6 +41,7 @@ from cabal.core.guardrails_builtin import (
     BUDGET_KEY,
     DEPTH_KEY,
     DelegationBudgetGuardrail,
+    DelegationDepthGuardrail,
     DoomLoopGuardrail,
     next_delegation_depth,
 )
@@ -158,6 +159,7 @@ class PrimusPersona(LLMPersona):
         doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
         max_legs: int = MAX_LEGS_PER_FANOUT,
         delegation_budget: DelegationBudgetGuardrail | None = None,
+        delegation_depth: DelegationDepthGuardrail | None = None,
     ) -> None:
         legs = [role for role in subordinates if role != "reviewer"]
         if not legs:
@@ -234,6 +236,16 @@ class PrimusPersona(LLMPersona):
         # one by default: an unshared default would be exactly the second
         # instance this comment exists to prevent.
         self._delegation_budget = delegation_budget
+        # cabal#171 — THE ROUTER'S depth instance, for the same reason #158 took
+        # the router's budget: one enforcement point rather than two that can
+        # disagree. Until this landed the counter and the check NEVER MET --
+        # `next_delegation_depth` stamped a depth on every fan-out leg and
+        # nothing read it at a decision point, because the guard ran only in
+        # `build_router_input_guardrails` and a leg goes straight to
+        # `subord.handle_task`. The increment was write-only, so cabal's own
+        # delegation could not accumulate depth and the limit of 8 was
+        # unreachable by accumulation.
+        self._delegation_depth = delegation_depth
 
     async def handle_task(self, task: Task) -> Task:
         # cabal#11 — the parent dispatch node (task.id) is registered by the
@@ -549,7 +561,11 @@ class PrimusPersona(LLMPersona):
         # bounds router-mediated delegation and nothing else. That left fan-out
         # legs bounded by the sameness counter alone, which is the counter #146
         # exists precisely because rewording defeats.
-        if self._doom_loop is not None or self._delegation_budget is not None:
+        if (
+            self._doom_loop is not None
+            or self._delegation_budget is not None
+            or self._delegation_depth is not None
+        ):
             sub_task.metadata["cabal_target_agent"] = role
             guard_ctx = GuardrailContext(
                 persona_name=self.name, task_id=sub_task.id, phase="router"
@@ -601,7 +617,23 @@ class PrimusPersona(LLMPersona):
             # unreachable besides: this boundary calls guard.check() directly
             # rather than run_guardrails, so the PASS-carrying-`rewritten`
             # shape never arises here and neither guard returns REWRITE.
-            for guard in (self._doom_loop, self._delegation_budget):
+            # DEPTH IS CHECKED AGAINST THE STAMP THIS SAME METHOD APPLIED.
+            # `sub_task`'s DEPTH_KEY was set above from
+            # `next_delegation_depth(parent_task)`, and the guard reads that key
+            # -- so the number the guard SEES is the number the fan-out STAMPED.
+            # That identity is what cabal#171 was about and what every prior
+            # test missed, because each looked at only one of the two.
+            #
+            # DEPTH FIRST AMONG THE THREE, matching the order
+            # `build_router_input_guardrails` uses and for its reason: depth is
+            # STRUCTURAL, so it is the one a paraphrase cannot evade, and a
+            # chain already too deep should hear that rather than "your budget
+            # is spent".
+            for guard in (
+                self._delegation_depth,
+                self._doom_loop,
+                self._delegation_budget,
+            ):
                 if guard is None:
                     continue
                 verdict = await guard.check(sub_task, guard_ctx)

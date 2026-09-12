@@ -12,8 +12,11 @@ from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, reason_code
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.guardrails_builtin import (
+    DEPTH_KEY,
     DelegationBudgetGuardrail,
+    DelegationDepthGuardrail,
     DoomLoopGuardrail,
+    next_delegation_depth,
 )
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
@@ -993,3 +996,92 @@ async def test_the_legs_are_not_told_a_budget_they_cannot_spend() -> None:
     )
     plan_system = primus_calls[0]["messages"][0]["content"]
     assert "1 of 20 used" in plan_system, "the fix stripped the key from the spender too"
+
+
+# --- cabal#171: the counter and the check must MEET ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_depth_the_guard_sees_is_the_depth_the_fanout_stamped() -> None:
+    """THE ASSERTION THAT WOULD HAVE CAUGHT THE PRESENT STATE (cabal#171).
+
+    `next_delegation_depth` stamped a depth on every fan-out leg and nothing
+    read it at a decision point: `DelegationDepthGuardrail` ran only inside
+    `build_router_input_guardrails`, and a leg goes straight to
+    `subord.handle_task` without touching the router. The increment was
+    WRITE-ONLY, so cabal's own delegation could not accumulate depth at all.
+
+    Every prior test looked at ONE of those two numbers. This one pins that
+    they are the same number, by capturing what the guard was actually handed.
+    """
+    seen: list[int] = []
+
+    class _Spy(DelegationDepthGuardrail):
+        async def check(self, target, ctx):  # type: ignore[override]
+            seen.append(int(target.metadata.get(DEPTH_KEY, -1)))
+            return await super().check(target, ctx)
+
+    primus_client, _ = _client(["plan", "sum"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_depth=_Spy(max_depth=8),
+    )
+
+    parent = _task()
+    parent.metadata = {DEPTH_KEY: 3}
+    await mason.handle_task(parent)
+
+    assert seen, "the depth guard was never consulted at the subordinate boundary"
+    assert seen == [next_delegation_depth(parent)], (
+        f"the guard saw {seen}, the fan-out stamped "
+        f"{next_delegation_depth(parent)} — the counter and the check "
+        "are looking at different numbers"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_fanout_at_the_depth_limit_is_refused() -> None:
+    """And the number being the same must actually STOP something.
+
+    The test above would pass on a guard that is consulted and ignored, so this
+    one pins the refusal. A parent arriving at the limit means its legs would
+    be one deeper, which is what the guard must catch.
+    """
+    primus_client, _ = _client(["plan", "sum"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_depth=DelegationDepthGuardrail(max_depth=2),
+    )
+
+    parent = _task()
+    parent.metadata = {DEPTH_KEY: 2}
+    response = await mason.handle_task(parent)
+
+    # A refused leg fails the fan-out, the same shape a doom-loop block takes.
+    assert response.status.state == "failed", (
+        "a fan-out whose legs exceed the depth limit was not refused"
+    )
+
+
+@pytest.mark.asyncio
+async def test_depth_none_leaves_the_fanout_exactly_as_before() -> None:
+    """An operator who disabled depth must see no change (`delegation_depth`
+    is None then, and the boundary must not invent a guard)."""
+    primus_client, _ = _client(["plan", "sum"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_depth=None,
+    )
+    parent = _task()
+    parent.metadata = {DEPTH_KEY: 99}  # far past any limit
+    response = await mason.handle_task(parent)
+    assert response.status.state == "completed"
