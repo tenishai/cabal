@@ -44,7 +44,7 @@ from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
 
 #: The exact shape DelegationBudgetGuardrail stamps. Anything else under that
 #: key is a caller's text and is not rendered (cabal#156 r3).
-_BUDGET_NOTE_SHAPE = re.compile(r"\d{1,9} of \d{1,9} used")
+_BUDGET_NOTE_SHAPE = re.compile(r"\d{1,9} of \d{1,9} used", re.ASCII)
 
 # Hard cap on the tool-result summary stored in the activity log's tool_result
 # row. The full result still flows to the LLM as the tool message; only the
@@ -181,8 +181,15 @@ class LLMPersona:
         # path into a prompt this tree has had. It is not only the primus:
         # build_messages is on every persona's path.
         #
-        # Accepting only "<int> of <int> used" is the cheap closure: the guard
-        # writes exactly that, and nothing an attacker can say fits it.
+        # Accepting only "<int> of <int> used" NARROWS the channel; it does not
+        # close it, and an earlier version of this comment claimed it did
+        # (#156 r4). A number is something an attacker can say: wherever the
+        # guard does not reach its stamp -- `delegation_budget = false`, or an
+        # un-keyable dispatch that returns PASS early -- a shape-valid value
+        # from the caller still renders, so they can misstate a budget figure.
+        # What they can no longer do is put arbitrary text in system role,
+        # which is the escalation that mattered. `re.ASCII` at least keeps
+        # `\d` from accepting Unicode decimals like "٣ of ٥ used".
         if not isinstance(used, str) or not _BUDGET_NOTE_SHAPE.fullmatch(used):
             return ""
         return (

@@ -687,3 +687,26 @@ async def test_each_key_class_tells_the_reader_how_to_recover() -> None:
     assert "a new conversation starts a fresh one" in conversation.reason
     assert "refills 3600s" in windowed.reason, windowed.reason
     assert "does not refill" not in windowed.reason
+
+
+@pytest.mark.asyncio
+async def test_unicode_digits_are_not_a_budget_figure() -> None:
+    """cabal#156 r4 Nit — `\\d` IS UNICODE-AWARE IN A str PATTERN.
+
+    Both review arms found this independently: "٣ of ٥ used" satisfied the
+    shape check, so the narrowing was slightly narrower than advertised. The
+    pattern is `re.ASCII` now.
+
+    The comment this pins was also wrong in a way worth keeping visible: it
+    said nothing an attacker can say fits the shape. A NUMBER fits the shape.
+    The fix stops arbitrary text reaching system role; it does not stop a
+    caller misstating a figure where the guard never reached its stamp.
+    """
+    persona, seen = _capturing_persona()
+    task = _task(context_id="c")
+    task.metadata[BUDGET_KEY] = "٣ of ٥ used"
+
+    await persona.handle_task(task)
+
+    assert "٣" not in seen["messages"][0]["content"]
+    assert "Delegation budget" not in seen["messages"][0]["content"]
