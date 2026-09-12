@@ -486,7 +486,29 @@ class DelegationBudgetGuardrail:
             log.debug("cabal.delegation_budget.no_loop_for_write_behind")
             return
         self._writes.add(task)
-        task.add_done_callback(self._writes.discard)
+        task.add_done_callback(self._on_write_done)
+
+    def _on_write_done(self, task: asyncio.Task[None]) -> None:
+        """Discard the reference AND retrieve the exception (#175 r1 nit 5).
+
+        `set.discard` alone was the only callback, and it never calls
+        `task.exception()` -- so a write-behind that raised surfaced only as
+        asyncio's GC-time "Task exception was never retrieved", on the asyncio
+        logger, with no key or task context. For a change whose whole subject
+        is durability, "hydrate succeeded at boot and every write since has
+        failed" is the state most worth naming and was the one that read
+        quietest. `hydrate()` already logs structurally; this matches it.
+        """
+        self._writes.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.error(
+                "cabal.delegation_budget.write_failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
 
     @property
     def limit(self) -> int:

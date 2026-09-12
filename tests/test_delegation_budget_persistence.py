@@ -256,9 +256,12 @@ async def test_a_partial_count_does_still_lapse(
     await guard.check(_task(context_id="ctx-partial"), _ctx())
     await _settle(guard)
 
-    rows = await store.load_recent(
-        limit=100, retention_s=0.001, keep_at_or_above=10
-    )
+    # The row must be PRESENT first, or the assertion below passes on a store
+    # that simply never wrote it (#175 r1 nit 4 -- this call used to assign a
+    # `rows` that nothing read, which proved nothing either way).
+    assert await store.load_recent(
+        limit=100, retention_s=3600.0, keep_at_or_above=10
+    ) != []
     await asyncio.sleep(0.05)
     rows = await store.load_recent(
         limit=100, retention_s=0.001, keep_at_or_above=10
@@ -327,7 +330,14 @@ async def test_hydrate_survives_a_broken_store() -> None:
     bound, but a working one -- rather than take startup with it."""
 
     class Broken(NoOpDelegationBudgetStore):
-        async def load_recent(self, *, limit: int, retention_s: float):
+        # `keep_at_or_above` IS NOT OPTIONAL HERE (#175 r1 nit 3). Without it
+        # the call failed at ARGUMENT BINDING with TypeError and the
+        # RuntimeError below never ran, so this test passed while proving "a
+        # store with a stale signature is survived" -- not what its name says.
+        # `except Exception` caught both, which is exactly why it went unseen.
+        async def load_recent(
+            self, *, limit: int, retention_s: float, keep_at_or_above: int | None = None
+        ):
             raise RuntimeError("table is gone")
 
     guard = DelegationBudgetGuardrail(limit=2, store=Broken())

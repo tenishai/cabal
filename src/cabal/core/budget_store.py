@@ -36,12 +36,30 @@ losing all forty is the bug being fixed.
 CONVERSATION KEYS ONLY
 ----------------------
 
-The guard's `_now` is `time.monotonic`, which resets on restart. A
-caller-keyed entry carries a `window_start` on that clock, so restoring one
-would mean restoring a count against a window whose origin no longer exists.
-A conversation key has no TTL and no window by design, so its count is its
-whole state. That is also the class a resumed task falls into, which is why
-the narrow scope is the right one rather than a compromise.
+The guard reads `time.monotonic()` directly, in `check()` and in `hydrate()`,
+and that clock resets on restart. (It has no injectable `_now` seam -- an
+earlier version of this paragraph said it did, naming one that belongs to
+`DoomLoopGuardrail`. The substance was right and the citation pointed at the
+wrong class; #175 r1 nit 2.) A caller-keyed entry carries a `window_start` on
+that clock, so restoring one would mean restoring a count against a window
+whose origin no longer exists. A conversation key has no TTL and no window by
+design, so its count is its whole state.
+
+SCOPED, NOT COMPLETE, AND THE DIFFERENCE MATTERS (#175 r1 Important). A
+**threaded** resumed task falls into the conversation class and is covered. An
+UN-THREADED one is not: `Task.context_id` defaults to `None`, `check()` then
+falls back to the caller key with `windowed=True`, and the persist is skipped
+-- so **every caller-keyed budget is still zeroed by every restart**, with no
+checkpoint or resume involved. `cbl dispatch` is that live path; `cbl chat`
+threads a contextId.
+
+That is a deliberate accounting, not an oversight: the cost is one extra
+window of a rolling rate limit, which is the failure mode a windowed budget
+already has by design, and persisting a monotonic `window_start` would be
+incoherent. But it is a narrower result than "the scope is complete," which
+is what this docstring used to claim. An operator reading the old wording
+would conclude cabal#174 was closed for everything that can resume. It is
+closed for threaded conversations.
 """
 
 from __future__ import annotations
@@ -95,14 +113,31 @@ class DelegationBudgetStore(Protocol):
         survives a restart would be handed a fresh count, which is a refill
         caused by elapsed time on a key documented as having none.
 
-        Rather than caveat thirteen carriers, the mechanism is narrowed so the
+        Rather than caveat every carrier, the mechanism is narrowed so the
         claim stays true where it matters: a count that reached the limit is
         never pruned by time, so an exhausted conversation stays exhausted
-        across a restart however long it sat. Partial counts still lapse --
-        they must, or the table is unbounded -- and the growth that exemption
-        allows is bounded by the recency cap below, which is the DURABLE
-        ANALOGUE of the LRU retirement the design already documents and
-        accepts, not a third mechanism.
+        across a restart however long it sat. Partial counts still lapse, and
+        the growth the exemption allows is bounded by the recency cap below,
+        which is the DURABLE ANALOGUE of the LRU retirement the design already
+        documents and accepts, not a third mechanism.
+
+        PRUNING IS A STARTUP-TIME PROPERTY, NOT A STEADY-STATE ONE (#175 r1
+        nit 6). `hydrate()` is this method's only production caller, so while a
+        process is up the table grows one row per conversation and collapses to
+        the cap only at the next restart. Measured in review, the startup prune
+        stays cheap well past any realistic row count; the number is in that
+        review rather than here, because a measurement in a comment has nothing
+        to invalidate it (REVIEW-PROCESS.md §4 rule 2).
+
+        `keep_at_or_above` IS NOT SYMMETRIC UNDER A CHANGED LIMIT (#175 r1,
+        measured by the reviewer). Lowering the limit keeps a row that would
+        otherwise have lapsed, which is tighter. RAISING it reclassifies a
+        stored count from exhausted to partial -- a stored 11 under a new limit
+        of 40 -- and that row then lapses on idle, which is looser. It takes an
+        operator deliberately raising a limit to reach, and the looser outcome
+        is the "partial counts lapse" behaviour already documented above; it is
+        recorded because this docstring makes a claim about the exemption and
+        the claim needs the caveat.
         """
         ...
 
