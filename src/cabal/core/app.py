@@ -542,8 +542,24 @@ def create_app(
             if _hydrate is not None:
                 # hydrate() swallows its own store errors and returns 0, so a
                 # cold or broken table degrades to the in-memory bound rather
-                # than taking startup with it. #77's lesson: a startup that
-                # exits on a recoverable condition is worse than a weaker bound.
+                # than taking startup with it.
+                #
+                # THE #77 CITATION THIS COMMENT USED TO CARRY WAS WRONG, and the
+                # pre-pass caught it. It claimed #77's lesson is "a startup that
+                # exits on a recoverable condition is worse than a weaker bound".
+                # #77 argues close to the opposite emphasis: its two fixes were
+                # to CREATE the missing directory (eliminate the recoverable
+                # condition rather than tolerate it) and to SURFACE swallowed
+                # startup errors, and its "Why it matters" is about visibility --
+                # "it cost three diagnostic rounds to see errors that should have
+                # been on the terminal".
+                #
+                # What #77 does support is the half that is easy to get wrong
+                # here: degrading QUIETLY would be the defect. So hydrate logs at
+                # exception level, and the reason to degrade at all is argued on
+                # its own merits -- a budget guard that refuses to boot leaves
+                # the fleet with NO bound, which is strictly worse than the
+                # in-memory bound it had before cabal#174.
                 log.info("cabal.delegation_budget.hydrated", keys=await _hydrate())
 
         dispatch_router = DispatchRouter(
