@@ -201,6 +201,37 @@ class TaskCheckpoint(Base):
     )
 
 
+class DelegationBudget(Base):
+    """cabal#174 — the delegation budget counter, made to survive a restart.
+
+    CONVERSATION KEYS ONLY, and the clock is why. `DelegationBudgetGuardrail`
+    keys on `task.context_id` when present and falls back to the caller's
+    persona name otherwise, and its `_now` is `time.monotonic`, which resets
+    on restart. A caller key carries a `window_start` on that clock, so
+    restoring one after a restart would mean restoring a count against a
+    window whose origin no longer exists. A conversation key has no TTL and
+    no window by deliberate design -- the count is its whole state -- so it
+    is the class that can be persisted soundly, and it is also the class a
+    resumed task falls into.
+
+    COUNT IS MONOTONIC HERE even though the in-memory counter is not. Memory
+    keeps an LRU (`_BUDGET_MAXSIZE`) whose eviction is a known refill path;
+    the upsert takes `max(stored, incoming)` so an eviction cannot lower the
+    durable record and re-open the hole this table closes.
+    """
+
+    __tablename__ = "delegation_budgets"
+
+    session_key: Mapped[str] = mapped_column(String, primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_utcnow_default(),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
 # ---------- secrets ----------------------------------------------------------
 
 

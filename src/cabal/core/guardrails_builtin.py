@@ -10,15 +10,22 @@ that module defines the protocol; this one provides concrete implementations.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from cabal.core.a2a.types import Task
 from cabal.core.auth.jwt import OPERATOR_SUB_PREFIX
 from cabal.core.guardrails import GuardrailContext, Verdict
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from cabal.core.budget_store import DelegationBudgetStore
+
+log = logging.getLogger(__name__)
 
 
 class DoomLoopGuardrail:
@@ -252,6 +259,12 @@ BUDGET_KEY = "cabal_delegation_budget"
 #: Bound on tracked conversations, mirroring DoomLoopGuardrail's outer LRU.
 #: Without it a long-lived process leaks one counter per context forever.
 _BUDGET_MAXSIZE = 512
+#: How long a persisted conversation count is honoured (cabal#174). The
+#: in-memory counter needs no equivalent because `_BUDGET_MAXSIZE` is its
+#: ceiling; a table has none, so retention stands in for one. A day is well
+#: past any conversation that is still resumable, and a restored count only
+#: ever tightens the bound -- so erring long is the safe direction.
+BUDGET_RETENTION_SECONDS = 86_400.0
 
 #: How long a CALLER-keyed budget takes to refill, in seconds. Applies ONLY to
 #: the caller fallback, never to a conversation key -- see the "No TTL" note on
@@ -349,6 +362,9 @@ class DelegationBudgetGuardrail:
         self,
         limit: int = MAX_DELEGATIONS_PER_CONTEXT,
         caller_window_seconds: float = CALLER_RATE_WINDOW_SECONDS,
+        *,
+        store: DelegationBudgetStore | None = None,
+        retention_s: float = BUDGET_RETENTION_SECONDS,
     ) -> None:
         if limit < 1:
             raise ValueError(f"limit must be >= 1, got {limit}")
@@ -370,6 +386,89 @@ class DelegationBudgetGuardrail:
         self._counts: dict[str, tuple[int, float]] = {}
         self._maxsize = _BUDGET_MAXSIZE
         self._caller_window = caller_window_seconds
+        if retention_s <= 0:
+            raise ValueError(f"retention_s must be > 0, got {retention_s}")
+        # DEFAULTS TO A NO-OP, so nothing about an install without a database
+        # changes: bounded in memory, re-armed by a restart, exactly as before
+        # cabal#174. A store is what makes the bound survive the restart.
+        if store is None:
+            from cabal.core.budget_store import NoOpDelegationBudgetStore
+
+            store = NoOpDelegationBudgetStore()
+        self._store = store
+        self._retention_s = retention_s
+        #: Strong refs to in-flight write-behind tasks. Without this the event
+        #: loop is the only owner and a task can be garbage-collected mid-flight
+        #: (documented asyncio behaviour), which would drop increments silently
+        #: -- the exact failure mode cabal#174 is about.
+        self._writes: set[asyncio.Task[None]] = set()
+
+    async def hydrate(self) -> int:
+        """Restore conversation counts from the store. Returns how many keys
+        were loaded.
+
+        CALLED ONCE AT STARTUP, BEFORE SERVING, and that placement is the whole
+        design: `check()` must stay await-free (see its docstring), so the hot
+        path can never read the store. Hydration is the only read.
+
+        BOUNDED BY THE SAME LRU CEILING the in-memory counter uses. Loading
+        more keys than `_BUDGET_MAXSIZE` would evict what it just restored, so
+        the store is asked for at most that many and returns them oldest-first
+        -- leaving the most recently active conversation most-recently-used,
+        which is the one an immediate resume is most likely to touch.
+
+        NEVER BLOCKS STARTUP. A store that raises here leaves the guard in its
+        pre-cabal#174 state -- bounded in memory -- which is a worse bound but
+        a working one, and strictly better than refusing to boot. The log line
+        is the signal that durability is off.
+        """
+        try:
+            rows = await self._store.load_recent(
+                limit=self._maxsize, retention_s=self._retention_s
+            )
+        except Exception:
+            log.exception("cabal.delegation_budget.hydrate_failed")
+            return 0
+        now = time.monotonic()
+        loaded = 0
+        for session_key, count in rows:
+            if count < 1:
+                continue
+            # A RESTORED CONVERSATION KEY CARRIES A FRESH window_start, and that
+            # is correct rather than sloppy: the field is only consulted for a
+            # caller-keyed entry, and caller keys are never persisted because
+            # `time.monotonic` resets across the restart this method exists for.
+            self._counts[session_key] = (count, now)
+            loaded += 1
+        return loaded
+
+    def _persist(self, session_key: str, count: int) -> None:
+        """Schedule a write-behind for one conversation key.
+
+        NOT AWAITED, DELIBERATELY. `asyncio.create_task` is not a yield point,
+        so `check()` still runs to completion atomically on a cooperative loop
+        -- the invariant its docstring calls load-bearing. Awaiting the write
+        here would reintroduce the data race the whole method is arranged to
+        avoid.
+
+        `def`, NOT `async def`, AND THAT IS THE ENFORCEMENT. Found by mutation:
+        an attempt to `await` the store from here is a SyntaxError, so the
+        await-free property is checked by the compiler rather than by a test
+        that someone has to keep running. Making this `async def` is therefore
+        the change to refuse in review -- it moves a structural guarantee back
+        into the category of things that can regress quietly.
+        """
+        try:
+            task = asyncio.create_task(self._store.bump(session_key, count))
+        except RuntimeError:
+            # No running loop. Reachable from a synchronous test calling
+            # check() via asyncio.run on a loop that has already closed, and
+            # from any future non-loop caller. Durability is lost for this
+            # increment; the in-memory bound is not.
+            log.debug("cabal.delegation_budget.no_loop_for_write_behind")
+            return
+        self._writes.add(task)
+        task.add_done_callback(self._writes.discard)
 
     @property
     def limit(self) -> int:
@@ -509,6 +608,26 @@ class DelegationBudgetGuardrail:
         if len(self._counts) >= self._maxsize:
             self._counts.pop(next(iter(self._counts)))
         self._counts[session_key] = (count, window_start)
+
+        # DURABLE FOR A CONVERSATION KEY ONLY (cabal#174). A restart used to
+        # re-arm this budget, which is the path cabal#146's incident actually
+        # took -- liveness-killed, restarted, resumed from persisted task state
+        # against a counter that did not persist. Write-behind rather than
+        # write-through because this method must not await; see `_persist`.
+        #
+        # `not windowed` IS THE WHOLE CONDITION, and it is about the clock, not
+        # about importance. A caller-keyed entry's `window_start` sits on
+        # `time.monotonic`, which resets on restart, so a restored caller count
+        # would be measured against a window whose origin is gone. Losing one
+        # costs at most a single extra window of a rolling rate limit -- the
+        # failure mode it already has by design.
+        #
+        # BEFORE THE LIMIT CHECK BELOW, so a refused ask is recorded as spent.
+        # That is the no-refund property 9b22fa4 built and two guards pin; a
+        # write placed after an early return would quietly reintroduce refunds
+        # for exactly the calls a storm consists of.
+        if not windowed:
+            self._persist(session_key, count)
 
         # RIDE BACK IN THE REPLY (cabal#156). The cheapest of the three places
         # the issue considers -- a system prompt is stale the moment anything
