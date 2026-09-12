@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from cabal.agents.primus import (
     _DOOM_LOOP_DEFAULT,
+    MAX_LEGS_PER_FANOUT,
     PrimusPersona,
     _DoomLoopError,
 )
@@ -81,6 +82,9 @@ class MasonPrimusPersona(PrimusPersona):
         model: str | None = None,
         max_tokens: int = 8192,
         doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
+        # cabal#156 — forwarded so a CALLER can lower the breadth ceiling.
+        # Not a policy: there is no config path to it (#156 r2, cabal#172).
+        max_legs: int = MAX_LEGS_PER_FANOUT,
         # cabal#158 — forwarded so the factory can share the ROUTER's budget
         # instance; a second instance would double a conversation's allowance.
         delegation_budget: DelegationBudgetGuardrail | None = None,
@@ -96,5 +100,6 @@ class MasonPrimusPersona(PrimusPersona):
             default_model=DEFAULT_MODEL,
             max_tokens=max_tokens,
             doom_loop=doom_loop,
+            max_legs=max_legs,
             delegation_budget=delegation_budget,
         )
