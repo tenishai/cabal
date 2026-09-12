@@ -302,14 +302,62 @@ class GuardrailsConfig(_Open):
     #: by default would turn all delegation off at upgrade with no warning.
     #: The default-deny lives in the guard; the migration lives here.
     delegation_edges: bool = False
+    #: cabal#144 — bound how deep a delegation chain runs. Default-on like its
+    #: two neighbours; the guard's own ceiling (MAX_DELEGATION_DEPTH) is a hard
+    #: backstop a policy can only lower.
+    #:
+    #: IT BOUNDS A DEPTH AN ARRIVING CHAIN DECLARES, not one cabal accumulates:
+    #: cabal's own fan-out stamps a depth the router never sees, and a federated
+    #: hop forwards without incrementing, so this cannot trip on cabal-only
+    #: traffic (cabal#171). Reading it as a bound on your own delegation is the
+    #: misreading to avoid, and this is the field an operator sets.
+    delegation_depth: bool = True
+    delegation_depth_limit: int = 8
     delegation_budget: bool = True
-    delegation_budget_limit: int = 20
+    #: THE MEANING SHIFTED WITH #158, SO THE NUMBER MOVED WITH IT. The budget
+    #: now counts fan-out legs as well as router hops, so on the shipped config
+    #: an operator turn costs 2 (the router hop plus the implementer leg) where
+    #: it cost 1 -- and at the old default of 20 that halved `cbl chat` from
+    #: twenty turns to ten, then blocked permanently, because a conversation
+    #: key does not refill with time. Measured at r3: turn 11 refused, no
+    #: recovery. (#152 adds the one exception: a cold key can be evicted by the
+    #: LRU, which needs 512 other conversations and is not something the
+    #: blocked operator can cause.)
+    #:
+    #: 40 RESTORES THE EFFECTIVE ALLOWANCE rather than raising the bound: it is
+    #: the same twenty operator turns the old default bought, re-expressed in
+    #: the unit the field now counts. It is also MAX_DELEGATIONS_PER_CONTEXT,
+    #: so a deployment wanting more must change the backstop in code, which is
+    #: the intended shape.
+    #:
+    #: A DEPLOYMENT WITH A REVIEWER COSTS 3 PER TURN, not 2, so it gets
+    #: thirteen. Tune this per identity rather than assuming the default suits
+    #: a wider fan-out.
+    delegation_budget_limit: int = 40
     #: Seconds before a CALLER-keyed delegation budget refills. Only the caller
-    #: fallback is windowed; a conversation budget never refills (see
+    #: fallback is windowed; a conversation budget does not refill with time
+    #: (an LRU eviction can still retire a cold key -- see
     #: DelegationBudgetGuardrail). Without this a caller -- whose key is stable
     #: for the daemon's lifetime -- is blocked until restart once it is over
     #: budget, because retrying keeps its key too warm for the LRU to reclaim.
     delegation_budget_caller_window_seconds: float = 3600.0
+
+    @field_validator("delegation_depth_limit")
+    @classmethod
+    def _depth_at_least_one(cls, v: int) -> int:
+        # ADDED BY THE #144 PRE-PASS, which found depth was the one bounded
+        # axis with no config validator: delegation_depth_limit = 0 loaded
+        # silently and the guard floored it to 1, where the same typo in
+        # delegation_budget_limit refuses to start. The guard still clamps
+        # rather than raising -- a depth of 1 is a working bound, unlike a
+        # budget of 0 -- but a value the operator cannot have meant should be
+        # named at load on every axis.
+        if v < 1:
+            raise ValueError(
+                f"guardrails.delegation_depth_limit must be >= 1 (got {v}); "
+                "raise it or disable the guard with delegation_depth = false"
+            )
+        return v
 
     @field_validator("delegation_budget_limit")
     @classmethod

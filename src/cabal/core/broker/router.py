@@ -190,6 +190,20 @@ class DispatchRouter:
             capabilities=sorted(self._capabilities[agent]),
         )
 
+    def input_guardrail_of[T](self, kind: type[T]) -> T | None:
+        """The router's own instance of `kind`, or None (cabal#158).
+
+        Exists so a caller can SHARE a guard rather than construct a second
+        one. The delegation budget is per-conversation and keyed on
+        context_id, so two instances would hand one conversation two separate
+        allowances -- an agent mixing router hops with primus fan-out legs
+        would get double the budget while looking bounded.
+        """
+        for guard in self._input_guardrails:
+            if isinstance(guard, kind):
+                return guard
+        return None
+
     def capabilities_for(self, agent: str) -> set[str]:
         return set(self._capabilities.get(agent, set()))
 
@@ -269,6 +283,34 @@ class DispatchRouter:
                 # Consistent with cabal_trace_id / cabal_span_id convention.
                 task.metadata["cabal_target_agent"] = target_agent
                 verdict = await run_guardrails(self._input_guardrails, task, guard_ctx)
+                if verdict.type == VerdictType.TERMINATE:
+                    # ENDS THE TASK (cabal#152). GuardrailBlocked is the same
+                    # signal #153 raises from dispatch_streaming, but the
+                    # FORBIDDEN wiring was streaming-only: every caller of this
+                    # non-streaming method caught the DispatchError base and
+                    # answered 502 / ERROR_INTERNAL -- "server fault, retry" --
+                    # for a refusal that no retry changes. An earlier version of
+                    # this comment claimed the distinction already applied here;
+                    # it did not, and the #152 pre-pass caught it. Both callers
+                    # now have their own arm: routes/tasks.py (403) and
+                    # a2a_jsonrpc._message_send (ERROR_FORBIDDEN). Add one to any
+                    # third caller, or it will inherit 502 silently.
+                    # A BLOCK below still advises.
+                    #
+                    # NO on_dispatch_failure CALL HERE, unlike the streaming
+                    # path this was copied from (#152 r1 Important 1). This
+                    # raise is INSIDE the try opened above, whose `except
+                    # Exception` already closes the record. on_dispatch_failure
+                    # inserts an Event and publishes to the bus, so calling it
+                    # here too wrote the failure twice -- measured as
+                    # ['dispatch_start', 'dispatch_failure', 'dispatch_failure']
+                    # against the streaming path's two. The Conversation update
+                    # is an idempotent state="failed", which is why nothing
+                    # else showed it. dispatch_streaming raises from OUTSIDE
+                    # its own try, so its explicit call is correct where it is.
+                    raise GuardrailBlocked(
+                        f"router guardrail terminated the task: {verdict.reason}"
+                    )
                 if verdict.type == VerdictType.BLOCK:
                     response = annotate(
                         task,
@@ -414,8 +456,17 @@ class DispatchRouter:
             # delegation hash on this and would otherwise hash an empty target.
             task.metadata["cabal_target_agent"] = target_agent
             verdict = await run_guardrails(self._input_guardrails, task, guard_ctx)
-            if verdict.type == VerdictType.BLOCK:
-                blocked = GuardrailBlocked(f"router guardrail blocked: {verdict.reason}")
+            if verdict.type in (VerdictType.BLOCK, VerdictType.TERMINATE):
+                # The streaming path has no advisory mode: there is no partial
+                # Task to annotate and hand back, so a BLOCK already ends the
+                # stream. TERMINATE lands here identically, and the wording
+                # follows the verdict so the caller can tell which it was.
+                word = (
+                    "terminated the task"
+                    if verdict.type == VerdictType.TERMINATE
+                    else "blocked"
+                )
+                blocked = GuardrailBlocked(f"router guardrail {word}: {verdict.reason}")
                 # CLOSE the record we just opened. Without this the refusal
                 # leaves a started-and-never-finished dispatch, which is worse
                 # than no row: it reads as an in-flight call that vanished.

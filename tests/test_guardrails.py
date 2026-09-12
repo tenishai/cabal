@@ -685,3 +685,133 @@ async def test_run_guardrails_taskaborted_propagates() -> None:
 
     with pytest.raises(TaskAborted):
         await run_guardrails([_Aborter()], "x", _ctx())
+
+
+@pytest.mark.asyncio
+async def test_terminate_short_circuits_the_chain_like_block() -> None:
+    """cabal#152 — both refusals stop the chain; they differ only in what the
+    router does with them. A TERMINATE that let later guardrails run could be
+    overwritten by a PASS, and the task would proceed after a refusal that
+    cannot be rephrased past."""
+
+    class _Terminating:
+        async def check(self, target, ctx):
+            return Verdict.terminate("spent")
+
+    class _Counting:
+        def __init__(self):
+            self.calls = 0
+
+        async def check(self, target, ctx):
+            self.calls += 1
+            return Verdict.pass_()
+
+    after = _Counting()
+    v = await run_guardrails([_Terminating(), after], "t", _ctx())
+    assert v.type is VerdictType.TERMINATE
+    assert after.calls == 0, "a guardrail after TERMINATE must not run"
+
+
+@pytest.mark.asyncio
+async def test_a_raising_guardrail_still_fails_closed_as_block_not_terminate() -> None:
+    """The fail-closed path is deliberately the ADVISORY refusal.
+
+    An unexpected exception in a safety check says nothing about whether the
+    caller could succeed by trying differently -- it says the check broke. A
+    guard that crashes should not silently acquire the power to end tasks,
+    which is the strongest verdict in the system.
+    """
+
+    class _Raising:
+        async def check(self, target, ctx):
+            raise RuntimeError("boom")
+
+    v = await run_guardrails([_Raising()], "t", _ctx())
+    assert v.type is VerdictType.BLOCK
+    assert "boom" in (v.reason or "")
+
+
+class _TerminateIfContains:
+    """TERMINATE if the stringified target contains a given substring."""
+
+    def __init__(self, word: str) -> None:
+        self.name = f"terminate_if_contains:{word}"
+        self._word = word
+
+    async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+        if self._word in str(target):
+            return Verdict.terminate(reason=f"terminal: {self._word}")
+        return Verdict.pass_()
+
+
+@pytest.mark.asyncio
+async def test_persona_input_terminate_fails_task_without_llm_call() -> None:
+    """cabal#152 r1 Important 2 — A TERMINATE HERE USED TO FAIL OPEN.
+
+    `_apply_guardrails` read `verdict.type == BLOCK`, so a TERMINATE fell
+    through to the PASS branch: the dispatch proceeded and the LLM ran. And
+    because `run_guardrails` short-circuits on TERMINATE, every guard after it
+    was skipped too — so a terminating guard was strictly WEAKER at this
+    boundary than the same guard returning BLOCK, which inverts the point of
+    the verdict.
+
+    IT IS LATENT, NOT LIVE, and that is why it is worth pinning rather than
+    shrugging at: `persona_factory` wires no persona-level guardrails, so no
+    shipped configuration reaches this. But `Verdict.terminate()` is public,
+    documented API and `LLMPersona.input_guardrails` is a public field this
+    very file populates. A fail-open in a safety mechanism at a public
+    extension point should not merge latent.
+
+    Mirrors test_persona_input_block_fails_task_without_llm_call exactly, so
+    the two verdicts can be compared line for line.
+    """
+    call_count = 0
+
+    async def counting_stub(model, messages, **kw):
+        nonlocal call_count
+        call_count += 1
+        return {"choices": [{"message": {"content": "should not appear"}}]}
+
+    client = LiteLLMClient(acompletion_fn=counting_stub, hook_registry=HookRegistry())
+    persona = LLMPersona(
+        name="strict",
+        model="m",
+        llm_client=client,
+        input_guardrails=[_TerminateIfContains("forbidden")],
+    )
+    result = await persona.handle_task(_user_task("this is forbidden text"))
+
+    assert result.status.state == "failed"
+    assert reason_code(result) == CODE_POLICY_VIOLATION
+    assert call_count == 0, "a terminal verdict let the LLM run"
+
+
+@pytest.mark.asyncio
+async def test_a_terminating_tool_guardrail_refuses_the_call() -> None:
+    """The other enumeration site (#152 r1 Important 2), and it fails open the
+    same way — a TERMINATE was read as a PASS and the tool call proceeded.
+
+    A TERMINATE STILL ONLY REFUSES THE CALL HERE, not the whole Task. This is
+    the per-call policy boundary, where BLOCK already means "refuse this tool
+    call and let the dispatch continue"; escalating a terminal verdict into a
+    whole-Task failure from inside the tool loop is a larger change than
+    closing the fail-open, and is not what the caller is built to handle.
+    """
+    persona = LLMPersona(
+        name="strict",
+        model="m",
+        llm_client=LiteLLMClient(
+            acompletion_fn=_stub("unused"), hook_registry=HookRegistry()
+        ),
+    )
+    target, refusal = await persona._apply_tool_guardrails(
+        [_TerminateIfContains("forbidden")],
+        "this is forbidden text",
+        "tool_input",
+        _user_task("x"),
+        tool_name="write",
+    )
+
+    assert refusal is not None, "a terminal verdict let the tool call proceed"
+    assert "forbidden" in refusal
+    assert target == "this is forbidden text", "the target must not be rewritten"

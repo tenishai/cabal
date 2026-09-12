@@ -15,7 +15,7 @@ from cabal.agents.primus import (
     _DoomLoopError,
 )
 from cabal.agents.subordinate import Subordinate
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import DelegationBudgetGuardrail, DoomLoopGuardrail
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
@@ -85,6 +85,9 @@ class MasonPrimusPersona(PrimusPersona):
         # cabal#156 — forwarded so a CALLER can lower the breadth ceiling.
         # Not a policy: there is no config path to it (#156 r2, cabal#172).
         max_legs: int = MAX_LEGS_PER_FANOUT,
+        # cabal#158 — forwarded so the factory can share the ROUTER's budget
+        # instance; a second instance would double a conversation's allowance.
+        delegation_budget: DelegationBudgetGuardrail | None = None,
     ) -> None:
         super().__init__(
             llm_client,
@@ -98,4 +101,5 @@ class MasonPrimusPersona(PrimusPersona):
             max_tokens=max_tokens,
             doom_loop=doom_loop,
             max_legs=max_legs,
+            delegation_budget=delegation_budget,
         )

@@ -23,6 +23,7 @@ from cabal.config.identity import IdentityConfig
 from cabal.core.auth.keys import StoredKey
 from cabal.core.broker.router import DispatchRouter
 from cabal.core.checkpoint import CheckpointStore
+from cabal.core.guardrails_builtin import DelegationBudgetGuardrail
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 from cabal.core.memory.session_tracker import SessionTracker
@@ -126,6 +127,14 @@ def register_personas_from_identity(
                     hook_registry=hook_registry,
                     model=persona_cfg.model_override,
                     max_tokens=persona_cfg.max_tokens_override or 8192,
+                    # cabal#158 — the ROUTER'S budget instance, not a new one,
+                    # so a conversation's delegations count once whether they go
+                    # through the router or through a fan-out leg. None when the
+                    # operator disabled the budget; the primus then behaves as
+                    # before.
+                    delegation_budget=dispatch_router.input_guardrail_of(
+                        DelegationBudgetGuardrail
+                    ),
                 )
             except ValueError as exc:
                 log.error(
