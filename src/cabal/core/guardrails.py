@@ -1,9 +1,9 @@
 """Guardrails: composable pre/post-dispatch validators.
 
 A guardrail inspects a target value (input messages, output text, or a
-router-level payload) and returns a typed Verdict — PASS, BLOCK, or REWRITE.
-Unlike HookRegistry side-effects, verdicts can *abort* dispatch (BLOCK) or
-*replace* the value before it reaches the LLM (REWRITE).
+router-level payload) and returns a typed Verdict — PASS, BLOCK, TERMINATE or
+REWRITE. Unlike HookRegistry side-effects, verdicts can *abort* dispatch (BLOCK,
+TERMINATE) or *replace* the value before it reaches the LLM (REWRITE).
 
 Guardrails are the verdict-returning complement to HookRegistry callbacks.
 They do NOT route through HookRegistry — hooks stay side-effect-only.
@@ -12,27 +12,45 @@ Usage::
 
     ctx = GuardrailContext(persona_name="mason", task_id=task.id, phase="input")
     verdict = await run_guardrails(guardrails, messages, ctx)
-    if verdict.type == VerdictType.BLOCK:
-        # fail the task with verdict.reason
+    if verdict.type is not VerdictType.PASS:
+        # a refusal: fail the task (or the call) with verdict.reason
     elif verdict.rewritten is not None:
         messages = verdict.rewritten  # use the rewritten value
+
+**TEST FOR PASS, NEVER ENUMERATE THE REFUSALS** (cabal#152). This snippet used
+to read ``== VerdictType.BLOCK``, and the two consumers written from it both
+inherited a fail-open the day TERMINATE was added: the ``if`` is False, the
+``elif`` is ``None is not None`` → False, control falls off the end, and the
+dispatch proceeds on a terminal safety verdict. Enumerating the verdicts that
+exist today is an invitation for the next one to be ignored silently, and this
+docstring is how the next consumer gets written.
+
+Testing for PASS is safe as a catch-all because ``run_guardrails`` returns only
+BLOCK, TERMINATE or PASS — a REWRITE is threaded internally and comes back as
+PASS carrying ``rewritten``, so the branch below still sees it.
 
 run_guardrails semantics
 ------------------------
 - Guardrails run in registration order.
-- First BLOCK short-circuits and is returned immediately; remaining
-  guardrails are skipped.
+- First BLOCK **or TERMINATE** short-circuits and is returned immediately;
+  remaining guardrails are skipped. Both are refusals — they differ in what the
+  CALLER does with them, not in whether the chain continues.
 - A REWRITE threads its ``rewritten`` value into the *next* guardrail's
   target, so guardrails compose cleanly.
-- If no guardrail blocks, returns ``Verdict(PASS)`` with:
+- If no guardrail refuses, returns ``Verdict(PASS)`` with:
     ``rewritten=<final target>``  if any rewrite occurred during the run
     ``rewritten=None``             if the target was never rewritten
 
 Callers interpret the final Verdict as::
 
-    verdict.type == BLOCK           → fail the task with verdict.reason
+    verdict.type is not PASS        → a refusal; fail with verdict.reason
     verdict.rewritten is not None   → use verdict.rewritten as the new target
     else                            → proceed with the original target unchanged
+
+BLOCK vs TERMINATE is a question of WHAT THE CALLER DOES, not of whether it
+refuses. At a dispatch boundary a BLOCK annotates and a TERMINATE ends the Task;
+at the per-call tool boundary both refuse the single call. See ``VerdictType``
+and ``Verdict.terminate``.
 """
 
 from __future__ import annotations
@@ -48,6 +66,38 @@ class VerdictType(StrEnum):
     PASS = "pass"
     BLOCK = "block"
     REWRITE = "rewrite"
+    # TERMINATE ends the task. BLOCK advises and lets it continue (cabal#152).
+    #
+    # THE DISTINCTION IS THE INCIDENT'S LESSON, not a taxonomy exercise. A
+    # terminal error closes ONE AFFORDANCE; it does not terminate the task. In
+    # the A2A storm behind #146 an agent received BLOCK's advice roughly 270
+    # times and each time did the only thing an agent with no terminal state
+    # can do: try again. Every affordance needs a matching terminal state -- if
+    # it can ask, it must be able to give up.
+    #
+    # WHICH VERDICT A GUARD RETURNS IS A PROPERTY OF WHAT IT MEASURES:
+    #   BLOCK      a SAMENESS counter. "You have asked this three times, try
+    #              something else" must not kill a task that may be one
+    #              rephrase from succeeding. DoomLoopGuardrail keeps this
+    #              contract, deliberately and since #42.
+    #   TERMINATE  a refusal that cannot be rephrased past AND cannot be
+    #              waited out. An authorization edge (#154) is operator config
+    #              -- no wording changes it. A CONVERSATION budget is spent --
+    #              no wording refills it, and neither does time.
+    #
+    # A BUDGET THAT REFILLS IS NOT TERMINAL. DelegationBudgetGuardrail returns
+    # TERMINATE on its conversation key only; its caller-keyed fallback is a
+    # rolling rate limit whose own refusal message names the refill window, and
+    # a refusal that tells the caller when to come back must not end the task.
+    # The #152 pre-pass caught the generalization this note used to make.
+    #
+    # #146 reached terminal behaviour by ACCIDENT, and only on the conversation
+    # key: that counter only rises, so once a conversation is over budget every
+    # later delegation blocks too -- so long as its key survives, since the LRU
+    # can evict it and that is a refill the accident never accounted for. That is a workaround exploiting monotonicity,
+    # not a terminal state, and a guard whose semantics were not monotonic would
+    # have had no such recourse.
+    TERMINATE = "terminate"
 
 
 @dataclass(frozen=True)
@@ -77,6 +127,23 @@ class Verdict:
     def block(cls, reason: str) -> Verdict:
         """Block dispatch with a human-readable reason."""
         return cls(type=VerdictType.BLOCK, reason=reason)
+
+    @classmethod
+    def terminate(cls, reason: str) -> Verdict:
+        """A refusal no rephrasing and no waiting can move (cabal#152).
+
+        Use where the outcome cannot change. If the agent could plausibly
+        succeed by trying differently — or by waiting, as it can against a
+        windowed rate limit — that is a BLOCK.
+
+        WHAT IT COSTS IS SITE-DEPENDENT, deliberately, so this says so rather
+        than promising one thing and having a call site quietly do another: at a
+        DISPATCH boundary it ends the Task; at the PER-CALL tool boundary it
+        refuses the single call and the dispatch continues, because that is what
+        BLOCK already means there and escalating from inside the tool loop is a
+        larger contract than this verdict is asking for.
+        """
+        return cls(type=VerdictType.TERMINATE, reason=reason)
 
     @classmethod
     def rewrite(cls, value: Any, reason: str = "") -> Verdict:
@@ -166,7 +233,9 @@ async def run_guardrails(
     """Run ``guardrails`` in order; return the final Verdict.
 
     Semantics (documented at the module level):
-    - First BLOCK short-circuits — remaining guardrails are skipped.
+    - First BLOCK **or TERMINATE** short-circuits — remaining guardrails are
+      skipped. Both are refusals; they differ in what the ROUTER does with
+      them, not in whether the chain continues (cabal#152).
     - A REWRITE threads its value into the next guardrail's target.
     - A guardrail whose ``check()`` RAISES is treated as a **fail-closed
       BLOCK** naming the guardrail — an unexpected error in a safety check
@@ -202,7 +271,7 @@ async def run_guardrails(
             return Verdict.block(
                 f"guardrail {name!r} raised {type(exc).__name__}: {exc}"
             )
-        if v.type == VerdictType.BLOCK:
+        if v.type in (VerdictType.BLOCK, VerdictType.TERMINATE):
             return v
         if v.type == VerdictType.REWRITE:
             current = v.rewritten
