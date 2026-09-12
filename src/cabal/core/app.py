@@ -50,6 +50,10 @@ from cabal.core.auth.master_key import (
 from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.broker.heartbeat import HeartbeatScheduler
 from cabal.core.broker.router import DispatchRouter
+from cabal.core.budget_store import (
+    DelegationBudgetStore,
+    SqliteDelegationBudgetStore,
+)
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import DEFAULT_DB_URL, make_engine, make_sessionmaker, open_session
 from cabal.core.db_pragmas import install_sqlite_pragmas
@@ -228,7 +232,10 @@ def _doom_loop_ttl(configured: float | None, dispatch_timeout_s: float) -> float
 
 
 def build_router_input_guardrails(
-    identity: IdentityConfig | None, *, dispatch_timeout_s: float = 30.0
+    identity: IdentityConfig | None,
+    *,
+    dispatch_timeout_s: float = 30.0,
+    budget_store: DelegationBudgetStore | None = None,
 ) -> list[Guardrail]:
     """Router-level input guardrails for the production DispatchRouter (cabal#76).
 
@@ -266,10 +273,17 @@ def build_router_input_guardrails(
             DelegationDepthGuardrail(max_depth=gconf.delegation_depth_limit)
         )
     if gconf.delegation_budget:
+        # `budget_store=None` leaves the guard on its no-op store, which is the
+        # pre-cabal#174 behaviour: bounded in memory, re-armed by a restart.
+        # Every caller that has a sessionmaker should pass one; the ones that
+        # do not (tests, and any embedding without a database) still get a
+        # bounded guard rather than an unbounded one.
         guardrails.append(
             DelegationBudgetGuardrail(
                 limit=gconf.delegation_budget_limit,
                 caller_window_seconds=gconf.delegation_budget_caller_window_seconds,
+                store=budget_store,
+                retention_s=gconf.delegation_budget_retention_s,
             )
         )
     # LAST, AND THAT IS DELIBERATE THOUGH NOT LOAD-BEARING. Any BLOCK stops the
@@ -509,6 +523,45 @@ def create_app(
         resolved_dispatch_timeout = _dispatch_timeout()
         http_client = httpx.AsyncClient(timeout=resolved_dispatch_timeout)
         bookkeeper = Bookkeeper(sessionmaker, event_bus=event_bus)
+        # cabal#174 — the delegation budget must survive a restart, because the
+        # incident it exists for ended in one: liveness-killed, restarted,
+        # resumed from persisted task state against a counter that did not
+        # persist, and the storm was rebuilt against a fresh budget.
+        #
+        # HYDRATED HERE, BEFORE THE ROUTER IS SERVING, and that is the only
+        # read the guard ever does: `check()` must stay await-free (a primus
+        # fan-out shares one instance across concurrent legs), so it cannot
+        # touch an aiosqlite store. Writes are behind.
+        router_guardrails = build_router_input_guardrails(
+            identity,
+            dispatch_timeout_s=resolved_dispatch_timeout.read,
+            budget_store=SqliteDelegationBudgetStore(sessionmaker=sessionmaker),
+        )
+        for _g in router_guardrails:
+            _hydrate = getattr(_g, "hydrate", None)
+            if _hydrate is not None:
+                # hydrate() swallows its own store errors and returns 0, so a
+                # cold or broken table degrades to the in-memory bound rather
+                # than taking startup with it.
+                #
+                # THE #77 CITATION THIS COMMENT USED TO CARRY WAS WRONG, and the
+                # pre-pass caught it. It claimed #77's lesson is "a startup that
+                # exits on a recoverable condition is worse than a weaker bound".
+                # #77 argues close to the opposite emphasis: its two fixes were
+                # to CREATE the missing directory (eliminate the recoverable
+                # condition rather than tolerate it) and to SURFACE swallowed
+                # startup errors, and its "Why it matters" is about visibility --
+                # "it cost three diagnostic rounds to see errors that should have
+                # been on the terminal".
+                #
+                # What #77 does support is the half that is easy to get wrong
+                # here: degrading QUIETLY would be the defect. So hydrate logs at
+                # exception level, and the reason to degrade at all is argued on
+                # its own merits -- a budget guard that refuses to boot leaves
+                # the fleet with NO bound, which is strictly worse than the
+                # in-memory bound it had before cabal#174.
+                log.info("cabal.delegation_budget.hydrated", keys=await _hydrate())
+
         dispatch_router = DispatchRouter(
             sessionmaker=sessionmaker,
             bookkeeper=bookkeeper,
@@ -519,9 +572,7 @@ def create_app(
             # doom-loop protected (the Mason DoomLoop never reaches remote hops).
             # The read ceiling is passed through so the doom-loop TTL can be
             # kept above it -- see _doom_loop_ttl.
-            input_guardrails=build_router_input_guardrails(
-                identity, dispatch_timeout_s=resolved_dispatch_timeout.read
-            ),
+            input_guardrails=router_guardrails,
         )
         dispatch_router.register_local(EchoAgent())
 

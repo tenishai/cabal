@@ -341,6 +341,31 @@ class GuardrailsConfig(_Open):
     #: for the daemon's lifetime -- is blocked until restart once it is over
     #: budget, because retrying keeps its key too warm for the LRU to reclaim.
     delegation_budget_caller_window_seconds: float = 3600.0
+    #: cabal#174 -- how long a PERSISTED conversation count is honoured. Only
+    #: the conversation class is persisted: the guard's clock is
+    #: `time.monotonic`, which resets on restart, so a restored caller-keyed
+    #: window would be measured against an origin that no longer exists.
+    #:
+    #: This has no in-memory counterpart because `_BUDGET_MAXSIZE` is the
+    #: counter's ceiling there and a table has none. A restored count only ever
+    #: tightens the bound, so erring long is the safe direction.
+    delegation_budget_retention_s: float = 86400.0
+
+    @field_validator("delegation_budget_retention_s")
+    @classmethod
+    def _retention_positive(cls, v: float) -> float:
+        # Same door-count argument as caller_window_seconds: the guard is
+        # constructible directly and validates there too, so neither the config
+        # model nor the constructor is the only entry point. A zero or negative
+        # retention prunes every row on every hydrate, which would silently
+        # restore the pre-#174 behaviour while looking configured.
+        if v <= 0:
+            raise ValueError(
+                f"guardrails.delegation_budget_retention_s must be > 0 (got {v}); "
+                "a non-positive retention prunes every persisted count on "
+                "startup, silently re-arming the budget on restart."
+            )
+        return v
 
     @field_validator("delegation_depth_limit")
     @classmethod
