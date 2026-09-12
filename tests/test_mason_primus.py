@@ -1085,3 +1085,61 @@ async def test_depth_none_leaves_the_fanout_exactly_as_before() -> None:
     parent.metadata = {DEPTH_KEY: 99}  # far past any limit
     response = await mason.handle_task(parent)
     assert response.status.state == "completed"
+
+
+def test_the_fanout_checks_guards_in_the_SAME_ORDER_as_the_router() -> None:
+    """Neither order was pinned, and they had already drifted (cabal#177).
+
+    `run_guardrails` evaluates the router's list top-to-bottom with
+    first-refusal-wins, so list order IS evaluation order, and the router says
+    the ordering is deliberate: *"ORDER MATTERS ONLY FOR THE MESSAGE, not for
+    safety: the first BLOCK short-circuits, so a tight repeat is reported as a
+    doom loop and a paraphrase storm as an exhausted budget."*
+
+    A fan-out loop in a different order does not make anything unsafe — both
+    paths still refuse — but it makes them refuse a leg that is BOTH a tight
+    repeat and past its depth limit with two different reasons, decided by
+    which path dispatched it. That is the kind of disagreement that is invisible
+    until someone is reading two logs side by side and cannot explain them.
+
+    SOURCE-LEVEL on both sides, because the thing worth asserting is that the
+    two shipped files agree — not that a reproduction of them does.
+    """
+    import re
+    from pathlib import Path
+
+    import cabal.agents.primus as primus_mod
+    import cabal.core.app as app_mod
+
+    router_src = Path(app_mod.__file__).read_text()
+    primus_src = Path(primus_mod.__file__).read_text()
+
+    names = ("DoomLoopGuardrail", "DelegationDepthGuardrail", "DelegationBudgetGuardrail")
+    router_order = [
+        n for _, n in sorted(
+            (router_src.index(f"{n}("), n)
+            for n in names
+            if f"guardrails.append(\n            {n}(" in router_src
+            or f"guardrails.append({n}(" in router_src
+            or f"{n}(" in router_src.split("def build_router_input_guardrails")[1]
+        )
+    ]
+    # The fan-out tuple, read as it is written.
+    tup = re.search(r"for guard in \(\s*([^)]+?)\s*\):", primus_src, re.S)
+    assert tup, "the fan-out guard loop is not where this test expects it"
+    attr_to_class = {
+        "self._doom_loop": "DoomLoopGuardrail",
+        "self._delegation_depth": "DelegationDepthGuardrail",
+        "self._delegation_budget": "DelegationBudgetGuardrail",
+    }
+    fanout_order = [
+        attr_to_class[a.strip().rstrip(",")]
+        for a in tup.group(1).split("\n")
+        if a.strip().rstrip(",") in attr_to_class
+    ]
+
+    assert fanout_order == router_order, (
+        f"the fan-out checks {fanout_order} but the router checks {router_order}; "
+        "the same leg would be refused with two different reasons depending on "
+        "which path dispatched it"
+    )

@@ -624,14 +624,29 @@ class PrimusPersona(LLMPersona):
             # That identity is what cabal#171 was about and what every prior
             # test missed, because each looked at only one of the two.
             #
-            # DEPTH FIRST AMONG THE THREE, matching the order
-            # `build_router_input_guardrails` uses and for its reason: depth is
-            # STRUCTURAL, so it is the one a paraphrase cannot evade, and a
-            # chain already too deep should hear that rather than "your budget
-            # is spent".
+            # ORDER MATCHES `build_router_input_guardrails` EXACTLY, and an
+            # earlier version of this comment CLAIMED that while the code did
+            # the opposite (cabal#177 pre-pass). The router appends doom_loop,
+            # then depth, then budget, and `run_guardrails` evaluates in list
+            # order with first-refusal-wins -- so a depth-first loop here made
+            # the two paths disagree about a leg that is BOTH a tight repeat and
+            # past its limit. Same task, two different refusals, decided by
+            # which path dispatched it.
+            #
+            # THE ROUTER'S ORDER IS DELIBERATE and says so: "ORDER MATTERS ONLY
+            # FOR THE MESSAGE, not for safety: the first BLOCK short-circuits,
+            # so a tight repeat is reported as a doom loop and a paraphrase
+            # storm as an exhausted budget." Reporting a tight repeat as a depth
+            # violation instead is a worse message, not a neutral one.
+            #
+            # (`app.py`'s "depth first among the three bounds" is about depth
+            # against BUDGET and EDGES -- the three bounds. DoomLoopGuardrail is
+            # a sameness counter, not a bound, and is not one of the three. Both
+            # files are self-consistent under that reading; only my comment was
+            # not.)
             for guard in (
-                self._delegation_depth,
                 self._doom_loop,
+                self._delegation_depth,
                 self._delegation_budget,
             ):
                 if guard is None:
