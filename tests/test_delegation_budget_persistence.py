@@ -52,14 +52,31 @@ def _ctx() -> GuardrailContext:
     return GuardrailContext(persona_name="caller", task_id="t-1", phase="router")
 
 
-async def _drain() -> None:
-    """Let the write-behind tasks run.
+async def _settle(guard: DelegationBudgetGuardrail) -> None:
+    """Wait for the guard's write-behind tasks, deterministically.
 
     `_persist` schedules rather than awaits, on purpose -- `check()` must not
-    await. So a test that reads the table immediately after `check()` returns
-    is racing the write it is asserting about. One `sleep(0)` yields to the
-    loop; the writes are a single upsert each.
+    await -- so a test that reads the table straight after `check()` returns is
+    racing the write it asserts about.
+
+    AN EARLIER VERSION OF THIS HELPER YIELDED TO THE LOOP TEN TIMES AND HOPED,
+    and that was a real defect rather than a cosmetic one. Each `bump` is
+    several awaits (open a session, execute, commit), so ten yields do not
+    finish four of them; and because `bump` takes `max(stored, incoming)`, a
+    PARTIAL landing stores a LOWER count and the restart assertion then reads
+    PASS where it should read TERMINATE. It passed by luck until an unrelated
+    change shifted the timing, and it is the likeliest cause of a one-off
+    full-suite failure I could not reproduce earlier the same day.
+
+    The guard already holds strong references to its in-flight writes, so there
+    is nothing to guess at: await them.
     """
+    while guard._writes:
+        await asyncio.gather(*list(guard._writes), return_exceptions=True)
+
+
+async def _settle_loop() -> None:
+    """Yield to the loop, for the few tests that hold no guard to await."""
     for _ in range(10):
         await asyncio.sleep(0)
 
@@ -82,7 +99,7 @@ async def test_a_restart_does_not_re_arm_the_conversation_budget(
     for _ in range(limit):
         assert (await before.check(_task(), _ctx())).type is VerdictType.PASS
     assert (await before.check(_task(), _ctx())).type is VerdictType.TERMINATE
-    await _drain()
+    await _settle(before)
 
     # The process dies here. Nothing is carried over but the database.
     del before
@@ -113,7 +130,7 @@ async def test_without_a_store_a_restart_still_re_arms(
     assert (
         await before.check(_task(context_id="ctx-control"), _ctx())
     ).type is VerdictType.TERMINATE
-    await _drain()
+    await _settle(before)
 
     after = DelegationBudgetGuardrail(limit=limit)
     assert await after.hydrate() == 0
@@ -140,7 +157,7 @@ async def test_a_caller_keyed_budget_is_not_persisted(
     for _ in range(3):
         # context_id absent -> falls back to the caller key, windowed.
         await guard.check(_task(context_id=None), _ctx())
-    await _drain()
+    await _settle_loop()
 
     assert await store.load_recent(limit=100, retention_s=3600.0) == []
 
@@ -154,7 +171,7 @@ async def test_a_hydrated_conversation_key_still_never_refills(
     guard = DelegationBudgetGuardrail(limit=2, caller_window_seconds=0.01, store=store)
     for _ in range(2):
         await guard.check(_task(), _ctx())
-    await _drain()
+    await _settle(guard)
 
     after = DelegationBudgetGuardrail(
         limit=2, caller_window_seconds=0.01, store=store
@@ -191,6 +208,81 @@ async def test_retention_prunes_a_stale_row(
     # retention_s smaller than the row's age -> pruned, and pruned for good.
     assert await store.load_recent(limit=100, retention_s=-1.0) == []
     assert await store.load_recent(limit=100, retention_s=3600.0) == []
+
+
+# --- retention must not become a second time-based refill (cabal#175) --------
+
+
+@pytest.mark.asyncio
+async def test_an_exhausted_conversation_survives_going_idle_past_retention(
+    store: SqliteDelegationBudgetStore,
+) -> None:
+    """THE ONE THE CONCORDANCE AUDIT ASKED FOR.
+
+    `updated_at` is refreshed by every `bump`, so the retention cutoff is
+    idle-keyed. Without the exemption, a conversation that spent its budget and
+    then sat longer than the cutoff would come back from a restart with a fresh
+    count -- a refill caused by elapsed time, on a key whose class docstring
+    says it has none. The guard passes its own limit so an exhausted count is
+    never pruned by time.
+    """
+    limit = 3
+    guard = DelegationBudgetGuardrail(limit=limit, store=store)
+    for _ in range(limit):
+        await guard.check(_task(context_id="ctx-spent"), _ctx())
+    await _settle(guard)
+
+    # The restart, and the conversation has been idle far longer than retention.
+    after = DelegationBudgetGuardrail(limit=limit, retention_s=0.001, store=store)
+    await asyncio.sleep(0.05)
+    assert await after.hydrate() == 1, (
+        "an exhausted conversation was pruned by the retention cutoff, so a "
+        "restart after an idle period re-armed its budget"
+    )
+    assert (
+        await after.check(_task(context_id="ctx-spent"), _ctx())
+    ).type is VerdictType.TERMINATE
+
+
+@pytest.mark.asyncio
+async def test_a_partial_count_does_still_lapse(
+    store: SqliteDelegationBudgetStore,
+) -> None:
+    """The exemption is scoped to exhausted counts. A partial count must still
+    lapse, or the table is unbounded -- and the test above would pass just as
+    well on an implementation that never prunes anything, which is why this one
+    exists beside it."""
+    guard = DelegationBudgetGuardrail(limit=10, store=store)
+    await guard.check(_task(context_id="ctx-partial"), _ctx())
+    await _settle(guard)
+
+    rows = await store.load_recent(
+        limit=100, retention_s=0.001, keep_at_or_above=10
+    )
+    await asyncio.sleep(0.05)
+    rows = await store.load_recent(
+        limit=100, retention_s=0.001, keep_at_or_above=10
+    )
+    assert rows == [], f"a partial count outlived the retention cutoff: {rows}"
+
+
+@pytest.mark.asyncio
+async def test_the_table_is_capped_by_recency_not_only_by_time(
+    store: SqliteDelegationBudgetStore,
+) -> None:
+    """Exempting exhausted counts from the time prune would grow the table
+    without bound, so a recency cap stands in -- deliberately the same shape as
+    the in-memory LRU, which the design already documents as the one way a
+    conversation key retires."""
+    for i in range(5):
+        await store.bump(f"ctx-cap-{i}", 99)  # all exhausted, none time-prunable
+        await asyncio.sleep(0.01)
+
+    kept = await store.load_recent(limit=2, retention_s=3600.0, keep_at_or_above=1)
+    assert [k for k, _ in kept] == ["ctx-cap-3", "ctx-cap-4"]
+    # And the drop is durable, not just absent from this page.
+    again = await store.load_recent(limit=100, retention_s=3600.0, keep_at_or_above=1)
+    assert len(again) == 2
 
 
 @pytest.mark.asyncio
@@ -267,8 +359,9 @@ async def test_check_does_not_await_the_store() -> None:
     assert verdict.type is VerdictType.PASS
 
     # And the write really was scheduled -- otherwise this test would pass on a
-    # guard that had simply stopped persisting.
-    await _drain()
+    # guard that had simply stopped persisting. NOT `_settle` here: this store's
+    # `bump` never returns by design, so awaiting it would hang the suite.
+    await _settle_loop()
     assert started.is_set()
     assert len(guard._writes) == 1
 

@@ -308,6 +308,16 @@ class DelegationBudgetGuardrail:
     limit, the refusal message names the refill window, and a refusal the caller
     can legitimately wait out must not kill its task.
 
+    **THE DURABLE RECORD DOES NOT ADD A THIRD PATH, and cabal#175 had to be
+    narrowed to keep that true.** Persisting the count (cabal#174) introduced a
+    retention cutoff on the store, keyed on time since last write -- which
+    would have been exactly the time-based reset this paragraph denies, for a
+    conversation idle past the cutoff that then survives a restart. So an
+    exhausted count is exempt from that prune (`keep_at_or_above`), and the
+    table is bounded by a recency cap of the same shape as the LRU below rather
+    than by time. A spent conversation stays spent across a restart however
+    long it sat; only partial counts lapse.
+
     **"NEVER REFILLS" IS TOO STRONG FOR THE CONVERSATION KEY, and an earlier
     version of this paragraph said it (#152 r1 Important 3).** The LRU is a
     second refill path: `_BUDGET_MAXSIZE` is 512, and a conversation that has
@@ -424,7 +434,15 @@ class DelegationBudgetGuardrail:
         """
         try:
             rows = await self._store.load_recent(
-                limit=self._maxsize, retention_s=self._retention_s
+                limit=self._maxsize,
+                retention_s=self._retention_s,
+                # PASSING THE LIMIT IS WHAT KEEPS "does not refill" TRUE
+                # (cabal#175 concordance). It exempts an exhausted count from
+                # the store's idle-keyed time prune, so a conversation that
+                # spent its budget stays spent across a restart however long it
+                # sat. Omit it and retention becomes a second time-based refill
+                # path on a key this class's docstring says has none.
+                keep_at_or_above=self._limit,
             )
         except Exception:
             log.exception("cabal.delegation_budget.hydrate_failed")

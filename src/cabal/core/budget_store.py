@@ -77,13 +77,32 @@ class DelegationBudgetStore(Protocol):
         ...
 
     async def load_recent(
-        self, *, limit: int, retention_s: float
+        self, *, limit: int, retention_s: float, keep_at_or_above: int | None = None
     ) -> list[tuple[str, int]]:
-        """Drop rows past the retention cutoff, then return the most recent
-        `limit` surviving rows as `(session_key, count)`, OLDEST FIRST.
+        """Prune, then return the most recent `limit` surviving rows as
+        `(session_key, count)`, OLDEST FIRST.
 
         Oldest-first matters: the caller replays these into an insertion-
         ordered LRU, so the last one inserted must be the most recently used.
+
+        `keep_at_or_above` EXEMPTS AN EXHAUSTED COUNT FROM TIME-BASED PRUNING,
+        and the concordance audit on cabal#175 is why it exists. Thirteen
+        carriers jointly assert that a conversation key has no time-based
+        reset and that the in-memory LRU is the ONE exception -- an enumeration
+        the class docstring states as complete. A retention cutoff on
+        `updated_at` (refreshed by every `bump`, so idle-keyed) is a SECOND
+        time-based erasure: a conversation idle past the cutoff that then
+        survives a restart would be handed a fresh count, which is a refill
+        caused by elapsed time on a key documented as having none.
+
+        Rather than caveat thirteen carriers, the mechanism is narrowed so the
+        claim stays true where it matters: a count that reached the limit is
+        never pruned by time, so an exhausted conversation stays exhausted
+        across a restart however long it sat. Partial counts still lapse --
+        they must, or the table is unbounded -- and the growth that exemption
+        allows is bounded by the recency cap below, which is the DURABLE
+        ANALOGUE of the LRU retirement the design already documents and
+        accepts, not a third mechanism.
         """
         ...
 
@@ -97,7 +116,7 @@ class NoOpDelegationBudgetStore:
         return None
 
     async def load_recent(
-        self, *, limit: int, retention_s: float
+        self, *, limit: int, retention_s: float, keep_at_or_above: int | None = None
     ) -> list[tuple[str, int]]:  # noqa: ARG002
         return []
 
@@ -135,18 +154,42 @@ class SqliteDelegationBudgetStore:
             await session.commit()
 
     async def load_recent(
-        self, *, limit: int, retention_s: float
+        self, *, limit: int, retention_s: float, keep_at_or_above: int | None = None
     ) -> list[tuple[str, int]]:
         from cabal.core.models import DelegationBudget
 
         cutoff = datetime.now(UTC) - timedelta(seconds=retention_s)
         async with open_session(self.sessionmaker) as session:
             # PRUNE FIRST so the recency window is not spent on rows that are
-            # about to be dropped. A conversation key has no TTL in memory only
-            # because the LRU is its ceiling; a table has no such ceiling, so
-            # retention is what stands in for one.
+            # about to be dropped.
+            #
+            # AN EXHAUSTED COUNT IS EXEMPT FROM THE TIME CUTOFF (cabal#175
+            # concordance). `updated_at` is refreshed by every `bump`, so this
+            # predicate is idle-keyed -- without the exemption a conversation
+            # idle past the cutoff would come back from a restart with a fresh
+            # count, a time-caused refill on a key thirteen carriers say has
+            # none. See the Protocol docstring for why narrowing the mechanism
+            # beat caveating all thirteen.
+            time_prune = delete(DelegationBudget).where(
+                DelegationBudget.updated_at < cutoff
+            )
+            if keep_at_or_above is not None:
+                time_prune = time_prune.where(
+                    DelegationBudget.count < keep_at_or_above
+                )
+            await session.execute(time_prune)
+            # AND THEN A RECENCY CAP, which is what keeps the exemption from
+            # growing the table without bound. Deliberately the same shape as
+            # the in-memory LRU at `_BUDGET_MAXSIZE`: a cold key retires. That
+            # path is already documented and accepted as the one exception, so
+            # this adds no mechanism a reader has to be told about separately.
+            keep = select(DelegationBudget.session_key).order_by(
+                DelegationBudget.updated_at.desc()
+            ).limit(limit)
             await session.execute(
-                delete(DelegationBudget).where(DelegationBudget.updated_at < cutoff)
+                delete(DelegationBudget).where(
+                    DelegationBudget.session_key.not_in(keep)
+                )
             )
             await session.commit()
             result = await session.execute(
