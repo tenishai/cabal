@@ -1115,15 +1115,27 @@ def test_the_fanout_checks_guards_in_the_SAME_ORDER_as_the_router() -> None:
     primus_src = Path(primus_mod.__file__).read_text()
 
     names = ("DoomLoopGuardrail", "DelegationDepthGuardrail", "DelegationBudgetGuardrail")
+
+    # THE ORACLE IS THE FUNCTION BODY, NOT THE FILE (#177 r1 Important 2).
+    # An earlier version took `router_src.index(f"{n}(")` over the whole of
+    # app.py, so ANY earlier mention set the order. The reviewer broke it by
+    # adding two lines to `build_router_input_guardrails`'s DOCSTRING, with the
+    # fan-out mutated to depth-first: the shipped orders genuinely disagreed and
+    # this test went GREEN. The same edit turns it RED with the code correct.
+    # A test that reports green while the property it names is false is the same
+    # failure class as a counter nothing reads -- which is what this PR exists
+    # to close -- so the oracle has to be the statements, not the prose above
+    # them.
+    start = router_src.index("def build_router_input_guardrails")
+    end = router_src.index("\ndef ", start + 1)
+    body = router_src[start:end].split('"""', 2)[2]  # code only, no docstring
     router_order = [
-        n for _, n in sorted(
-            (router_src.index(f"{n}("), n)
-            for n in names
-            if f"guardrails.append(\n            {n}(" in router_src
-            or f"guardrails.append({n}(" in router_src
-            or f"{n}(" in router_src.split("def build_router_input_guardrails")[1]
-        )
+        n for _, n in sorted((body.index(f"{n}("), n) for n in names if f"{n}(" in body)
     ]
+    assert len(router_order) == len(names), (
+        f"expected all of {names} in build_router_input_guardrails, got {router_order}"
+    )
+
     # The fan-out tuple, read as it is written.
     tup = re.search(r"for guard in \(\s*([^)]+?)\s*\):", primus_src, re.S)
     assert tup, "the fan-out guard loop is not where this test expects it"

@@ -570,20 +570,39 @@ class PrimusPersona(LLMPersona):
             guard_ctx = GuardrailContext(
                 persona_name=self.name, task_id=sub_task.id, phase="router"
             )
-            # ORDER MATCHES build_router_input_guardrails, and it is immaterial
-            # either way. An earlier comment here justified budget-first by
-            # saying a rephrased storm should read as an exhausted budget
-            # rather than a sameness loop -- but rephrased legs never trip the
-            # sameness counter at all (different key), so that conflict cannot
-            # occur.
+            # ORDER MATCHES build_router_input_guardrails. It is immaterial to
+            # WHETHER a leg is refused and material to two other things -- see
+            # both paragraphs below, which an earlier version of this block ran
+            # together under the heading "WHY ORDER CANNOT MATTER" while the
+            # tuple beneath it had three entries and the prose said "neither"
+            # and "both" (#177 r1 nit 4).
             #
-            # WHY ORDER CANNOT MATTER, structurally rather than by threshold.
-            # Neither guard starves the other before the outcome is decided:
-            # both are checked on every call until one of them first refuses,
-            # so whichever is listed first still reaches its own natural trip
-            # point. The second is only skipped AFTER the first has begun
-            # refusing -- by which point the task is refused either way, and
-            # only the wording of the message differs.
+            # WHY ORDER CANNOT DECIDE THE OUTCOME, structurally rather than by
+            # threshold. No guard starves another before the outcome is decided:
+            # each is checked on every call until one of them first refuses, so
+            # whichever is listed first still reaches its own natural trip
+            # point. The rest are only skipped AFTER the first has begun
+            # refusing -- by which point the task is refused either way.
+            #
+            # WHAT ORDER DOES DECIDE, and it is more than the wording. The
+            # obvious part is the MESSAGE: the router's own comment says "a
+            # tight repeat is reported as a doom loop and a paraphrase storm as
+            # an exhausted budget", and reporting a tight repeat as a depth
+            # violation instead is a worse message, not a neutral one.
+            #
+            # The part I had wrong, measured by the #177 reviewer rather than
+            # reasoned: a guard that is SKIPPED does not run its SIDE EFFECT.
+            # With depth at the limit, a refused leg leaves the budget's
+            # `_counts` empty either way -- the budget is last in both candidate
+            # orders, so the set of legs reaching it is identical and the
+            # no-refund property never enters into it. But DoomLoopGuardrail
+            # also has state, and under doom-FIRST a depth-refused leg still
+            # advances the sameness counter, where under depth-first it would
+            # not. That can change a later, shallower delegation's outcome.
+            # Doom-first is what a router hop does, so matching it makes the
+            # fan-out's sameness counter accumulate the same way. The order fix
+            # is therefore slightly more than cosmetic, and correct for a better
+            # reason than the one this comment originally gave.
             #
             # Said that way it holds for any configuration. An earlier version
             # of this comment argued instead that "the doom threshold trips
