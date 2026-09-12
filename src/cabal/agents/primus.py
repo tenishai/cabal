@@ -39,6 +39,7 @@ from cabal.core.abort import KIND_SUBORDINATE
 from cabal.core.guardrails import GuardrailContext, VerdictType
 from cabal.core.guardrails_builtin import (
     DEPTH_KEY,
+    DelegationBudgetGuardrail,
     DoomLoopGuardrail,
     next_delegation_depth,
 )
@@ -65,7 +66,12 @@ class _LegFailedError(Exception):
 
 
 class _DoomLoopError(Exception):
-    """Internal signal: doom-loop guardrail blocked a subordinate dispatch.
+    """Internal signal: A ROUTER-LEVEL GUARD refused a subordinate dispatch.
+
+    Named for the doom-loop guard because it was the only one at this boundary
+    until #158 added the delegation budget. Kept rather than renamed: the name
+    is internal, and the user-visible message carries the refusing guard's own
+    reason, so an operator reads "budget exhausted" rather than "doom loop".
 
     Raised inside _dispatch_subordinate and caught in handle_task so the
     primus can return an annotated failed Task to its own caller.
@@ -112,6 +118,7 @@ class PrimusPersona(LLMPersona):
         default_model: str,
         max_tokens: int = 8192,
         doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
+        delegation_budget: DelegationBudgetGuardrail | None = None,
     ) -> None:
         if not any(role != "reviewer" for role in subordinates):
             raise ValueError(
@@ -143,6 +150,21 @@ class PrimusPersona(LLMPersona):
             self._doom_loop: DoomLoopGuardrail | None = DoomLoopGuardrail()
         else:
             self._doom_loop = doom_loop
+        # cabal#158 — the SAME DelegationBudgetGuardrail instance the router
+        # holds, not a second one, and that is the whole point.
+        #
+        # The budget is per-conversation and keyed on context_id. Two instances
+        # would give one conversation two separate allowances, so an agent that
+        # mixed router hops with fan-out legs would get double the budget --
+        # which is worse than the gap being closed, because it would look
+        # bounded. Sharing the instance makes a conversation's delegations
+        # count once, wherever they happen.
+        #
+        # None when the operator disabled the budget, or when a primus is
+        # constructed outside app.py (tests, direct use). Nothing here creates
+        # one by default: an unshared default would be exactly the second
+        # instance this comment exists to prevent.
+        self._delegation_budget = delegation_budget
 
     async def handle_task(self, task: Task) -> Task:
         # cabal#11 — the parent dispatch node (task.id) is registered by the
@@ -396,14 +418,70 @@ class PrimusPersona(LLMPersona):
         # the router's input_guardrails check (cabal#42) for the primus fan-out
         # path, which bypasses the router entirely. The guard runs BEFORE we
         # register the abort node so there is nothing to clean up on a BLOCK.
-        if self._doom_loop is not None:
+        # BOTH GUARDS RUN HERE, and #158 is that only the first one did. The
+        # router chain never sees a subordinate leg -- handle_task is called
+        # directly below -- so a delegation budget wired only into the router
+        # bounds router-mediated delegation and nothing else. That left fan-out
+        # legs bounded by the sameness counter alone, which is the counter #146
+        # exists precisely because rewording defeats.
+        if self._doom_loop is not None or self._delegation_budget is not None:
             sub_task.metadata["cabal_target_agent"] = role
             guard_ctx = GuardrailContext(
                 persona_name=self.name, task_id=sub_task.id, phase="router"
             )
-            verdict = await self._doom_loop.check(sub_task, guard_ctx)
-            if verdict.type == VerdictType.BLOCK:
-                raise _DoomLoopError(verdict.reason)
+            # ORDER MATCHES build_router_input_guardrails, and it is immaterial
+            # either way. An earlier comment here justified budget-first by
+            # saying a rephrased storm should read as an exhausted budget
+            # rather than a sameness loop -- but rephrased legs never trip the
+            # sameness counter at all (different key), so that conflict cannot
+            # occur.
+            #
+            # WHY ORDER CANNOT MATTER, structurally rather than by threshold.
+            # Neither guard starves the other before the outcome is decided:
+            # both are checked on every call until one of them first refuses,
+            # so whichever is listed first still reaches its own natural trip
+            # point. The second is only skipped AFTER the first has begun
+            # refusing -- by which point the task is refused either way, and
+            # only the wording of the message differs.
+            #
+            # Said that way it holds for any configuration. An earlier version
+            # of this comment argued instead that "the doom threshold trips
+            # long before the budget limit", which is true of the shipped
+            # defaults (5 vs 20) and NOT enforced anywhere: the two limits have
+            # independent validators and no cross-field check, so
+            # doom_loop_threshold=30 with the default budget of 20 is a legal
+            # config in which the budget trips first. A default dressed as an
+            # invariant (#158 pre-pass, r2).
+            #
+            # Matching the router's order stops the module contradicting itself.
+            #
+            # ANY NON-PASS VERDICT STOPS, rather than an enumeration of the
+            # ones that exist today. Fail-closed is the right default at a
+            # guard boundary, and it absorbs #152's TERMINATE without anyone
+            # remembering to come back -- a terminating budget falling through
+            # a `== BLOCK` check would dispatch the leg silently. It also
+            # stops REWRITE being dropped on the floor, which the enumeration
+            # did: neither guard here returns one, but ignoring it would have
+            # dispatched the UNREWRITTEN task.
+            #
+            # IT ABSORBS THE STOP, NOT THE DISTINCTION (#158 r3 Nit). Both
+            # verdicts funnel into _DoomLoopError(verdict.reason) and the type
+            # is DELIBERATELY FLATTENED here -- a terminal budget and an
+            # advisory doom-loop produce the same annotated failed Task,
+            # because _DoomLoopError already fails the whole fan-out and that
+            # is the "end the task" effect either way. Said explicitly so
+            # whoever merges #152 does not read "absorbs TERMINATE" as a reason
+            # to skip this site and go looking for a distinction to preserve. Note this REFUSES a rewrite
+            # rather than applying it -- the honest fail-closed reading, and
+            # unreachable besides: this boundary calls guard.check() directly
+            # rather than run_guardrails, so the PASS-carrying-`rewritten`
+            # shape never arises here and neither guard returns REWRITE.
+            for guard in (self._doom_loop, self._delegation_budget):
+                if guard is None:
+                    continue
+                verdict = await guard.check(sub_task, guard_ctx)
+                if verdict.type is not VerdictType.PASS:
+                    raise _DoomLoopError(verdict.reason)
 
         # cabal#11 — register the subordinate under the parent so an abort of
         # the parent reaches its in-flight LLM call. The primus calls
