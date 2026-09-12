@@ -109,13 +109,31 @@ def register_personas_from_identity(
                     ),
                 )
                 continue
-            handler: Any = primus_cls(
-                litellm_client,
-                subordinates=sub_instances,
-                hook_registry=hook_registry,
-                model=persona_cfg.model_override,
-                max_tokens=persona_cfg.max_tokens_override or 8192,
-            )
+            # SKIP THE PERSONA, NEVER THE PROCESS (cabal#156 r3 Important 2).
+            # Its two neighbours above log and `continue` precisely so one bad
+            # persona cannot cost the rest of the file, and the breadth ceiling
+            # added in #156 is the first OPERATOR-TRIGGERABLE exception on this
+            # path -- the pre-existing "requires a non-reviewer subordinate"
+            # raise is unreachable from here, because the implementer check
+            # above already continued. Unwrapped, a misdeclared breadth took
+            # down daemon startup and left every later persona unregistered,
+            # and `POST /admin/reload/identity` 500'd with state.identity
+            # already swapped and the handler set half rebuilt.
+            try:
+                handler: Any = primus_cls(
+                    litellm_client,
+                    subordinates=sub_instances,
+                    hook_registry=hook_registry,
+                    model=persona_cfg.model_override,
+                    max_tokens=persona_cfg.max_tokens_override or 8192,
+                )
+            except ValueError as exc:
+                log.error(
+                    "personas.primus_config_rejected",
+                    persona=persona_name,
+                    msg=f"{persona_name!r} skipping handler: {exc}",
+                )
+                continue
             handler.memory_store = memory_store
             handler.session_tracker = session_tracker
         else:

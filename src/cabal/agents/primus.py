@@ -248,9 +248,13 @@ class PrimusPersona(LLMPersona):
                     f"{self._max_legs}. Breadth is bounded separately from "
                     "depth and from total volume because concurrency costs "
                     "connections and tokens at once rather than over time. "
-                    "This is a configuration error and no plan can avoid it -- "
-                    "an earlier wording said 'narrow the plan', which is advice "
-                    "the reader cannot act on (#156 r1)."
+                    # NO REVIEW-ROUND CITATION IN A RUNTIME STRING. An earlier
+                    # wording said "narrow the plan" -- advice the reader cannot
+                    # act on -- and the commit that fixed it left the review
+                    # reference inside the f-string rather than in a comment, so
+                    # operators and models read it off the annotated Task
+                    # (#156 r3 Nit).
+                    "This is a configuration error; no plan can avoid it."
                 )
             leg_outputs = await self._dispatch_legs(task, leg_roles, plan_text)
             reviewer_critique: str | None = None

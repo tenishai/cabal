@@ -12,6 +12,7 @@ each persona its own model from identity.toml.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -40,6 +41,10 @@ from cabal.core.llm.litellm_client import (
 )
 from cabal.core.memory.session_tracker import NoOpSessionTracker, SessionTracker
 from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
+
+#: The exact shape DelegationBudgetGuardrail stamps. Anything else under that
+#: key is a caller's text and is not rendered (cabal#156 r3).
+_BUDGET_NOTE_SHAPE = re.compile(r"\d{1,9} of \d{1,9} used")
 
 # Hard cap on the tool-result summary stored in the activity log's tool_result
 # row. The full result still flows to the LLM as the tool message; only the
@@ -166,7 +171,19 @@ class LLMPersona:
         `build_messages` is on the path.
         """
         used = task.metadata.get(BUDGET_KEY)
-        if not used:
+        # SHAPE-CHECKED, BECAUSE THE CALLER WRITES THIS DICT (#156 r3
+        # Important 1). Task.metadata arrives verbatim from params.metadata on
+        # the inbound A2A path, and the only thing that overwrites a caller's
+        # value is DelegationBudgetGuardrail stamping over it -- which is a
+        # documented opt-out. With `delegation_budget = false` a caller's
+        # string reached a persona's SYSTEM content unmodified, which is a
+        # user-role to system-role escalation and the first caller-content
+        # path into a prompt this tree has had. It is not only the primus:
+        # build_messages is on every persona's path.
+        #
+        # Accepting only "<int> of <int> used" is the cheap closure: the guard
+        # writes exactly that, and nothing an attacker can say fits it.
+        if not isinstance(used, str) or not _BUDGET_NOTE_SHAPE.fullmatch(used):
             return ""
         return (
             f"\n\nDelegation budget: {used}. Every delegation counts regardless "
