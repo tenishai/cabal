@@ -12,8 +12,11 @@ from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, reason_code
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.guardrails_builtin import (
+    DEPTH_KEY,
     DelegationBudgetGuardrail,
+    DelegationDepthGuardrail,
     DoomLoopGuardrail,
+    next_delegation_depth,
 )
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
@@ -993,3 +996,162 @@ async def test_the_legs_are_not_told_a_budget_they_cannot_spend() -> None:
     )
     plan_system = primus_calls[0]["messages"][0]["content"]
     assert "1 of 20 used" in plan_system, "the fix stripped the key from the spender too"
+
+
+# --- cabal#171: the counter and the check must MEET ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_depth_the_guard_sees_is_the_depth_the_fanout_stamped() -> None:
+    """THE ASSERTION THAT WOULD HAVE CAUGHT THE PRESENT STATE (cabal#171).
+
+    `next_delegation_depth` stamped a depth on every fan-out leg and nothing
+    read it at a decision point: `DelegationDepthGuardrail` ran only inside
+    `build_router_input_guardrails`, and a leg goes straight to
+    `subord.handle_task` without touching the router. The increment was
+    WRITE-ONLY, so cabal's own delegation could not accumulate depth at all.
+
+    Every prior test looked at ONE of those two numbers. This one pins that
+    they are the same number, by capturing what the guard was actually handed.
+    """
+    seen: list[int] = []
+
+    class _Spy(DelegationDepthGuardrail):
+        async def check(self, target, ctx):  # type: ignore[override]
+            seen.append(int(target.metadata.get(DEPTH_KEY, -1)))
+            return await super().check(target, ctx)
+
+    primus_client, _ = _client(["plan", "sum"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_depth=_Spy(max_depth=8),
+    )
+
+    parent = _task()
+    parent.metadata = {DEPTH_KEY: 3}
+    await mason.handle_task(parent)
+
+    assert seen, "the depth guard was never consulted at the subordinate boundary"
+    assert seen == [next_delegation_depth(parent)], (
+        f"the guard saw {seen}, the fan-out stamped "
+        f"{next_delegation_depth(parent)} — the counter and the check "
+        "are looking at different numbers"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_fanout_at_the_depth_limit_is_refused() -> None:
+    """And the number being the same must actually STOP something.
+
+    The test above would pass on a guard that is consulted and ignored, so this
+    one pins the refusal. A parent arriving at the limit means its legs would
+    be one deeper, which is what the guard must catch.
+    """
+    primus_client, _ = _client(["plan", "sum"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_depth=DelegationDepthGuardrail(max_depth=2),
+    )
+
+    parent = _task()
+    parent.metadata = {DEPTH_KEY: 2}
+    response = await mason.handle_task(parent)
+
+    # A refused leg fails the fan-out, the same shape a doom-loop block takes.
+    assert response.status.state == "failed", (
+        "a fan-out whose legs exceed the depth limit was not refused"
+    )
+
+
+@pytest.mark.asyncio
+async def test_depth_none_leaves_the_fanout_exactly_as_before() -> None:
+    """An operator who disabled depth must see no change (`delegation_depth`
+    is None then, and the boundary must not invent a guard)."""
+    primus_client, _ = _client(["plan", "sum"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_depth=None,
+    )
+    parent = _task()
+    parent.metadata = {DEPTH_KEY: 99}  # far past any limit
+    response = await mason.handle_task(parent)
+    assert response.status.state == "completed"
+
+
+def test_the_fanout_checks_guards_in_the_SAME_ORDER_as_the_router() -> None:
+    """Neither order was pinned, and they had already drifted (cabal#177).
+
+    `run_guardrails` evaluates the router's list top-to-bottom with
+    first-refusal-wins, so list order IS evaluation order, and the router says
+    the ordering is deliberate: *"ORDER MATTERS ONLY FOR THE MESSAGE, not for
+    safety: the first BLOCK short-circuits, so a tight repeat is reported as a
+    doom loop and a paraphrase storm as an exhausted budget."*
+
+    A fan-out loop in a different order does not make anything unsafe — both
+    paths still refuse — but it makes them refuse a leg that is BOTH a tight
+    repeat and past its depth limit with two different reasons, decided by
+    which path dispatched it. That is the kind of disagreement that is invisible
+    until someone is reading two logs side by side and cannot explain them.
+
+    SOURCE-LEVEL on both sides, because the thing worth asserting is that the
+    two shipped files agree — not that a reproduction of them does.
+    """
+    import re
+    from pathlib import Path
+
+    import cabal.agents.primus as primus_mod
+    import cabal.core.app as app_mod
+
+    router_src = Path(app_mod.__file__).read_text()
+    primus_src = Path(primus_mod.__file__).read_text()
+
+    names = ("DoomLoopGuardrail", "DelegationDepthGuardrail", "DelegationBudgetGuardrail")
+
+    # THE ORACLE IS THE FUNCTION BODY, NOT THE FILE (#177 r1 Important 2).
+    # An earlier version took `router_src.index(f"{n}(")` over the whole of
+    # app.py, so ANY earlier mention set the order. The reviewer broke it by
+    # adding two lines to `build_router_input_guardrails`'s DOCSTRING, with the
+    # fan-out mutated to depth-first: the shipped orders genuinely disagreed and
+    # this test went GREEN. The same edit turns it RED with the code correct.
+    # A test that reports green while the property it names is false is the same
+    # failure class as a counter nothing reads -- which is what this PR exists
+    # to close -- so the oracle has to be the statements, not the prose above
+    # them.
+    start = router_src.index("def build_router_input_guardrails")
+    end = router_src.index("\ndef ", start + 1)
+    body = router_src[start:end].split('"""', 2)[2]  # code only, no docstring
+    router_order = [
+        n for _, n in sorted((body.index(f"{n}("), n) for n in names if f"{n}(" in body)
+    ]
+    assert len(router_order) == len(names), (
+        f"expected all of {names} in build_router_input_guardrails, got {router_order}"
+    )
+
+    # The fan-out tuple, read as it is written.
+    tup = re.search(r"for guard in \(\s*([^)]+?)\s*\):", primus_src, re.S)
+    assert tup, "the fan-out guard loop is not where this test expects it"
+    attr_to_class = {
+        "self._doom_loop": "DoomLoopGuardrail",
+        "self._delegation_depth": "DelegationDepthGuardrail",
+        "self._delegation_budget": "DelegationBudgetGuardrail",
+    }
+    fanout_order = [
+        attr_to_class[a.strip().rstrip(",")]
+        for a in tup.group(1).split("\n")
+        if a.strip().rstrip(",") in attr_to_class
+    ]
+
+    assert fanout_order == router_order, (
+        f"the fan-out checks {fanout_order} but the router checks {router_order}; "
+        "the same leg would be refused with two different reasons depending on "
+        "which path dispatched it"
+    )
