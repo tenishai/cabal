@@ -295,8 +295,10 @@ class DelegationBudgetGuardrail:
     second refill path: `_BUDGET_MAXSIZE` is 512, and a conversation that has
     gone quiet -- as a terminated one has, by construction -- is an eviction
     candidate. Measured at limit=1 with the clock frozen so no window could be
-    blamed: terminate after exhaustion, PASS again after 600 other
-    conversations. `test_a_conversation_budget_does_not_refill` is honest about
+    blamed: terminate after exhaustion, PASS again once enough other
+    conversations had passed through (the probe used 600, comfortably past the
+    512-key cap -- two numbers for one fact, so read 512 as the threshold and
+    600 as the probe that cleared it). `test_a_conversation_budget_does_not_refill` is honest about
     this, because it says no amount of elapsed TIME; eviction is a different
     mechanism and nothing tests it. The paragraph ten lines above knew --
     "a conversation is its own window: it ends, its key goes cold, the LRU
