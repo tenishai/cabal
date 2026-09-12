@@ -283,12 +283,40 @@ class DelegationBudgetGuardrail:
     two classes want two policies: a budget for a conversation, a rate limit
     for a caller.
 
-    **BLOCK is enough; this does not need to terminate.** The router turns
-    BLOCK into a policy-violation annotation rather than failing the task (see
-    its own "No hard-halt" note). Unlike the sameness counter this one never
-    decreases, so once a conversation is over budget EVERY later delegation
-    blocks too. The agent cannot reword its way through, which is the property
-    the incident actually needed.
+    **THE VERDICT FOLLOWS THE KEY CLASS (cabal#152).** A CONVERSATION key
+    terminates: its counter never decreases and it has no window, so no wording
+    and no waiting gets the task through -- there is nothing left for it to do,
+    which is what `TERMINATE` means. A CALLER key BLOCKS: it is a rolling rate
+    limit, the refusal message names the refill window, and a refusal the caller
+    can legitimately wait out must not kill its task.
+
+    **"NEVER REFILLS" IS TOO STRONG FOR THE CONVERSATION KEY, and an earlier
+    version of this paragraph said it (#152 r1 Important 3).** The LRU is a
+    second refill path: `_BUDGET_MAXSIZE` is 512, and a conversation that has
+    gone quiet -- as a terminated one has, by construction -- is an eviction
+    candidate. Measured at limit=1 with the clock frozen so no window could be
+    blamed: terminate after exhaustion, PASS again once enough other
+    conversations had passed through (the probe used 600, comfortably past the
+    512-key cap -- two numbers for one fact, so read 512 as the threshold and
+    600 as the probe that cleared it). `test_a_conversation_budget_does_not_refill` is honest about
+    this, because it says no amount of elapsed TIME; eviction is a different
+    mechanism and nothing tests it. The paragraph ten lines above knew --
+    "a conversation is its own window: it ends, its key goes cold, the LRU
+    reclaims it" -- and this one overreached past it.
+
+    IT DOES NOT CHANGE THE VERDICT, which is the part worth being precise
+    about since this is the justification the split rests on. The budget is
+    genuinely spent at the moment the refusal fires, and nothing the agent can
+    do inside that task will unspend it: the eviction needs 512 OTHER
+    conversations to pass through the guard, which is not an affordance the
+    refused agent has. So permanence is not a property of the conversation key
+    either -- it is a much longer-lived one, and long-lived enough that
+    terminating is the right answer while "never" is the wrong word.
+
+    This docstring previously argued **BLOCK is enough** for both, and that was
+    right until `TERMINATE` existed. What is NOT right -- and is what the #152
+    pre-pass caught -- is reading "the counter only rises" as a property of the
+    guard. It is a property of one of its two key classes.
 
     **A delegation to an unreachable colleague DOES consume budget, and that
     is deliberate.** The counter increments in `check()`, before the hop, and
@@ -343,7 +371,11 @@ class DelegationBudgetGuardrail:
         return self._limit
 
     async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
-        """PASS until a conversation exceeds its budget, then BLOCK every time."""
+        """PASS until the budget is exhausted, then refuse every time.
+
+        TERMINATE on a conversation key, BLOCK on a caller key -- see the class
+        docstring for why the verdict follows the key class.
+        """
         if not isinstance(target, Task):
             return Verdict.pass_()
 
@@ -470,15 +502,18 @@ class DelegationBudgetGuardrail:
                     "refill; a new conversation starts a fresh one."
                 )
             )
-            return Verdict.block(
-                reason=(
-                    f"Delegation budget exhausted: {self._limit} delegations "
-                    f"already made in this conversation (limit {self._limit}). Every "
-                    "delegation counts regardless of wording, so rephrasing will "
-                    "not get through. If you cannot answer from what you have, "
-                    f"say so and stop rather than asking again.{refill}"
-                )
+            reason = (
+                f"Delegation budget exhausted: {self._limit} delegations "
+                f"already made in this conversation (limit {self._limit}). Every "
+                "delegation counts regardless of wording, so rephrasing will "
+                "not get through. If you cannot answer from what you have, "
+                f"say so and stop rather than asking again.{refill}"
             )
+            # THE VERDICT FOLLOWS THE KEY CLASS, and `windowed` is the whole
+            # discriminator. A windowed refusal has just told the caller when
+            # its budget refills; terminating the task after saying so would
+            # contradict the sentence above in the same breath.
+            return Verdict.block(reason) if windowed else Verdict.terminate(reason)
         return Verdict.pass_()
 
 
@@ -579,7 +614,7 @@ class DelegationEdgeGuardrail:
             sub = ctx.caller_agent or ""
             if sub.startswith(OPERATOR_SUB_PREFIX):
                 return Verdict.pass_()
-            return Verdict.block(
+            return Verdict.terminate(
                 reason=(
                     "Delegation refused: the caller is neither an identified "
                     f"persona nor the operator (sub={sub!r}). Delegation edges "
@@ -593,7 +628,7 @@ class DelegationEdgeGuardrail:
         task: Task = target
         target_agent = str(task.metadata.get("cabal_target_agent", "") or "")
         if not target_agent:
-            return Verdict.block(
+            return Verdict.terminate(
                 reason=(
                     "Delegation refused: the target could not be identified, so "
                     "no edge could be checked. This is a refusal rather than a "
@@ -607,7 +642,7 @@ class DelegationEdgeGuardrail:
 
         declared = sorted(self._edges.get(caller, frozenset()))
         may = ", ".join(declared) if declared else "nothing"
-        return Verdict.block(
+        return Verdict.terminate(
             reason=(
                 f"Delegation refused: no declared edge from '{caller}' to "
                 f"'{target_agent}'. {caller} may delegate to: {may}. Edges are "

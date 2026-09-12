@@ -18,6 +18,27 @@ from cabal.core.guardrails_builtin import (
     DelegationBudgetGuardrail,
 )
 
+# cabal#152 — a CONVERSATION budget now returns TERMINATE, not BLOCK. A CALLER
+# budget still returns BLOCK.
+#
+# The change is semantic, not cosmetic, and updating the assertions is the point
+# rather than collateral. A BLOCK advises and lets the task continue; in the
+# storm behind #146 an agent took that advice ~270 times, because an agent with
+# no terminal state has exactly one move when stuck. A conversation budget is
+# spent and stays spent -- no wording and no waiting refills it -- so it ENDS
+# the task.
+#
+# THE CALLER KEY IS THE EXCEPTION, and the first draft of #152 missed it. That
+# path is a rolling rate limit: its refusal message names the refill window, so
+# it is a refusal the caller can wait out, and terminating the task after saying
+# so would contradict the sentence in the same breath. `windowed` is the
+# discriminator; the tests below are split on it.
+#
+# The budget previously reached terminal behaviour by ACCIDENT and only on the
+# conversation key -- that counter only rises, so once over budget every later
+# delegation blocked too. That was a workaround exploiting monotonicity, not a
+# terminal state.
+
 
 def _task(
     text: str = "q",
@@ -62,7 +83,7 @@ async def test_rewording_does_not_evade_the_budget() -> None:
         VerdictType.PASS,
         VerdictType.PASS,
         VerdictType.PASS,
-        VerdictType.BLOCK,
+        VerdictType.TERMINATE,
     ]
 
 
@@ -73,7 +94,7 @@ async def test_a_different_target_does_not_get_a_fresh_budget() -> None:
     g = DelegationBudgetGuardrail(limit=2)
     assert (await g.check(_task(target_agent="a"), _ctx())).type is VerdictType.PASS
     assert (await g.check(_task(target_agent="b"), _ctx())).type is VerdictType.PASS
-    assert (await g.check(_task(target_agent="c"), _ctx())).type is VerdictType.BLOCK
+    assert (await g.check(_task(target_agent="c"), _ctx())).type is VerdictType.TERMINATE
 
 
 @pytest.mark.asyncio
@@ -88,7 +109,7 @@ async def test_every_delegation_after_the_cap_also_blocks() -> None:
     assert (await g.check(_task("first"), _ctx())).type is VerdictType.PASS
     for i in range(5):
         v = await g.check(_task(f"attempt {i}"), _ctx())
-        assert v.type is VerdictType.BLOCK, f"attempt {i} slipped through"
+        assert v.type is VerdictType.TERMINATE, f"attempt {i} slipped through"
 
 
 @pytest.mark.asyncio
@@ -99,7 +120,7 @@ async def test_the_block_reason_tells_the_agent_rewording_will_not_help() -> Non
     g = DelegationBudgetGuardrail(limit=1)
     await g.check(_task(), _ctx())
     v = await g.check(_task(), _ctx())
-    assert v.type is VerdictType.BLOCK
+    assert v.type is VerdictType.TERMINATE
     assert v.reason is not None
     assert "rephrasing" in v.reason
     assert "limit 1" in v.reason
@@ -118,7 +139,7 @@ async def test_separate_conversations_keep_separate_budgets() -> None:
     g = DelegationBudgetGuardrail(limit=1)
     assert (await g.check(_task(context_id="ctx-a"), _ctx())).type is VerdictType.PASS
     assert (await g.check(_task(context_id="ctx-b"), _ctx())).type is VerdictType.PASS
-    assert (await g.check(_task(context_id="ctx-a"), _ctx())).type is VerdictType.BLOCK
+    assert (await g.check(_task(context_id="ctx-a"), _ctx())).type is VerdictType.TERMINATE
 
 
 @pytest.mark.asyncio
@@ -147,6 +168,8 @@ async def test_an_un_threaded_caller_is_bounded_by_its_own_identity() -> None:
         await g.check(_task(context_id=None, task_id=f"fresh-{i}"), _ctx())
         for i in range(30)
     ]
+    # BLOCK, NOT TERMINATE: no context id means the CALLER key, which is
+    # windowed and therefore not terminal (cabal#152).
     blocked = [i for i, v in enumerate(verdicts) if v.type is VerdictType.BLOCK]
     assert blocked, "an un-threaded caller was not bounded at all"
     assert blocked[0] == 20, f"expected the 21st to be the first refusal, got {blocked}"
@@ -191,7 +214,7 @@ async def test_un_threaded_traffic_does_not_evict_a_real_conversation() -> None:
         await g.check(_task(context_id=None, task_id=f"noise-{i}"), noise)
 
     after = await g.check(_task(context_id="victim-conversation"), victim)
-    assert after.type is VerdictType.BLOCK, "unrelated traffic reset a real budget"
+    assert after.type is VerdictType.TERMINATE, "unrelated traffic reset a real budget"
 
 
 @pytest.mark.asyncio
@@ -222,7 +245,7 @@ async def test_budget_is_charged_at_attempt_time_with_no_refund() -> None:
         assert (await g.check(_task(), _ctx())).type is VerdictType.PASS
     # Whatever the caller went on to do with those two dispatches -- succeed,
     # time out, hit a dead endpoint -- the third is refused.
-    assert (await g.check(_task(), _ctx())).type is VerdictType.BLOCK
+    assert (await g.check(_task(), _ctx())).type is VerdictType.TERMINATE
 
 @pytest.mark.asyncio
 async def test_no_input_shape_is_free() -> None:
@@ -380,6 +403,8 @@ async def test_a_blocked_caller_recovers_when_its_window_refills(monkeypatch) ->
         assert (await g.check(_task(context_id=None, task_id=f"a-{i}"), caller)).type is (
             VerdictType.PASS
         )
+    # BLOCK: this test is itself the argument for why a windowed refusal is not
+    # terminal -- it ends by proving the caller recovers (cabal#152).
     assert (await g.check(_task(context_id=None, task_id="over"), caller)).type is (
         VerdictType.BLOCK
     )
@@ -412,7 +437,10 @@ async def test_a_conversation_budget_does_not_refill(monkeypatch) -> None:
 
     clock["t"] += 86_400  # a day later
     v = await g.check(_task(context_id="one-conversation"), _ctx())
-    assert v.type is VerdictType.BLOCK, "a conversation budget refilled with time"
+    assert v.type is VerdictType.TERMINATE, (
+        "a conversation budget refilled with TIME -- eviction is a separate "
+        "path and is not what this pins"
+    )
 
 
 @pytest.mark.asyncio
@@ -428,6 +456,47 @@ async def test_an_unkeyable_delegation_fails_open_in_one_place() -> None:
         v = await g.check(_task(context_id=None, task_id=f"u-{i}"), blank)
         assert v.type is VerdictType.PASS
     assert g._counts == {}, "an un-keyable delegation minted a counter"
+
+
+@pytest.mark.asyncio
+async def test_the_verdict_follows_the_key_class_not_the_guard() -> None:
+    """cabal#152 pre-pass, WRONG 2 — ONE INSTANCE, TWO VERDICTS.
+
+    The #152 justification for terminating was "its counter only rises, so once
+    over budget every later delegation blocks too". That is true of the
+    conversation key and false of the caller key, which is a rolling rate limit
+    with an explicit refill window — and the guard says so itself in the refusal
+    it hands back. A refusal that names the hour at which the caller may return
+    must not also end the caller's task.
+
+    ASSERTS BOTH ON THE SAME INSTANCE, deliberately. Two guards would pass this
+    with the discriminator deleted and a constructor flag put in its place; one
+    guard pins that `windowed` — the thing that actually differs between the two
+    calls — is what decides.
+    """
+    g = DelegationBudgetGuardrail(limit=1)
+    caller = _ctx()
+
+    # Conversation key: context_id present.
+    await g.check(_task(context_id="ctx-term"), caller)
+    conversation = await g.check(_task(context_id="ctx-term"), caller)
+
+    # Caller key: no context_id, so ctx.persona_name is the fallback.
+    await g.check(_task(context_id=None, task_id="c-1"), caller)
+    windowed = await g.check(_task(context_id=None, task_id="c-2"), caller)
+
+    assert conversation.type is VerdictType.TERMINATE, (
+        "a conversation budget does not refill by waiting or rewording, so "
+        "its refusal is terminal (the LRU can still evict a cold key -- see "
+        "the class docstring; that needs 512 other conversations and is not "
+        "something the refused agent can cause)"
+    )
+    assert windowed.type is VerdictType.BLOCK, (
+        "a windowed refusal the caller can wait out must not end the task"
+    )
+    # The sentence that makes terminating the windowed path self-contradictory.
+    assert "refills" in windowed.reason
+    assert "refills" not in conversation.reason
 
 
 def test_the_shipped_budget_default_preserves_the_effective_allowance() -> None:

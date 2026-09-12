@@ -10,6 +10,19 @@ from cabal.core.app import _delegation_edges, build_router_input_guardrails
 from cabal.core.guardrails import GuardrailContext, VerdictType
 from cabal.core.guardrails_builtin import DelegationEdgeGuardrail
 
+# cabal#152 — these guards now return TERMINATE, not BLOCK.
+#
+# The change is semantic, not cosmetic, and updating the assertion is the
+# point rather than collateral. A BLOCK advises and lets the task continue;
+# in the storm behind #146 an agent took that advice ~270 times, because an
+# agent with no terminal state has exactly one move when stuck. Neither of
+# these refusals can be rephrased past: an edge is operator config and a
+# spent budget is spent. So they END the task.
+#
+# The budget previously reached terminal behaviour by ACCIDENT -- its counter
+# only rises, so once over budget every later delegation blocked too. That was
+# a workaround exploiting monotonicity, not a terminal state.
+
 
 def _task(target_agent: str | None = "archivist") -> Task:
     t = Task(
@@ -47,7 +60,7 @@ async def test_an_undeclared_edge_refuses_before_dispatch() -> None:
     """THE ACCEPTANCE CRITERION: refused, with a reason naming the missing edge."""
     g = DelegationEdgeGuardrail(edges={"mason": ["archivist"]})
     v = await g.check(_task("librarian"), _ctx("mason"))
-    assert v.type is VerdictType.BLOCK
+    assert v.type is VerdictType.TERMINATE
     assert v.reason is not None
     assert "mason" in v.reason and "librarian" in v.reason
     assert "may_delegate_to" in v.reason, "the refusal must name the remedy"
@@ -59,7 +72,7 @@ async def test_a_room_with_no_declared_edges_permits_no_delegation() -> None:
     would make this a suggestion rather than an authorization control."""
     g = DelegationEdgeGuardrail(edges={})
     v = await g.check(_task("archivist"), _ctx("mason"))
-    assert v.type is VerdictType.BLOCK
+    assert v.type is VerdictType.TERMINATE
     assert v.reason is not None and "nothing" in v.reason
 
 
@@ -90,7 +103,7 @@ async def test_a_personaless_service_token_is_refused_not_exempted() -> None:
     """
     g = DelegationEdgeGuardrail(edges={"mason": ["archivist"]})
     v = await g.check(_task("archivist"), _ctx(None, "svc:indexer"))
-    assert v.type is VerdictType.BLOCK
+    assert v.type is VerdictType.TERMINATE
     assert v.reason is not None
     assert "neither an identified persona nor the operator" in v.reason
 
@@ -98,7 +111,7 @@ async def test_a_personaless_service_token_is_refused_not_exempted() -> None:
 @pytest.mark.asyncio
 async def test_a_caller_with_no_identity_at_all_is_refused() -> None:
     g = DelegationEdgeGuardrail(edges={})
-    assert (await g.check(_task("archivist"), _ctx(None, None))).type is VerdictType.BLOCK
+    assert (await g.check(_task("archivist"), _ctx(None, None))).type is VerdictType.TERMINATE
 
 
 @pytest.mark.asyncio
@@ -106,7 +119,7 @@ async def test_an_unidentifiable_target_is_refused_not_waved_through() -> None:
     """A default-deny control that fails open on a missing field is not one."""
     g = DelegationEdgeGuardrail(edges={"mason": ["archivist"]})
     v = await g.check(_task(target_agent=None), _ctx("mason"))
-    assert v.type is VerdictType.BLOCK
+    assert v.type is VerdictType.TERMINATE
     assert v.reason is not None and "could not be identified" in v.reason
 
 
@@ -120,7 +133,7 @@ async def test_an_edge_cannot_be_supplied_by_the_agent() -> None:
     # every lever an agent has: its own task metadata
     task.metadata["may_delegate_to"] = ["librarian"]
     task.metadata["cabal_edges"] = {"mason": ["librarian"]}
-    assert (await g.check(task, _ctx("mason"))).type is VerdictType.BLOCK
+    assert (await g.check(task, _ctx("mason"))).type is VerdictType.TERMINATE
     assert g.edges_for("mason") == frozenset({"archivist"})
 
 
