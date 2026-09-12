@@ -592,17 +592,33 @@ class PrimusPersona(LLMPersona):
             #
             # The part I had wrong, measured by the #177 reviewer rather than
             # reasoned: a guard that is SKIPPED does not run its SIDE EFFECT.
-            # With depth at the limit, a refused leg leaves the budget's
-            # `_counts` empty either way -- the budget is last in both candidate
-            # orders, so the set of legs reaching it is identical and the
-            # no-refund property never enters into it. But DoomLoopGuardrail
-            # also has state, and under doom-FIRST a depth-refused leg still
-            # advances the sameness counter, where under depth-first it would
-            # not. That can change a later, shallower delegation's outcome.
-            # Doom-first is what a router hop does, so matching it makes the
-            # fan-out's sameness counter accumulate the same way. The order fix
-            # is therefore slightly more than cosmetic, and correct for a better
-            # reason than the one this comment originally gave.
+            # DoomLoopGuardrail's counter increments near the top of `check()`,
+            # BEFORE the threshold comparison, so merely being called advances
+            # it. Under doom-FIRST a leg that depth later refuses has still
+            # advanced the sameness counter; under depth-first it has not. That
+            # changes a later, shallower delegation's outcome. Doom-first is
+            # what a router hop does, so matching it makes the fan-out's counter
+            # accumulate the same way -- the order fix is more than cosmetic,
+            # and correct for a better reason than this comment first gave.
+            #
+            # THE BUDGET: NO DEPTH-REFUSED LEG REACHES IT UNDER EITHER ORDER,
+            # since it is last in both, so the no-refund property is not
+            # implicated by THIS reorder. Do not read that as order-invariance
+            # (#177 r2, and the reviewer falsified her own r1 claim to get it).
+            # The set of legs that DO reach it is "legs where doom and depth
+            # both passed", and doom's verdict depends on the state that
+            # diverges above -- so the divergence carries one guard further.
+            # Measured over a sequence rather than a single leg: three deep
+            # legs sharing a context and a delegation key, then a shallow one,
+            # leaves the budget's counts EMPTY under doom-first and holding an
+            # entry under depth-first. Nothing escapes a bound either way --
+            # doom-first REFUSES the shallow leg that depth-first dispatches --
+            # so the divergence is in accounting, not in safety.
+            #
+            # And "empty" is a property of that sequence, not of the guard:
+            # since #158 this is the ROUTER'S shared instance and it persists
+            # across hops, so what can be asserted is "unaffected by that leg",
+            # never "empty".
             #
             # Said that way it holds for any configuration. An earlier version
             # of this comment argued instead that "the doom threshold trips
