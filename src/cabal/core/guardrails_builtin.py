@@ -244,6 +244,11 @@ class DoomLoopGuardrail:
 #: misconfigured persona is in -- so the backstop lives here, in code.
 MAX_DELEGATIONS_PER_CONTEXT = 40
 
+#: Task metadata key carrying "<spent> of <limit> used" for the reader that
+#: folds it into a prompt (cabal#156). Named rather than repeated, because the
+#: stamp and its two readers live in three files.
+BUDGET_KEY = "cabal_delegation_budget"
+
 #: Bound on tracked conversations, mirroring DoomLoopGuardrail's outer LRU.
 #: Without it a long-lived process leaks one counter per context forever.
 _BUDGET_MAXSIZE = 512
@@ -370,6 +375,27 @@ class DelegationBudgetGuardrail:
     def limit(self) -> int:
         return self._limit
 
+    def usage(self, session_key: str) -> tuple[int, int]:
+        """(spent, limit) for a key. cabal#156.
+
+        AN AGENT THAT KNOWS IT HAS THREE DELEGATIONS LEFT CAN PLAN; AN AGENT
+        THAT DISCOVERS A WALL CAN ONLY RETRY. That is the incident in one
+        sentence -- it hit a limit it could not see, concluded nothing, and
+        asked again roughly 270 times. The BLOCK message tells an agent the
+        budget is EXHAUSTED; nothing told it the budget EXISTED while it still
+        had room to spend deliberately.
+
+        TEST-FACING TODAY, and labelled rather than quietly load-bearing
+        (#156 r2 Nit). Nothing in `src/` calls this; the delivery path that
+        works is the metadata stamp below plus the reader in
+        `LLMPersona._delegation_budget_note`. It stays because a
+        non-incrementing read is the right shape for the question "how much is
+        left" and inventing it later under pressure would be worse -- but the
+        feature's thesis rests on the stamp, not on this.
+        """
+        entry = self._counts.get(session_key)
+        return ((entry[0] if entry else 0), self._limit)
+
     async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
         """PASS until the budget is exhausted, then refuse every time.
 
@@ -483,6 +509,26 @@ class DelegationBudgetGuardrail:
         if len(self._counts) >= self._maxsize:
             self._counts.pop(next(iter(self._counts)))
         self._counts[session_key] = (count, window_start)
+
+        # RIDE BACK IN THE REPLY (cabal#156). The cheapest of the three places
+        # the issue considers -- a system prompt is stale the moment anything
+        # is spent, and per-turn injection needs a path that does not exist --
+        # and the most accurate, because it is written at the moment of
+        # spending rather than recalled later.
+        #
+        # AN AGENT THAT KNOWS IT HAS THREE DELEGATIONS LEFT CAN PLAN; AN AGENT
+        # THAT DISCOVERS A WALL CAN ONLY RETRY. The BLOCK message tells it the
+        # budget is EXHAUSTED; until now nothing told it the budget EXISTED.
+        #
+        # THE STAMP IS HALF THE PATH, AND THE HALF THAT IS EASY TO MISTAKE FOR
+        # ALL OF IT. Writing it here puts the number in Task.metadata and on the
+        # wire, where an external A2A client can read it -- but cabal's own
+        # personas do not read metadata into a prompt, so on its own this
+        # delivers the sentence above to nobody we ship. The reader is
+        # LLMPersona._delegation_budget_note, which folds it into system
+        # content; the pre-pass that caught the gap is why it exists. Deleting
+        # either end silently restores "stops at the wire".
+        task.metadata[BUDGET_KEY] = f"{count} of {self._limit} used"
 
         if count > self._limit:
             # THE TAIL IS DIFFERENT PER KEY CLASS, and the conversation one was

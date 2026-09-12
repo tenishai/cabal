@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from cabal.agents.personas.mason import MASON_SYSTEM_PROMPT, MasonPrimusPersona
+from cabal.agents.primus import MAX_LEGS_PER_FANOUT
 from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, reason_code
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
@@ -783,3 +784,212 @@ async def test_the_fan_out_stamps_and_accumulates_depth() -> None:
     task.metadata[DEPTH_KEY] = 3
     await mason.handle_task(task)
     assert seen == [4], f"expected the leg stamped at parent+1, got {seen}"
+
+
+def test_a_fan_out_wider_than_the_ceiling_is_refused_at_construction() -> None:
+    """cabal#156 — breadth is its own axis, and it is a CONFIG error.
+
+    #144 bounds how DEEP a chain runs; #146 bounds how MANY delegations a
+    conversation makes in total. Neither bounds how many children one agent
+    opens AT ONCE — forty concurrent legs sit inside a depth bound of 8 and
+    inside a total budget of 40, by spending the whole budget in one burst.
+    Concurrency costs connections and tokens simultaneously rather than over
+    time, which is the liveness starvation that killed the container.
+
+    REFUSED AT CONSTRUCTION, and r1 is why. `leg_roles` is derived from
+    `subordinates`, which is assigned once and never mutated, so the comparison
+    is invariant for the life of the instance — it cannot depend on the task.
+    Checking it only at dispatch meant a deployment declaring nine legs
+    constructed fine and then failed EVERY dispatch forever, each one after
+    paying for a full plan call. It now fails at boot, for free.
+    """
+    subs = {f"impl{n}": _subordinate(_client(["out"])[0]) for n in range(5)}
+    with pytest.raises(ValueError, match="above the ceiling of 2"):
+        MasonPrimusPersona(
+            _client(["a plan"])[0], subordinates=subs, doom_loop=None, max_legs=2
+        )
+
+
+
+
+@pytest.mark.asyncio
+async def test_the_dispatch_check_remains_as_a_backstop() -> None:
+    """The runtime check is unreachable through __init__ by design, so this
+    reaches it the only way anything could: by mutating `subordinates` after
+    construction — which is exactly the future change the backstop guards.
+
+    Kept rather than deleted because "never mutated" is a property of today's
+    code, not a guarantee, and the constructor check is the one that would go
+    stale if it ever stopped being true.
+    """
+    leg_calls = []
+    subs = {}
+    for n in range(2):
+        client, calls = _client(["out"])
+        leg_calls.append(calls)
+        subs[f"impl{n}"] = _subordinate(client)
+    mason = MasonPrimusPersona(
+        _client(["a plan"])[0], subordinates=subs, doom_loop=None, max_legs=2
+    )
+    for n in range(2, 5):
+        client, calls = _client(["out"])
+        leg_calls.append(calls)
+        mason.subordinates[f"impl{n}"] = _subordinate(client)
+
+    result = await mason.handle_task(_task_with_ctx("build"))
+    text = " ".join(
+        p.text for p in result.status.message.parts if isinstance(p, TextPart)
+    ) if result.status.message else ""
+
+    assert "configured with 5" in text
+    assert "ceiling of 2" in text
+    assert "no plan can avoid it" in text
+    # REFUSED BEFORE THE GATHER, not after (#156 r1 Important 2). The refusal
+    # text is byte-identical whether or not legs were dispatched first, so
+    # moving the check below _dispatch_legs left the whole suite green. The
+    # legs are what the assertion has to look at.
+    assert all(calls == [] for calls in leg_calls), (
+        f"legs were dispatched before the breadth check refused: "
+        f"{[len(c) for c in leg_calls]}"
+    )
+
+
+
+
+@pytest.mark.asyncio
+async def test_a_policy_cannot_raise_the_breadth_ceiling() -> None:
+    """CLAMPED, NOT HONOURED, mirroring #146's limit at the CEILING. A
+    policy-only bound fails open exactly when the policy is missing, and a
+    deployment must not be able to raise its own ceiling."""
+    subs = {"impl": _subordinate(_client(["out"])[0])}
+    mason = MasonPrimusPersona(
+        _client(["plan"])[0], subordinates=subs, doom_loop=None, max_legs=10_000
+    )
+    assert mason._max_legs == MAX_LEGS_PER_FANOUT
+
+
+
+
+@pytest.mark.parametrize("bad", [0, -5])
+def test_a_sub_one_breadth_is_clamped_up_rather_than_refused(bad: int) -> None:
+    """WHERE THIS STOPS MIRRORING #146's LIMIT, pinned because nothing did.
+
+    The #156 pre-pass found the PR claiming the two clamps mirror each other
+    *exactly*. At the ceiling they do -- both silently clamp down. At the floor
+    they diverge: `DelegationBudgetGuardrail(limit=0)` raises a documented
+    `ValueError`, while `max_legs=0` is quietly substituted with 1.
+
+    The divergence is left standing rather than fixed, and this test is the
+    reason it can be: substituting 1 is FAIL-CLOSED. A budget of 0 would be a
+    bound nothing can satisfy, so refusing to boot is the honest answer there;
+    a fan-out of 1 is a legal, working, maximally-narrow fan-out. Making it
+    raise would turn a config typo into a daemon that will not start, for no
+    safety gained.
+
+    What was actually wrong was the word "exactly", and that is now the PR's
+    problem rather than the code's. If this behaviour is ever changed to raise,
+    this test is where the argument above has to be answered.
+    """
+    subs = {"impl": _subordinate(_client(["out"])[0])}
+    mason = MasonPrimusPersona(
+        _client(["plan"])[0], subordinates=subs, doom_loop=None, max_legs=bad
+    )
+    assert mason._max_legs == 1
+
+    with pytest.raises(ValueError, match="limit must be >= 1"):
+        DelegationBudgetGuardrail(limit=bad)
+
+
+
+
+@pytest.mark.asyncio
+async def test_the_plan_hop_is_told_the_budget() -> None:
+    """cabal#156 r1 Important 1 — THE AGENT THAT SPENDS IT IS THE PRIMUS.
+
+    The note was folded into `LLMPersona.build_messages` alone, on the belief
+    that that is where every persona's system content is composed. A primus
+    overrides `handle_task` and never calls it: instrumented across a real
+    Mason dispatch, the note landed on the LEG and on neither the plan nor the
+    aggregate call. A `Subordinate` is a leaf that cannot delegate, so the
+    number reached the one agent that cannot spend it and was withheld from
+    the one deciding how wide to fan out.
+
+    A TEST ON A BARE `LLMPersona` CANNOT SEE THIS, which is why the first one
+    did not: that is the single shape where `build_messages` is on the path.
+    The guard's precondition selected the case that passes.
+
+    Drives the real guard and a real primus, and asserts on the PLAN call
+    specifically rather than on "some call saw it".
+    """
+    from cabal.core.guardrails_builtin import DelegationBudgetGuardrail
+
+    primus_client, primus_calls = _client(["a plan", "a summary"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+    )
+    from cabal.core.guardrails import GuardrailContext
+
+    task = _task_with_ctx("build")
+    await DelegationBudgetGuardrail(limit=20).check(
+        task, GuardrailContext(persona_name="caller", task_id=task.id, phase="router")
+    )
+
+    await mason.handle_task(task)
+
+    plan_system = primus_calls[0]["messages"][0]["content"]
+    assert "1 of 20 used" in plan_system, (
+        "the hop that decides how wide to fan out was not told its budget"
+    )
+    aggregate_system = primus_calls[-1]["messages"][0]["content"]
+    assert "of 20 used" not in aggregate_system, (
+        "the aggregate hop spends nothing; telling it the budget is noise"
+    )
+
+
+
+
+@pytest.mark.asyncio
+async def test_the_legs_are_not_told_a_budget_they_cannot_spend() -> None:
+    """cabal#156 r2 Nit — THE NOTE IS FOR SPENDERS.
+
+    `_aggregate` was excluded from the note on the stated rule that it joins
+    outputs and spends nothing, so telling it the budget is noise in a prompt
+    that is already long. A leg is a leaf by the same measure — a `Subordinate`
+    has no `tool_proxy` and cannot delegate — but it inherited the stamp
+    through `**parent_task.metadata` and folded it in via `build_messages`.
+
+    That is the same noise the one aggregate call was spared, multiplied by the
+    fan-out width, and the note's own text ("plan the ones you have left") asks
+    a leaf to do something it cannot. Not wrong, but not the rule the diff
+    states — and a rule applied to one of two identical cases is the kind of
+    thing that reads as an oversight later.
+
+    Asserts the plan hop KEEPS it in the same run, so a fix that strips the key
+    everywhere cannot pass.
+    """
+    from cabal.core.guardrails import GuardrailContext
+    from cabal.core.guardrails_builtin import DelegationBudgetGuardrail
+
+    primus_client, primus_calls = _client(["a plan", "a summary"])
+    sub_client, sub_calls = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+    )
+    task = _task_with_ctx("build")
+    await DelegationBudgetGuardrail(limit=20).check(
+        task, GuardrailContext(persona_name="caller", task_id=task.id, phase="router")
+    )
+
+    await mason.handle_task(task)
+
+    leg_system = sub_calls[0]["messages"][0]["content"]
+    assert "of 20 used" not in leg_system, (
+        "a leg that cannot delegate was handed a delegation budget to plan"
+    )
+    plan_system = primus_calls[0]["messages"][0]["content"]
+    assert "1 of 20 used" in plan_system, "the fix stripped the key from the spender too"
