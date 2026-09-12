@@ -107,9 +107,18 @@ def test_factory_attributes_each_primus_its_own_subordinates() -> None:
     registered: list[Any] = []
 
     class _StubRouter:
-        """Only the three members the factory touches."""
+        """Only the members the factory touches.
+
+        `input_guardrail_of` arrived with cabal#158: the factory asks the
+        router for its delegation-budget instance so a primus SHARES it rather
+        than constructing a second one. A stub returning None is the
+        budget-disabled case, which is what these tests want.
+        """
 
         abort_coordinator = AbortCoordinator()
+
+        def input_guardrail_of(self, kind: type) -> Any:
+            return None
 
         def register_local(self, handler: Any) -> None:
             registered.append(handler)
@@ -171,6 +180,9 @@ def test_persona_wanting_mcp_but_getting_none_says_so() -> None:
     class _StubRouter:
         abort_coordinator = AbortCoordinator()
 
+        def input_guardrail_of(self, kind: type) -> Any:
+            return None
+
         def register_local(self, handler: Any) -> None:
             pass
 
@@ -218,6 +230,9 @@ def test_persona_not_wanting_mcp_stays_quiet() -> None:
 
     class _StubRouter:
         abort_coordinator = AbortCoordinator()
+
+        def input_guardrail_of(self, kind: type) -> Any:
+            return None
 
         def register_local(self, handler: Any) -> None:
             pass
@@ -286,3 +301,107 @@ def test_prompt_templates_are_actually_formattable() -> None:
                 f"{role} prompt is not formattable ({type(exc).__name__}: {exc}). "
                 "Double any literal brace: {{ }}."
             ) from exc
+
+
+def test_the_factory_hands_a_primus_the_routers_own_budget_instance() -> None:
+    """cabal#158 — SHARED, not merely present, and that distinction is the fix.
+
+    The delegation budget is per-conversation, keyed on context_id. A primus
+    holding its OWN instance would give one conversation two separate
+    allowances: an agent mixing router-mediated hops with fan-out legs would
+    get double the budget while looking bounded, which is worse than the
+    original gap because it reads as fixed.
+
+    Asserts object IDENTITY against the router's instance. An equality or
+    truthiness check would pass against a freshly-constructed guard, which is
+    precisely the bug — and a mutation replacing the lookup with
+    `DelegationBudgetGuardrail()` survived the suite until this test existed.
+    """
+    from cabal.config.identity import IdentityConfig, PersonaConfig, SubordinateConfig
+    from cabal.core.abort import AbortCoordinator
+    from cabal.core.guardrails_builtin import DelegationBudgetGuardrail
+    from cabal.core.memory.session_tracker import NoOpSessionTracker
+    from cabal.core.memory.store import NoOpMemoryStore
+    from cabal.core.persona_factory import register_personas_from_identity
+
+    the_routers_budget = DelegationBudgetGuardrail(limit=7)
+    registered: list[Any] = []
+
+    class _StubRouter:
+        abort_coordinator = AbortCoordinator()
+
+        def input_guardrail_of(self, kind: type) -> Any:
+            return the_routers_budget if kind is DelegationBudgetGuardrail else None
+
+        def register_local(self, handler: Any) -> None:
+            registered.append(handler)
+
+        def register_capabilities(self, agent_name: str, caps: list[str]) -> None:
+            pass
+
+    identity = IdentityConfig(
+        personas={
+            "mason": PersonaConfig(
+                role="primus", subordinates={"implementer": SubordinateConfig(model="m")}
+            )
+        }
+    )
+    register_personas_from_identity(
+        dispatch_router=_StubRouter(),  # type: ignore[arg-type]
+        identity=identity,
+        litellm_client=_client(),
+        memory_store=NoOpMemoryStore(),
+        session_tracker=NoOpSessionTracker(),
+        hook_registry=HookRegistry(),
+    )
+
+    primus = {h.name: h for h in registered}["mason-primus"]
+    assert primus._delegation_budget is the_routers_budget, (
+        "the primus holds a different budget object than the router, so a "
+        "conversation gets two allowances instead of one"
+    )
+
+
+def test_every_primus_subclass_forwards_the_budget_it_is_given() -> None:
+    """cabal#158 r1 Important 2 — the failure this pins is SILENT.
+
+    Mason's forwarding was held down by three tests; Wright's by nothing.
+    Deleting `delegation_budget=delegation_budget` from wright.py left the
+    whole suite green — signature still advertising the parameter, factory
+    still passing it, mypy and ruff clean, CI green, and `wright-primus`'s
+    fan-out unguarded. It matters more for Wright than Mason because
+    identity.mtplx.toml configures wright as the deployed primus: the one
+    persona actually running was the one whose forwarding nothing held.
+
+    WALKS THE REGISTRY rather than naming Wright, so a subclass added later is
+    covered the day it appears. A subclass that does not ACCEPT the kwarg
+    fails loudly at startup with a TypeError — the factory passes it
+    unconditionally — so accept-and-drop is the only silent shape, and it is
+    exactly what this catches.
+    """
+    from cabal.agents.personas import PERSONA_REGISTRY
+    from cabal.agents.primus import PrimusPersona
+    from cabal.agents.subordinate import Subordinate
+    from cabal.core.guardrails_builtin import DelegationBudgetGuardrail
+
+    sentinel = DelegationBudgetGuardrail(limit=5)
+    subclasses = [
+        (name, cls)
+        for name, cls in PERSONA_REGISTRY.items()
+        if isinstance(cls, type) and issubclass(cls, PrimusPersona)
+    ]
+    assert subclasses, "no primus subclasses found — the walk is testing nothing"
+
+    for name, cls in subclasses:
+        sub = Subordinate(
+            primus=name, role="implementer", llm_client=_client(), model="m"
+        )
+        primus = cls(
+            _client(),
+            subordinates={"implementer": sub},
+            delegation_budget=sentinel,
+        )
+        assert primus._delegation_budget is sentinel, (
+            f"{name} accepted delegation_budget and dropped it: its fan-out is "
+            "unbounded while the signature and the factory both say otherwise"
+        )

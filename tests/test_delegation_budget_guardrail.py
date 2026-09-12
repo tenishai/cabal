@@ -497,3 +497,55 @@ async def test_the_verdict_follows_the_key_class_not_the_guard() -> None:
     # The sentence that makes terminating the windowed path self-contradictory.
     assert "refills" in windowed.reason
     assert "refills" not in conversation.reason
+
+
+def test_the_shipped_budget_default_preserves_the_effective_allowance() -> None:
+    """cabal#158 r3 — THE MEANING MOVED, SO THE NUMBER HAD TO.
+
+    This PR made the budget count fan-out legs as well as router hops. On the
+    shipped config one operator turn costs 2 — the router hop plus the
+    implementer leg — so the old default of 20 halved `cbl chat` from twenty
+    turns to ten and then blocked permanently, because a conversation key never
+    refills. Measured at r3: turn 11 refused, no recovery.
+
+    40 RESTORES the allowance rather than raising the bound: the same twenty
+    operator turns, re-expressed in the unit the field now counts. It is also
+    MAX_DELEGATIONS_PER_CONTEXT, so wanting more means changing the backstop in
+    code.
+
+    PINNED BECAUSE THE PAIRING IS THE POINT. Either number alone is arbitrary;
+    what matters is that the default and the per-turn cost move together, and
+    nothing else in the suite would notice if one drifted back.
+    """
+    from cabal.config.identity import GuardrailsConfig
+
+    assert GuardrailsConfig().delegation_budget_limit == MAX_DELEGATIONS_PER_CONTEXT
+    assert MAX_DELEGATIONS_PER_CONTEXT == 40
+    # One router hop + one implementer leg per operator turn, on the shipped
+    # single-subordinate primus.
+    assert MAX_DELEGATIONS_PER_CONTEXT // 2 == 20, "the effective turn count moved"
+
+
+@pytest.mark.asyncio
+async def test_each_key_class_tells_the_reader_how_to_recover() -> None:
+    """cabal#158 r3 Nit — the conversation branch offered no way out.
+
+    The windowed branch says when it refills. The conversation branch ended by
+    telling an AGENT to stop re-asking — right for the reader it was written
+    for, no help to the human whose `cbl chat` session just hit a wall that
+    does not refill. This PR is what makes operators meet that message.
+
+    Asserts BOTH tails so neither can be dropped into the other's branch.
+    """
+    g = DelegationBudgetGuardrail(limit=1, caller_window_seconds=3600)
+    ctx = _ctx()
+
+    await g.check(_task(context_id="c"), ctx)
+    conversation = await g.check(_task(context_id="c"), ctx)
+    await g.check(_task(context_id=None, task_id="a"), ctx)
+    windowed = await g.check(_task(context_id=None, task_id="b"), ctx)
+
+    assert "does not refill" in conversation.reason, conversation.reason
+    assert "a new conversation starts a fresh one" in conversation.reason
+    assert "refills 3600s" in windowed.reason, windowed.reason
+    assert "does not refill" not in windowed.reason

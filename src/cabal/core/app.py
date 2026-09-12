@@ -60,6 +60,7 @@ from cabal.core.dispatch_timeout import (
 from cabal.core.guardrails import Guardrail
 from cabal.core.guardrails_builtin import (
     DelegationBudgetGuardrail,
+    DelegationDepthGuardrail,
     DelegationEdgeGuardrail,
     DoomLoopGuardrail,
 )
@@ -257,6 +258,13 @@ def build_router_input_guardrails(
     # ORDER MATTERS ONLY FOR THE MESSAGE, not for safety: the first BLOCK
     # short-circuits, so a tight repeat is reported as a doom loop and a
     # paraphrase storm as an exhausted budget. Both stop the dispatch.
+    # cabal#144 — depth first among the three bounds. It is STRUCTURAL, so it
+    # is the one a paraphrase cannot evade, and a chain already too deep should
+    # hear that rather than "your budget is spent".
+    if gconf.delegation_depth:
+        guardrails.append(
+            DelegationDepthGuardrail(max_depth=gconf.delegation_depth_limit)
+        )
     if gconf.delegation_budget:
         guardrails.append(
             DelegationBudgetGuardrail(
