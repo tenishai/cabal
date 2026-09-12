@@ -302,9 +302,15 @@ class GuardrailsConfig(_Open):
     #: by default would turn all delegation off at upgrade with no warning.
     #: The default-deny lives in the guard; the migration lives here.
     delegation_edges: bool = False
-    #: cabal#144 — bound how DEEP a delegation chain runs. Default-on like its
+    #: cabal#144 — bound how deep a delegation chain runs. Default-on like its
     #: two neighbours; the guard's own ceiling (MAX_DELEGATION_DEPTH) is a hard
     #: backstop a policy can only lower.
+    #:
+    #: IT BOUNDS A DEPTH AN ARRIVING CHAIN DECLARES, not one cabal accumulates:
+    #: cabal's own fan-out stamps a depth the router never sees, and a federated
+    #: hop forwards without incrementing, so this cannot trip on cabal-only
+    #: traffic (cabal#171). Reading it as a bound on your own delegation is the
+    #: misreading to avoid, and this is the field an operator sets.
     delegation_depth: bool = True
     delegation_depth_limit: int = 8
     delegation_budget: bool = True
