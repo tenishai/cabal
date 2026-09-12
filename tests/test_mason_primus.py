@@ -10,7 +10,10 @@ from cabal.agents.personas.mason import MASON_SYSTEM_PROMPT, MasonPrimusPersona
 from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, reason_code
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import (
+    DelegationBudgetGuardrail,
+    DoomLoopGuardrail,
+)
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
@@ -579,6 +582,168 @@ def test_mason_system_prompt_frames_sre_and_reliability() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_fan_out_is_bounded_by_the_delegation_budget() -> None:
+    """cabal#158 — the primus path never reaches the router's guardrail chain.
+
+    `_dispatch_subordinate` calls `handle_task` directly, so a delegation
+    budget wired only into `build_router_input_guardrails` bounds
+    router-mediated delegation and nothing else. That left fan-out legs
+    bounded by the sameness counter alone -- the counter #146 exists precisely
+    because rewording defeats it.
+
+    DISTINCT plan text per dispatch, so the doom-loop guard cannot be what
+    stops this: if it passed with the budget removed, the test would be
+    measuring the wrong guard.
+    """
+    budget = DelegationBudgetGuardrail(limit=2)
+    primus_client, _ = _client(["plan one", "sum", "plan two", "sum", "plan three", "sum"])
+    sub_client, _ = _client(["impl"] * 3)
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_budget=budget,
+    )
+
+    seen = []
+    for n in range(3):
+        task = Task(
+            **{
+                "id": f"t-budget-{n}",
+                "contextId": "one-conversation",
+                "status": TaskStatus(
+                    state="submitted",
+                    message=Message(role="user", parts=[TextPart(text=f"do {n}")]),
+                ),
+            }
+        )
+        result = await mason.handle_task(task)
+        seen.append(" ".join(
+            p.text for p in result.status.message.parts if isinstance(p, TextPart)
+        ) if result.status.message else "")
+
+    assert any("budget" in t.lower() for t in seen), (
+        f"three fan-outs under a budget of 2 were not bounded: {seen}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_primus_shares_the_budget_instance_it_is_given() -> None:
+    """THE PROPERTY THAT MAKES THIS WORTH DOING, and the one a second instance
+    would quietly break.
+
+    The budget is per-conversation, keyed on context_id. Two instances would
+    give one conversation two separate allowances -- an agent mixing router
+    hops with fan-out legs would get double the budget while LOOKING bounded,
+    which is worse than the gap it replaces.
+    """
+    budget = DelegationBudgetGuardrail(limit=50)
+    primus_client, _ = _client(["a plan", "a summary"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_budget=budget,
+    )
+    task = Task(
+        **{
+            "id": "t-share",
+            "contextId": "shared-conversation",
+            "status": TaskStatus(
+                state="submitted",
+                message=Message(role="user", parts=[TextPart(text="go")]),
+            ),
+        }
+    )
+    await mason.handle_task(task)
+    assert budget._counts, (
+        "the fan-out leg never touched the caller's counter, so the primus is "
+        "not using the instance it was handed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_second_guard_at_the_boundary_still_reaches_its_own_limit() -> None:
+    """cabal#158 pre-pass r2 — WHY THE GUARD ORDER IS IMMATERIAL, structurally.
+
+    The comment at this boundary used to justify its order by saying the doom
+    threshold trips long before the budget limit. That is a fact about the
+    shipped defaults (5 vs 20), not about anything the code enforces: the two
+    limits have independent validators and no cross-field check.
+
+    So this runs the configuration the old justification forbids —
+    threshold=30, budget=2, with doom checked FIRST — and pins the property that
+    actually holds: neither guard starves the other before the outcome is
+    decided, so the second-listed one still reaches its own trip point. The
+    refusal must name the budget, which has not yet blocked anything, rather
+    than the doom guard, which never trips at all here.
+
+    IDENTICAL plan text every dispatch, deliberately: rephrased legs miss the
+    sameness counter by construction, so distinct text would make the doom guard
+    unable to compete and the test would prove nothing about order.
+    """
+    doom = DoomLoopGuardrail(threshold=30)
+    budget = DelegationBudgetGuardrail(limit=2)
+    primus_client, _ = _client(["same plan", "sum"] * 3)
+    sub_client, _ = _client(["impl"] * 3)
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=doom,
+        delegation_budget=budget,
+    )
+
+    seen = []
+    for n in range(3):
+        task = Task(
+            **{
+                "id": f"t-order-{n}",
+                "contextId": "one-conversation",
+                "status": TaskStatus(
+                    state="submitted",
+                    message=Message(role="user", parts=[TextPart(text="do the thing")]),
+                ),
+            }
+        )
+        result = await mason.handle_task(task)
+        seen.append(
+            " ".join(
+                p.text for p in result.status.message.parts if isinstance(p, TextPart)
+            )
+            if result.status.message
+            else ""
+        )
+
+    refusals = [t for t in seen if "budget" in t.lower()]
+    assert refusals, (
+        f"the budget was listed second and never reached its limit of 2: {seen}"
+    )
+    # THE DOOM GUARD WAS CONSULTED AND SIMPLY DID NOT TRIP, which is the half
+    # of "neither starves the other" that the line above cannot show. Reading
+    # its counter rather than its message: an earlier version of this assertion
+    # looked for "loop" in the refusal text, and DoomLoopGuardrail's message
+    # says "identical delegations ... pausing; change approach" -- no such
+    # substring, so it could not have failed whatever the guard did.
+    #
+    # NON-EMPTY, NOT A COUNT (#158 r2 Important 1). The replacement for that
+    # inert assertion read `max(counted) == 3`, which is only ever true of the
+    # FIRST-listed guard -- so it pinned the guard order inside the test whose
+    # thesis is that the order is immaterial, and swapping the tuple turned the
+    # suite red with a message that read as a defect report for a non-defect.
+    # "Consulted at all" is the order-independent form of the same property,
+    # and it keeps its teeth: under a loop that checks only the first guard,
+    # either this is empty or `refusals` above is.
+    counted = [c for per_key in doom._state.values() for c, _ in per_key.values()]
+    assert counted, (
+        "the doom guard was never consulted, so the budget's refusal says "
+        "nothing about whether the two share the boundary"
+    )
+    assert not any("identical delegations" in t for t in seen), (
+        f"a doom threshold of 30 refused inside three dispatches: {seen}"
+    )
+
+
 async def test_the_fan_out_stamps_and_accumulates_depth() -> None:
     """cabal#144 — depth is a property of the CHAIN, not of one primus's view.
 
