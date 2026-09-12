@@ -405,3 +405,79 @@ def test_every_primus_subclass_forwards_the_budget_it_is_given() -> None:
             f"{name} accepted delegation_budget and dropped it: its fan-out is "
             "unbounded while the signature and the factory both say otherwise"
         )
+
+
+def test_the_factory_hands_the_primus_the_ROUTER_S_guard_instances() -> None:
+    """THE WIRING, asserted separately from the mechanism (cabal#171).
+
+    Every primus test above builds its own persona and hands it a guard, which
+    proves the guard works and says nothing about production. A primus that
+    enforces depth in a unit test and silently receives `None` from
+    `register_personas_from_identity` would pass all of them while leaving the
+    hole cabal#171 was filed for — the counter and the check never meeting.
+
+    Mutating `persona_factory` to stop passing the router's instance survived
+    the entire suite until this existed. It is an IDENTITY assertion, not a
+    type one: #158 and #171 both exist so one instance is shared rather than a
+    second constructed, and a fresh instance of the right class would satisfy
+    `isinstance` while counting separately — which is exactly the bug.
+    """
+    from cabal.config.identity import IdentityConfig, PersonaConfig, SubordinateConfig
+    from cabal.core.abort import AbortCoordinator
+    from cabal.core.guardrails_builtin import (
+        DelegationBudgetGuardrail,
+        DelegationDepthGuardrail,
+    )
+    from cabal.core.memory.session_tracker import NoOpSessionTracker
+    from cabal.core.memory.store import NoOpMemoryStore
+    from cabal.core.persona_factory import register_personas_from_identity
+
+    registered: list[Any] = []
+    router_budget = DelegationBudgetGuardrail(limit=7)
+    router_depth = DelegationDepthGuardrail(max_depth=5)
+    asked: list[type] = []
+
+    class _StubRouter:
+        abort_coordinator = AbortCoordinator()
+
+        def input_guardrail_of(self, kind: type) -> Any:
+            asked.append(kind)
+            if kind is DelegationBudgetGuardrail:
+                return router_budget
+            if kind is DelegationDepthGuardrail:
+                return router_depth
+            return None
+
+        def register_local(self, handler: Any) -> None:
+            registered.append(handler)
+
+        def register_capabilities(self, agent_name: str, caps: list[str]) -> None:
+            pass
+
+    sub = SubordinateConfig(model="m")
+    identity = IdentityConfig(
+        personas={
+            "mason": PersonaConfig(role="primus", subordinates={"implementer": sub})
+        }
+    )
+    register_personas_from_identity(
+        dispatch_router=_StubRouter(),  # type: ignore[arg-type]
+        identity=identity,
+        litellm_client=_client(),
+        memory_store=NoOpMemoryStore(),
+        session_tracker=NoOpSessionTracker(),
+        hook_registry=HookRegistry(),
+    )
+
+    assert DelegationDepthGuardrail in asked, (
+        "the factory never asked the router for its depth guard, so a fan-out "
+        "leg is not depth-bounded in production"
+    )
+    assert DelegationBudgetGuardrail in asked
+
+    primus = next(h for h in registered if h.name == "mason-primus")
+    assert primus._delegation_depth is router_depth, (
+        "the primus did not get the ROUTER'S depth instance — a separate one "
+        "counts separately, which is the bug #158 and #171 both exist to stop"
+    )
+    assert primus._delegation_budget is router_budget

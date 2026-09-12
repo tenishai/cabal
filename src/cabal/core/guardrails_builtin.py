@@ -919,42 +919,38 @@ def next_delegation_depth(task: Task) -> int:
 class DelegationDepthGuardrail:
     """Refuse a delegation that runs deeper than the chain is allowed (#144).
 
-    WHERE THIS RUNS, AND WHERE IT DOES NOT (#144 pre-pass). It is wired into
-    ``build_router_input_guardrails`` and therefore runs on every hop that
-    crosses ``DispatchRouter``. It does NOT run on the primus's own fan-out:
-    ``_dispatch_subordinate`` calls ``handle_task`` directly, and the only
-    guard with a dedicated call at that boundary is the doom-loop counter.
+    WHERE THIS RUNS (#144 pre-pass, corrected by #171). It is wired into
+    ``build_router_input_guardrails``, so it runs on every hop that crosses
+    ``DispatchRouter`` -- AND, since cabal#171, on the primus's own fan-out:
+    ``_dispatch_subordinate`` checks the ROUTER'S instance at the subordinate
+    boundary, handed to it by ``persona_factory`` through
+    ``input_guardrail_of``. One instance, one bound, no second counter to
+    drift.
 
-    THE COUNTER AND THE CHECK NEVER MEET, and an earlier version of this
-    paragraph described the gap as one local cycle of slack "before depth is
-    enforced again on its next router-mediated hop" (#144 r2). There is no such
-    hop. ``next_delegation_depth`` has exactly one call site -- the sub_task
-    built in ``primus._dispatch_subordinate`` -- and that task goes straight to
-    ``subord.handle_task``, which the router never sees. A ``Subordinate`` has
-    no outbound surface, so the chain ends there. The increment is WRITE-ONLY:
-    nothing in this tree reads a fan-out-stamped depth at a decision point.
+    THE COUNTER AND THE CHECK USED NOT TO MEET, and this paragraph is kept
+    because the shape is worth recognising again. ``next_delegation_depth`` has
+    exactly one call site -- the sub_task built in
+    ``primus._dispatch_subordinate`` -- and that task goes straight to
+    ``subord.handle_task``, which the router never sees. Before #171 the
+    increment was therefore WRITE-ONLY: nothing read a fan-out-stamped depth at
+    a decision point, so cabal's own delegation could not accumulate depth and
+    a cabal-to-cabal A-to-B-to-A ping-pong carried a constant value for as many
+    hops as it liked. The limit was unreachable by accumulation. It is now read
+    at the boundary that stamps it, and
+    ``test_the_depth_the_guard_sees_is_the_depth_the_fanout_stamped`` pins that
+    the two numbers are one number.
 
-    SO WHAT REACHES THIS GUARD IS ONLY WHAT A CALLER PUT ON THE WIRE. The
+    WHAT ARRIVES FROM OUTSIDE IS STILL ONLY WHAT A CALLER PUT ON THE WIRE. The
     JSON-RPC and REST routes copy ``params.metadata`` verbatim, and a federated
-    hop forwards ``task.model_dump(...)`` whole WITHOUT incrementing. Cabal's
-    own delegation therefore cannot accumulate depth, and a cabal-to-cabal
-    A-to-B-to-A ping-pong carries a constant value for as many hops as it likes.
-    Accumulation requires an external client that increments -- which is exactly
-    what the companion daedalus#40 does, and is why that PR is a prerequisite
-    rather than a convenience.
+    hop forwards ``task.model_dump(...)`` whole WITHOUT incrementing -- so an
+    EXTERNAL chain accumulates depth only if the client increments, which is
+    what the companion daedalus#40 does. That half is unchanged by #171, which
+    bounds the delegation cabal ORIGINATES, not the depth a peer declares.
 
-    WHAT THIS STILL BUYS, stated at its real size: an honest bound on a depth
-    an external chain declares, refused immediately and locally instead of by
-    spend. What it does NOT buy is a bound on delegation that cabal originates.
-    ``delegation_depth = true`` with a limit of 8 reads to an operator as the
-    second, and today it is only the first.
-
-    THE FIX IS NOT HERE. cabal#158 is the same shape of gap for the budget and
-    the doom-loop counter, and it closes it by handing the primus the router's
-    own guard instance rather than by adding a second enforcement point. Depth
-    should join that mechanism once it lands -- filed as cabal#171 rather than
-    smuggled into this PR, because doing it here would collide with #158 on the
-    very constructor surface it is changing.
+    SO ``delegation_depth = true`` WITH A LIMIT OF 8 NOW MEANS BOTH: an honest
+    bound on a depth an external chain declares, refused immediately and
+    locally rather than by spend, and a bound on cabal's own fan-out. Until
+    #171 it read to an operator as the second and was only the first.
 
     MUST REMAIN AWAIT-FREE, for the same reason its two siblings must: a
     primus fan-out calls guardrails concurrently across legs sharing one

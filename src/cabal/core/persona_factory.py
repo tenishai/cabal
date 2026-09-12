@@ -23,7 +23,10 @@ from cabal.config.identity import IdentityConfig
 from cabal.core.auth.keys import StoredKey
 from cabal.core.broker.router import DispatchRouter
 from cabal.core.checkpoint import CheckpointStore
-from cabal.core.guardrails_builtin import DelegationBudgetGuardrail
+from cabal.core.guardrails_builtin import (
+    DelegationBudgetGuardrail,
+    DelegationDepthGuardrail,
+)
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 from cabal.core.memory.session_tracker import SessionTracker
@@ -134,6 +137,14 @@ def register_personas_from_identity(
                     # before.
                     delegation_budget=dispatch_router.input_guardrail_of(
                         DelegationBudgetGuardrail
+                    ),
+                    # cabal#171 — same mechanism, same reason. Without this the
+                    # depth the fan-out stamps is never read by anything, so an
+                    # A->B->A ping-pong carries a constant value for as many
+                    # hops as it likes and the limit is unreachable. None when
+                    # the operator disabled depth; the primus behaves as before.
+                    delegation_depth=dispatch_router.input_guardrail_of(
+                        DelegationDepthGuardrail
                     ),
                 )
             except ValueError as exc:

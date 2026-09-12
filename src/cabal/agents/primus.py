@@ -41,6 +41,7 @@ from cabal.core.guardrails_builtin import (
     BUDGET_KEY,
     DEPTH_KEY,
     DelegationBudgetGuardrail,
+    DelegationDepthGuardrail,
     DoomLoopGuardrail,
     next_delegation_depth,
 )
@@ -158,6 +159,7 @@ class PrimusPersona(LLMPersona):
         doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
         max_legs: int = MAX_LEGS_PER_FANOUT,
         delegation_budget: DelegationBudgetGuardrail | None = None,
+        delegation_depth: DelegationDepthGuardrail | None = None,
     ) -> None:
         legs = [role for role in subordinates if role != "reviewer"]
         if not legs:
@@ -234,6 +236,16 @@ class PrimusPersona(LLMPersona):
         # one by default: an unshared default would be exactly the second
         # instance this comment exists to prevent.
         self._delegation_budget = delegation_budget
+        # cabal#171 — THE ROUTER'S depth instance, for the same reason #158 took
+        # the router's budget: one enforcement point rather than two that can
+        # disagree. Until this landed the counter and the check NEVER MET --
+        # `next_delegation_depth` stamped a depth on every fan-out leg and
+        # nothing read it at a decision point, because the guard ran only in
+        # `build_router_input_guardrails` and a leg goes straight to
+        # `subord.handle_task`. The increment was write-only, so cabal's own
+        # delegation could not accumulate depth and the limit of 8 was
+        # unreachable by accumulation.
+        self._delegation_depth = delegation_depth
 
     async def handle_task(self, task: Task) -> Task:
         # cabal#11 — the parent dispatch node (task.id) is registered by the
@@ -549,25 +561,64 @@ class PrimusPersona(LLMPersona):
         # bounds router-mediated delegation and nothing else. That left fan-out
         # legs bounded by the sameness counter alone, which is the counter #146
         # exists precisely because rewording defeats.
-        if self._doom_loop is not None or self._delegation_budget is not None:
+        if (
+            self._doom_loop is not None
+            or self._delegation_budget is not None
+            or self._delegation_depth is not None
+        ):
             sub_task.metadata["cabal_target_agent"] = role
             guard_ctx = GuardrailContext(
                 persona_name=self.name, task_id=sub_task.id, phase="router"
             )
-            # ORDER MATCHES build_router_input_guardrails, and it is immaterial
-            # either way. An earlier comment here justified budget-first by
-            # saying a rephrased storm should read as an exhausted budget
-            # rather than a sameness loop -- but rephrased legs never trip the
-            # sameness counter at all (different key), so that conflict cannot
-            # occur.
+            # ORDER MATCHES build_router_input_guardrails. It is immaterial to
+            # WHETHER a leg is refused and material to two other things -- see
+            # both paragraphs below, which an earlier version of this block ran
+            # together under the heading "WHY ORDER CANNOT MATTER" while the
+            # tuple beneath it had three entries and the prose said "neither"
+            # and "both" (#177 r1 nit 4).
             #
-            # WHY ORDER CANNOT MATTER, structurally rather than by threshold.
-            # Neither guard starves the other before the outcome is decided:
-            # both are checked on every call until one of them first refuses,
-            # so whichever is listed first still reaches its own natural trip
-            # point. The second is only skipped AFTER the first has begun
-            # refusing -- by which point the task is refused either way, and
-            # only the wording of the message differs.
+            # WHY ORDER CANNOT DECIDE THE OUTCOME, structurally rather than by
+            # threshold. No guard starves another before the outcome is decided:
+            # each is checked on every call until one of them first refuses, so
+            # whichever is listed first still reaches its own natural trip
+            # point. The rest are only skipped AFTER the first has begun
+            # refusing -- by which point the task is refused either way.
+            #
+            # WHAT ORDER DOES DECIDE, and it is more than the wording. The
+            # obvious part is the MESSAGE: the router's own comment says "a
+            # tight repeat is reported as a doom loop and a paraphrase storm as
+            # an exhausted budget", and reporting a tight repeat as a depth
+            # violation instead is a worse message, not a neutral one.
+            #
+            # The part I had wrong, measured by the #177 reviewer rather than
+            # reasoned: a guard that is SKIPPED does not run its SIDE EFFECT.
+            # DoomLoopGuardrail's counter increments near the top of `check()`,
+            # BEFORE the threshold comparison, so merely being called advances
+            # it. Under doom-FIRST a leg that depth later refuses has still
+            # advanced the sameness counter; under depth-first it has not. That
+            # changes a later, shallower delegation's outcome. Doom-first is
+            # what a router hop does, so matching it makes the fan-out's counter
+            # accumulate the same way -- the order fix is more than cosmetic,
+            # and correct for a better reason than this comment first gave.
+            #
+            # THE BUDGET: NO DEPTH-REFUSED LEG REACHES IT UNDER EITHER ORDER,
+            # since it is last in both, so the no-refund property is not
+            # implicated by THIS reorder. Do not read that as order-invariance
+            # (#177 r2, and the reviewer falsified her own r1 claim to get it).
+            # The set of legs that DO reach it is "legs where doom and depth
+            # both passed", and doom's verdict depends on the state that
+            # diverges above -- so the divergence carries one guard further.
+            # Measured over a sequence rather than a single leg: three deep
+            # legs sharing a context and a delegation key, then a shallow one,
+            # leaves the budget's counts EMPTY under doom-first and holding an
+            # entry under depth-first. Nothing escapes a bound either way --
+            # doom-first REFUSES the shallow leg that depth-first dispatches --
+            # so the divergence is in accounting, not in safety.
+            #
+            # And "empty" is a property of that sequence, not of the guard:
+            # since #158 this is the ROUTER'S shared instance and it persists
+            # across hops, so what can be asserted is "unaffected by that leg",
+            # never "empty".
             #
             # Said that way it holds for any configuration. An earlier version
             # of this comment argued instead that "the doom threshold trips
@@ -601,7 +652,38 @@ class PrimusPersona(LLMPersona):
             # unreachable besides: this boundary calls guard.check() directly
             # rather than run_guardrails, so the PASS-carrying-`rewritten`
             # shape never arises here and neither guard returns REWRITE.
-            for guard in (self._doom_loop, self._delegation_budget):
+            # DEPTH IS CHECKED AGAINST THE STAMP THIS SAME METHOD APPLIED.
+            # `sub_task`'s DEPTH_KEY was set above from
+            # `next_delegation_depth(parent_task)`, and the guard reads that key
+            # -- so the number the guard SEES is the number the fan-out STAMPED.
+            # That identity is what cabal#171 was about and what every prior
+            # test missed, because each looked at only one of the two.
+            #
+            # ORDER MATCHES `build_router_input_guardrails` EXACTLY, and an
+            # earlier version of this comment CLAIMED that while the code did
+            # the opposite (cabal#177 pre-pass). The router appends doom_loop,
+            # then depth, then budget, and `run_guardrails` evaluates in list
+            # order with first-refusal-wins -- so a depth-first loop here made
+            # the two paths disagree about a leg that is BOTH a tight repeat and
+            # past its limit. Same task, two different refusals, decided by
+            # which path dispatched it.
+            #
+            # THE ROUTER'S ORDER IS DELIBERATE and says so: "ORDER MATTERS ONLY
+            # FOR THE MESSAGE, not for safety: the first BLOCK short-circuits,
+            # so a tight repeat is reported as a doom loop and a paraphrase
+            # storm as an exhausted budget." Reporting a tight repeat as a depth
+            # violation instead is a worse message, not a neutral one.
+            #
+            # (`app.py`'s "depth first among the three bounds" is about depth
+            # against BUDGET and EDGES -- the three bounds. DoomLoopGuardrail is
+            # a sameness counter, not a bound, and is not one of the three. Both
+            # files are self-consistent under that reading; only my comment was
+            # not.)
+            for guard in (
+                self._doom_loop,
+                self._delegation_depth,
+                self._delegation_budget,
+            ):
                 if guard is None:
                     continue
                 verdict = await guard.check(sub_task, guard_ctx)
