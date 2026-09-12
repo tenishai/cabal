@@ -25,6 +25,8 @@ import re
 import secrets
 from dataclasses import dataclass, field
 
+import structlog
+
 from cabal.agents.llm_persona import LLMPersona, _message_to_chat
 from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.codes import (
@@ -47,6 +49,8 @@ from cabal.core.guardrails_builtin import (
 )
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient, LLMTruncatedError
+
+log = structlog.get_logger(__name__)
 
 # Sentinel: distinguishes "caller passed doom_loop=None (disabled)" from
 # "caller omitted doom_loop (use default DoomLoopGuardrail())".
@@ -208,14 +212,32 @@ class PrimusPersona(LLMPersona):
         self.hook_registry = hook_registry
         # doom_loop is default-on: a fresh guard is created unless the caller
         # explicitly passes None (disabled) or a custom DoomLoopGuardrail instance.
-        # CLAMPED RATHER THAN HONOURED so a caller cannot raise its own bound.
-        # The clamp is real and tested; what is NOT true is the "a policy may
-        # only lower it" framing an earlier comment carried, because there is
-        # no config path to `max_legs` at all (#156 r2 -- see
-        # MAX_LEGS_PER_FANOUT, and cabal#172 for wiring one). The floor exists
-        # so a sub-1 value is a working narrow fan-out rather than a boot
-        # failure; the ceiling check that CAN fail boot is above, on the
-        # declared subordinates, where dropping work would be the alternative.
+        # CLAMPED RATHER THAN HONOURED so a caller cannot raise its own bound,
+        # and "a policy may only lower it" is finally a true story rather than
+        # a vacuous one: `max_legs_override` (cabal#172) is the policy, and
+        # MAX_LEGS_PER_FANOUT is the backstop it cannot raise. Until that field
+        # existed the clamp was real and had nothing to clamp FROM (#156 r2).
+        #
+        # AND THE CLAMP SAYS SO NOW. Silently lowering a number an operator
+        # wrote down is the same defect shape as silently discarding one -- the
+        # deployment runs bounded, the config says otherwise, and nothing
+        # reconciles them. Only an explicit over-wide value is logged; the
+        # unset default reaches here as MAX_LEGS_PER_FANOUT and is not a
+        # request to be refused.
+        #
+        # The floor exists so a sub-1 value is a working narrow fan-out rather
+        # than a boot failure. It is unreachable from config -- the field's
+        # validator refuses <1 outright, because zero legs is not a fan-out an
+        # operator could have meant -- and remains for direct constructor
+        # callers. The ceiling check that CAN fail boot is above, on the
+        # DECLARED subordinates, where dropping work would be the alternative.
+        if max_legs > MAX_LEGS_PER_FANOUT:
+            log.warning(
+                "primus.max_legs_clamped",
+                persona=name,
+                requested=max_legs,
+                ceiling=MAX_LEGS_PER_FANOUT,
+            )
         self._max_legs = max(1, min(max_legs, MAX_LEGS_PER_FANOUT))
         if doom_loop is _DOOM_LOOP_DEFAULT:
             self._doom_loop: DoomLoopGuardrail | None = DoomLoopGuardrail()
@@ -622,8 +644,8 @@ class PrimusPersona(LLMPersona):
             #
             # Said that way it holds for any configuration. An earlier version
             # of this comment argued instead that "the doom threshold trips
-            # long before the budget limit", which is true of the shipped
-            # defaults (5 vs 20) and NOT enforced anywhere: the two limits have
+            # long before the budget limit", which was true of the shipped
+            # defaults AT THE TIME and NOT enforced anywhere: the two limits have
             # independent validators and no cross-field check, so
             # doom_loop_threshold=30 with the default budget of 20 is a legal
             # config in which the budget trips first. A default dressed as an

@@ -181,6 +181,40 @@ class PersonaConfig(_Open):
     system_prompt_override: str | None = None
     model_override: str | None = None
     max_tokens_override: int | None = None
+    #: cabal#172 -- how many fan-out legs THIS primus may open at once. None
+    #: means the module ceiling (`MAX_LEGS_PER_FANOUT`). Ignored for a
+    #: non-primus persona, which has no fan-out.
+    #:
+    #: PER-PERSONA RATHER THAN A SINGLE `[guardrails]` NUMBER, because breadth
+    #: is a property of the persona: a mason with three legs and a wright with
+    #: one do not want the same ceiling. cabal#172 flagged this as setting a
+    #: precedent for per-persona guardrail knobs -- it does not. `may_delegate_to`
+    #: a few lines down is already one, and the `*_override` naming here is
+    #: already the shape for a per-persona bound on a constructor argument.
+    #:
+    #: LOWERS ONLY. A value above `MAX_LEGS_PER_FANOUT` is clamped to it and
+    #: logged, never honoured; the module constant is the hard backstop and a
+    #: policy cannot raise it. Until this field existed the clamp had nothing
+    #: to clamp FROM, which made the "a policy may only lower it" story
+    #: vacuous -- accurate about the code and about a policy that could not
+    #: exist (#156 r2).
+    max_legs_override: int | None = None
+
+    @field_validator("max_legs_override")
+    @classmethod
+    def _max_legs_at_least_one(cls, v: int | None) -> int | None:
+        # Refused rather than clamped up, unlike an over-wide value. Zero or
+        # negative is not a narrow fan-out an operator could have meant -- it
+        # is a primus that can never dispatch, and the constructor's floor
+        # would silently turn it into 1. Same argument as
+        # `delegation_depth_limit`'s validator (#144 pre-pass).
+        if v is not None and v < 1:
+            raise ValueError(
+                f"max_legs_override must be >= 1 (got {v}); a primus with no "
+                "legs cannot dispatch, and the floor would silently read it "
+                "as 1."
+            )
+        return v
     #: Extra keyword arguments passed through to `litellm.acompletion`, for
     #: provider- or model-specific knobs cabal has no first-class field for.
     #: Deliberately untyped and unvalidated: the set is defined by the provider,
