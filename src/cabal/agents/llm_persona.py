@@ -236,11 +236,11 @@ class LLMPersona:
         """Run ``guardrails`` for ``phase`` against ``target``.
 
         Returns ``(possibly-rewritten target, None)`` on PASS/REWRITE.
-        Returns ``(original target, blocked_task)`` on BLOCK — the caller
-        must return ``blocked_task`` immediately.
+        Returns ``(original target, blocked_task)`` on ANY REFUSAL — BLOCK or
+        TERMINATE — and the caller must return ``blocked_task`` immediately.
 
         The caller is responsible for ending the session (session_tracker.end)
-        and dropping the checkpoint (checkpoint_store.drop) on BLOCK, to
+        and dropping the checkpoint (checkpoint_store.drop) on a refusal, to
         mirror the existing error-handling pattern in _run_dispatch.
         """
         if not guardrails:
@@ -251,12 +251,28 @@ class LLMPersona:
             phase=phase,
         )
         verdict = await run_guardrails(guardrails, target, ctx)
-        if verdict.type == VerdictType.BLOCK:
+        # ANY NON-PASS IS A REFUSAL, rather than an enumeration of the verdicts
+        # that exist today (#152 r1 Important 2). This read `== BLOCK`, so a
+        # TERMINATE fell through and was treated as a PASS -- the dispatch
+        # proceeded and the LLM ran. Since run_guardrails ALSO short-circuits on
+        # TERMINATE, a terminating guard was strictly WEAKER here than the same
+        # guard returning BLOCK, which inverts the verdict's whole point.
+        #
+        # SAFE AS A CATCH-ALL because run_guardrails only ever returns BLOCK,
+        # TERMINATE, or PASS: a REWRITE is threaded internally and comes back as
+        # PASS carrying `rewritten`, so the branch below still sees it.
+        if verdict.type is not VerdictType.PASS:
             blocked = annotate(
                 task,
                 CabalReason(
                     code=CODE_POLICY_VIOLATION,
-                    message=f"guardrail blocked ({phase}): {verdict.reason}",
+                    # The VERDICT in the message, not a fixed "blocked": a log
+                    # line trying to tell you which verdict fired should not
+                    # say the same word for both (#152 r2).
+                    message=(
+                        f"guardrail {verdict.type.value} ({phase}): "
+                        f"{verdict.reason}"
+                    ),
                 ),
             )
             return target, blocked
@@ -287,7 +303,9 @@ class LLMPersona:
         tools only).
 
         Returns ``(possibly-rewritten target, None)`` on PASS/REWRITE.
-        Returns ``(original target, block_reason)`` on BLOCK.
+        Returns ``(original target, refusal_reason)`` on BLOCK or TERMINATE.
+        A TERMINATE refuses the CALL here rather than the Task — see
+        ``Verdict.terminate``, which says so rather than promising otherwise.
         """
         if not guardrails:
             return target, None
@@ -299,7 +317,16 @@ class LLMPersona:
             tool_arguments=tool_arguments,
         )
         verdict = await run_guardrails(guardrails, target, ctx)
-        if verdict.type == VerdictType.BLOCK:
+        # ANY NON-PASS IS A REFUSAL -- see _apply_guardrails above for why the
+        # enumeration was a fail-open (#152 r1 Important 2).
+        #
+        # A TERMINATE STILL ONLY BLOCKS THE CALL HERE, not the Task. This is
+        # pi's per-call policy boundary: BLOCK already means "refuse this tool
+        # call and let the dispatch continue", and escalating a terminal verdict
+        # into a whole-Task failure from inside the tool loop would be a larger
+        # change than closing the fail-open. Refusing the call is the
+        # fail-closed reading, and it is what the caller is built to handle.
+        if verdict.type is not VerdictType.PASS:
             return target, verdict.reason
         if verdict.rewritten is not None:
             return verdict.rewritten, None
