@@ -585,6 +585,150 @@ class DelegationEdgeGuardrail:
         )
 
 
+#: The deepest a delegation chain may run (cabal#144).
+#:
+#: A HARD BACKSTOP IN CODE, and the two-layer shape is the load-bearing part:
+#: a policy-only limit fails open whenever the policy is missing or unparsed,
+#: which is exactly the state a misconfigured or newly-added persona is in.
+#: A per-persona value may LOWER this and never raise it.
+#:
+#: WHY DEPTH RATHER THAN SPEND. cabal's core/llm/budget.py and
+#: circuit_breaker.py bound LLM CALLS and know nothing about the delegation
+#: graph, so a cycle that reaches them is refused late, by exhaustion --
+#: indistinguishable from legitimate expensive work, and it takes the whole
+#: Task down. A depth refusal is immediate, local, and names the problem.
+#:
+#: A CYCLE IS NOT UNREFUSED WITHOUT THIS, and an earlier version of this
+#: comment said it was. DelegationBudgetGuardrail (#146) already bounds the
+#: graph by COUNT rather than by spend, default-on in the same builder, so a
+#: runaway chain stops at MAX_DELEGATIONS_PER_CONTEXT however it is worded.
+#: What depth adds is precision and earliness: 40 hops of real work before a
+#: refusal is a bound, but it is not a useful one, and the budget cannot tell
+#: a deep chain from a wide conversation.
+#:
+#: DEPTH IS STRUCTURAL, so paraphrase cannot evade it -- unlike the sameness
+#: counter it sits beside. Borrowed from sympozium's spawn_router.go:32,
+#: `const maxDelegationDepth = 8`, an unconditional backstop with a separate
+#: policy that can only tighten.
+MAX_DELEGATION_DEPTH = 8
+
+#: Task metadata key carrying how many delegation hops led here.
+DEPTH_KEY = "cabal_delegation_depth"
+
+
+def delegation_depth(task: Task) -> int:
+    """Hops that led to this task. 0 for one a human started."""
+    raw = task.metadata.get(DEPTH_KEY, 0)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError, OverflowError):
+        # An unreadable depth is treated as the TOP of the chain rather than
+        # as an error, deliberately: a malformed value must not be a way to
+        # claim a lower depth than you have. Anything that then delegates
+        # onward is stamped 1 and bounded normally from there.
+        #
+        # OverflowError IS NOT REDUNDANT (#144 pre-pass). `int(float("inf"))`
+        # raises it rather than ValueError, and an infinity reaches here: the
+        # Task model keeps the value unvalidated, and Python's own json module
+        # accepts a bare `Infinity` token. Without this arm the one shape most
+        # obviously meant as an attack is the one that crashes the dispatch --
+        # in a function whose entire purpose is that garbage costs a hop of
+        # slack instead. (`nan` lands on ValueError and always did.)
+        return 0
+
+
+def next_delegation_depth(task: Task) -> int:
+    """The depth to stamp on a task delegated FROM `task`."""
+    return delegation_depth(task) + 1
+
+
+class DelegationDepthGuardrail:
+    """Refuse a delegation that runs deeper than the chain is allowed (#144).
+
+    WHERE THIS RUNS, AND WHERE IT DOES NOT (#144 pre-pass). It is wired into
+    ``build_router_input_guardrails`` and therefore runs on every hop that
+    crosses ``DispatchRouter``. It does NOT run on the primus's own fan-out:
+    ``_dispatch_subordinate`` calls ``handle_task`` directly, and the only
+    guard with a dedicated call at that boundary is the doom-loop counter.
+
+    THE COUNTER AND THE CHECK NEVER MEET, and an earlier version of this
+    paragraph described the gap as one local cycle of slack "before depth is
+    enforced again on its next router-mediated hop" (#144 r2). There is no such
+    hop. ``next_delegation_depth`` has exactly one call site -- the sub_task
+    built in ``primus._dispatch_subordinate`` -- and that task goes straight to
+    ``subord.handle_task``, which the router never sees. A ``Subordinate`` has
+    no outbound surface, so the chain ends there. The increment is WRITE-ONLY:
+    nothing in this tree reads a fan-out-stamped depth at a decision point.
+
+    SO WHAT REACHES THIS GUARD IS ONLY WHAT A CALLER PUT ON THE WIRE. The
+    JSON-RPC and REST routes copy ``params.metadata`` verbatim, and a federated
+    hop forwards ``task.model_dump(...)`` whole WITHOUT incrementing. Cabal's
+    own delegation therefore cannot accumulate depth, and a cabal-to-cabal
+    A-to-B-to-A ping-pong carries a constant value for as many hops as it likes.
+    Accumulation requires an external client that increments -- which is exactly
+    what the companion daedalus#40 does, and is why that PR is a prerequisite
+    rather than a convenience.
+
+    WHAT THIS STILL BUYS, stated at its real size: an honest bound on a depth
+    an external chain declares, refused immediately and locally instead of by
+    spend. What it does NOT buy is a bound on delegation that cabal originates.
+    ``delegation_depth = true`` with a limit of 8 reads to an operator as the
+    second, and today it is only the first.
+
+    THE FIX IS NOT HERE. cabal#158 is the same shape of gap for the budget and
+    the doom-loop counter, and it closes it by handing the primus the router's
+    own guard instance rather than by adding a second enforcement point. Depth
+    should join that mechanism once it lands -- filed as cabal#171 rather than
+    smuggled into this PR, because doing it here would collide with #158 on the
+    very constructor surface it is changing.
+
+    MUST REMAIN AWAIT-FREE, for the same reason its two siblings must: a
+    primus fan-out calls guardrails concurrently across legs sharing one
+    instance, and an await-free ``async def`` runs atomically to completion on
+    a cooperative event loop.
+    """
+
+    def __init__(self, max_depth: int = MAX_DELEGATION_DEPTH) -> None:
+        # CLAMPED, NOT HONOURED -- a policy may only lower the backstop.
+        #
+        # NOT THE SAME SHAPE AS THE BUDGET'S limit, which an earlier version of
+        # this comment claimed (#144 pre-pass). The budget RAISES below 1, in
+        # the guard and at config load; this clamps up to 1 silently. That is
+        # defensible -- a depth of 1 is a working bound where a budget of 0 is
+        # one nothing can satisfy -- but it is two shapes, not one.
+        #
+        # IT IS THE SHAPE #156 WILL GIVE THE PRIMUS'S max_legs -- future tense
+        # on purpose (#144 r1 Nit): that symbol does not exist in this tree yet
+        # and a maintainer grepping the named precedent finds nothing. The
+        # three-axis framing becomes true when #156 lands, not before.
+        #
+        # `delegation_depth_limit` does now get a config validator, so a typo
+        # in identity.toml is caught at load on every axis even where the
+        # guards themselves differ.
+        self._max_depth = max(1, min(max_depth, MAX_DELEGATION_DEPTH))
+
+    @property
+    def max_depth(self) -> int:
+        return self._max_depth
+
+    async def check(self, target: Any, ctx: GuardrailContext) -> Verdict:
+        if not isinstance(target, Task):
+            return Verdict.pass_()
+        depth = delegation_depth(target)
+        if depth < self._max_depth:
+            return Verdict.pass_()
+        return Verdict.block(
+            reason=(
+                f"Delegation depth {depth} has reached the limit of "
+                f"{self._max_depth}. This chain is already "
+                f"{depth} hops from the request that started it; going deeper "
+                "is refused. Depth is counted structurally, so rewording will "
+                "not get through. Answer from what you have, or say you "
+                "cannot."
+            )
+        )
+
+
 class ValidateBeforeRecord:
     """Validate a mutating-tool result before it is appended to the conversation.
 
