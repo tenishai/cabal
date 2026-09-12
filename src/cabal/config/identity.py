@@ -302,6 +302,17 @@ class GuardrailsConfig(_Open):
     #: by default would turn all delegation off at upgrade with no warning.
     #: The default-deny lives in the guard; the migration lives here.
     delegation_edges: bool = False
+    #: cabal#144 — bound how deep a delegation chain runs. Default-on like its
+    #: two neighbours; the guard's own ceiling (MAX_DELEGATION_DEPTH) is a hard
+    #: backstop a policy can only lower.
+    #:
+    #: IT BOUNDS A DEPTH AN ARRIVING CHAIN DECLARES, not one cabal accumulates:
+    #: cabal's own fan-out stamps a depth the router never sees, and a federated
+    #: hop forwards without incrementing, so this cannot trip on cabal-only
+    #: traffic (cabal#171). Reading it as a bound on your own delegation is the
+    #: misreading to avoid, and this is the field an operator sets.
+    delegation_depth: bool = True
+    delegation_depth_limit: int = 8
     delegation_budget: bool = True
     #: THE MEANING SHIFTED WITH #158, SO THE NUMBER MOVED WITH IT. The budget
     #: now counts fan-out legs as well as router hops, so on the shipped config
@@ -330,6 +341,23 @@ class GuardrailsConfig(_Open):
     #: for the daemon's lifetime -- is blocked until restart once it is over
     #: budget, because retrying keeps its key too warm for the LRU to reclaim.
     delegation_budget_caller_window_seconds: float = 3600.0
+
+    @field_validator("delegation_depth_limit")
+    @classmethod
+    def _depth_at_least_one(cls, v: int) -> int:
+        # ADDED BY THE #144 PRE-PASS, which found depth was the one bounded
+        # axis with no config validator: delegation_depth_limit = 0 loaded
+        # silently and the guard floored it to 1, where the same typo in
+        # delegation_budget_limit refuses to start. The guard still clamps
+        # rather than raising -- a depth of 1 is a working bound, unlike a
+        # budget of 0 -- but a value the operator cannot have meant should be
+        # named at load on every axis.
+        if v < 1:
+            raise ValueError(
+                f"guardrails.delegation_depth_limit must be >= 1 (got {v}); "
+                "raise it or disable the guard with delegation_depth = false"
+            )
+        return v
 
     @field_validator("delegation_budget_limit")
     @classmethod
