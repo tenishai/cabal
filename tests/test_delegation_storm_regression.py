@@ -10,9 +10,10 @@ STORM against a counter that had not persisted.
 WHY THIS FILE EXISTS SEPARATELY from `test_delegation_budget_persistence.py`.
 That file pins the budget guard's mechanism in isolation. This one asserts the
 INCIDENT is bounded: it builds the real router's real guard chain from the real
-default config via `build_router_input_guardrails`, drives it with the four
-wordings quoted in cabal#146, and then throws the process away and rebuilds it
-against the same database — which is the half the incident actually turned on.
+default config via `build_router_input_guardrails`, drives it with SIXTEEN
+wordings of one question -- the count is load-bearing and the reason is under
+WORDINGS -- and then throws the process away and rebuilds it against the same
+database — which is the half the incident actually turned on.
 
 A mechanism test and an incident test fail for different reasons, and the
 incident is the thing we promised an operator we had bounded.
@@ -258,14 +259,32 @@ async def test_a_restart_does_not_rebuild_the_storm(boot) -> None:
     assert verdict.type is VerdictType.TERMINATE
 
     # Let the write-behind land before the process "dies".
-    guard = next(
-        g
-        for g in app.state.dispatch_router._input_guardrails
-        if hasattr(g, "_writes")
-    )
-    while guard._writes:
-        import asyncio
+    #
+    # TOLERANT OF A GUARD WITH NO `_writes`, AND THAT IS THE WITNESS (#179 r1
+    # Important 1). `_writes` arrived with the cabal#174/#175 persistence work,
+    # so at `c7c8058` -- the tree this test is supposed to fail against -- the
+    # strict `next(...)` raised StopIteration, which Python converts to
+    # `RuntimeError: coroutine raised StopIteration` inside the coroutine. The
+    # test died HERE, before `app2` was ever booted. Red on that tree, and red
+    # for the wrong reason: a missing harness attribute rather than an
+    # unpersisted counter. A future reader re-running the witness -- the entire
+    # point of documenting one -- could not tell a regressed guard from a
+    # broken harness.
+    #
+    # Same species as the defect the FIRST pre-pass caught in this file: the
+    # test reaching its outcome BY CONSTRUCTION rather than by the mechanism.
+    # Twice, in one file, which is why this comment is long.
+    import asyncio
 
+    guard = next(
+        (
+            g
+            for g in app.state.dispatch_router._input_guardrails
+            if hasattr(g, "_writes")
+        ),
+        None,
+    )
+    while guard is not None and guard._writes:
         await asyncio.gather(*list(guard._writes), return_exceptions=True)
 
     # THE RESTART. A new process, the same database, the same conversation.
