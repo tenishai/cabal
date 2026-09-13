@@ -11,8 +11,8 @@ WHY THIS FILE EXISTS SEPARATELY from `test_delegation_budget_persistence.py`.
 That file pins the budget guard's mechanism in isolation. This one asserts the
 INCIDENT is bounded: it builds the real router's real guard chain from the real
 default config via `build_router_input_guardrails`, drives it with SIXTEEN
-wordings of one question -- the count is load-bearing and the reason is under
-WORDINGS -- and then throws the process away and rebuilds it against the same
+wordings of one question — the count is load-bearing and the reason is under
+WORDINGS — and then throws the process away and rebuilds it against the same
 database — which is the half the incident actually turned on.
 
 A mechanism test and an incident test fail for different reasons, and the
@@ -271,9 +271,18 @@ async def test_a_restart_does_not_rebuild_the_storm(boot) -> None:
     # point of documenting one -- could not tell a regressed guard from a
     # broken harness.
     #
-    # Same species as the defect the FIRST pre-pass caught in this file: the
-    # test reaching its outcome BY CONSTRUCTION rather than by the mechanism.
-    # Twice, in one file, which is why this comment is long.
+    # SAME FAILURE as the defect the first pre-pass caught in this file: the
+    # HARNESS, not the mechanism, deciding the result -- there by manufacturing
+    # a pass, here by dying before the property. Twice in one file, which is
+    # why this comment is long.
+    #
+    # They are not the same SPECIES, and an earlier version of this comment
+    # said "by construction" of both (#179 r2). The suffix defect baked its
+    # conclusion into the setup and was vacuous forever, on every commit. This
+    # one reached no outcome at all, and only ever affected the archaeological
+    # re-run of the witness on a historical tree -- the shipped test was
+    # correct throughout, since a strict `next` cannot fire where the guard
+    # has `_writes`.
     import asyncio
 
     guard = next(
