@@ -17,12 +17,17 @@ against the same database — which is the half the incident actually turned on.
 A mechanism test and an incident test fail for different reasons, and the
 incident is the thing we promised an operator we had bounded.
 
-THE CONTROL IS LOAD-BEARING. `test_the_rephrasing_defeats_the_sameness_counter`
-is not colour: it asserts that the storm gets past the doom-loop guard, which
-is what made cabal#146 a defect rather than a configuration mistake. Without
-it, the budget assertions would pass just as well on a build where the doom
-loop stopped everything at 5 and the budget was never reached — i.e. on a
-build that had not fixed anything.
+WHAT THIS FILE DOES NOT REPRODUCE, stated because a regression test that
+overstates its own coverage is worse than a smaller honest one. cabal#146 names
+THREE evasions, and this exercises one and a half:
+
+  - rephrasing moving the storm off the doom key — exercised, and the wording
+    count is sized so the budget is demonstrably the guard that fires;
+  - the doom-loop TTL (600s by default), where a loop that pauses longer than
+    the window "restarts from count 1" — NOT exercised. These tests run in
+    milliseconds, so no key ever ages out. A real slow storm has an evasion
+    this file does not cover.
+  - the restart — exercised, and it is the one with a witness.
 """
 
 from __future__ import annotations
@@ -41,15 +46,43 @@ from cabal.core.guardrails_builtin import MAX_DELEGATIONS_PER_CONTEXT
 
 CONVERSATION = "the-storm-conversation"
 
-#: Verbatim from cabal#146. Four wordings of ONE question, which is what the
-#: agent actually produced when the doom-loop BLOCK told it to change approach:
-#: a language model changes approach by rewording, and rewording moves it off
-#: the key the counter was watching.
+#: Wordings of ONE question. The first four are verbatim from cabal#146 — what
+#: the agent actually produced when the doom-loop BLOCK told it to change
+#: approach, since a language model changes approach by rewording and rewording
+#: moves it off the key the counter watches.
+#:
+#: THE COUNT IS LOAD-BEARING AND WAS MEASURED, not chosen for realism. The
+#: doom-loop guard fires at `(threshold - 1) * distinct_wordings` asks; the
+#: budget fires at its limit. So with the shipped defaults (threshold 5, limit
+#: 40) the DOOM LOOP is what stops a storm of ten wordings or fewer, and the
+#: BUDGET only becomes the operative guard above ten:
+#:
+#:      wordings :  1   2   4   8   9  10  12  20
+#:      asks     :  4   8  16  32  36  40  40  40
+#:      stopped  : doom …………………………………… doom | budget ……
+#:
+#: An earlier version of this file used four wordings and appended
+#: "(attempt N)" to each, which made every payload unique BY CONSTRUCTION — so
+#: the doom counter could never see a repeat and the harness proved nothing
+#: about rephrasing at all. Caught in pre-pass. Sixteen real wordings, no
+#: suffix, is what puts the budget on the hook.
 WORDINGS = [
     "Do you know the Fleet Host Project ID, Fleet Host Project Number, Fleet Membership Name",
     "What is the Fleet Host Project ID, Membership name, and Connect Gateway registration repository",
     "What is the Fleet Host Project, Membership name, and Connect Gateway registration repository",
     "Do you know the Fleet Host Project ID/Number and Connect Gateway GitHub repository",
+    "Could you tell me the Fleet Host Project identifier and the Membership name",
+    "I need the Fleet Host Project Number plus the Connect Gateway repo",
+    "Which project hosts the fleet, and what is the membership called",
+    "Can you confirm the Fleet Host Project and its Connect Gateway registration",
+    "Remind me of the fleet host project id and the gateway repository please",
+    "What are the fleet host project number and membership name again",
+    "Do you have the Connect Gateway registration repo and the host project",
+    "Tell me the membership name and the fleet host project identifier",
+    "Sorry — the Fleet Host Project ID and the Connect Gateway repository",
+    "Just the fleet host project and membership name, if you have them",
+    "Looking for the Fleet Host Project Number and the gateway registration repo",
+    "One more time: fleet host project, membership name, Connect Gateway repository",
 ]
 
 
@@ -63,7 +96,11 @@ def _ask(n: int, context_id: str = CONVERSATION) -> Task:
                 state="submitted",
                 message=Message(
                     role="user",
-                    parts=[TextPart(text=f"{WORDINGS[n % 4]} (attempt {n}, rephrased)")],
+                    # NO UNIQUE SUFFIX. Appending one would make every payload
+                    # distinct by construction and the doom counter unable to
+                    # see a repeat, which is a harness artefact rather than the
+                    # incident's mechanism.
+                    parts=[TextPart(text=WORDINGS[n % len(WORDINGS)])],
                 ),
             ),
             "metadata": {"cabal_target_agent": "colleague-under-storm"},
@@ -122,27 +159,50 @@ async def boot(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_the_rephrasing_defeats_the_sameness_counter(boot) -> None:
-    """THE CONTROL, and the reason cabal#146 was a defect.
+async def test_the_budget_is_what_stops_this_storm_not_the_sameness_counter(
+    boot,
+) -> None:
+    """THE CONTROL — and an earlier version of it claimed more than it showed.
 
-    The doom-loop threshold is 5. If rephrasing did not defeat it, the storm
-    would stop at 5 and every assertion below would pass on a build that fixed
-    nothing. So this pins that the storm gets WELL past the sameness counter,
-    which is what forced a payload-independent bound to exist at all.
+    It said that without this test "every budget assertion below would pass
+    just as well on a build where the doom loop stopped everything at 5". Two
+    things were wrong with that, both caught in pre-pass:
+
+    1. The two tests below assert `== MAX_DELEGATIONS_PER_CONTEXT`, so on such
+       a build they would fail on the count (5 != 40), not pass. Only
+       `..._an_unrelated_conversation_is_not_punished` is genuinely vacuous
+       without this one.
+    2. The harness appended "(attempt N)" to every payload, making each unique
+       BY CONSTRUCTION. The doom counter could never see a repeat, so the
+       control was proving "a unique payload defeats a same-payload counter" —
+       true by construction, and nothing to do with the incident.
+
+    What this now asserts is the measured relationship. The doom guard fires at
+    `(threshold - 1) * distinct_wordings`; the budget fires at its limit. With
+    the shipped defaults that crossover sits just above TEN wordings, so a
+    storm of a dozen is the first shape the sameness counter cannot hold — and
+    is why a payload-independent bound had to exist at all (cabal#146).
     """
-    app = await boot()
     from cabal.config.identity import GuardrailsConfig
 
-    threshold = GuardrailsConfig().doom_loop_threshold
+    cfg = GuardrailsConfig()
+    crossover = cfg.delegation_budget_limit / max(cfg.doom_loop_threshold - 1, 1)
+    assert len(WORDINGS) > crossover, (
+        f"{len(WORDINGS)} wordings against a doom threshold of "
+        f"{cfg.doom_loop_threshold} and a budget of {cfg.delegation_budget_limit}: "
+        f"the doom loop would fire first (at {(cfg.doom_loop_threshold - 1) * len(WORDINGS)} "
+        "asks), so every budget assertion in this file would be measuring the "
+        "wrong guard"
+    )
+
+    app = await boot()
     passed, verdict = await _storm(app)
 
-    assert passed > threshold * 2, (
-        f"only {passed} rephrased asks got through against a doom-loop "
-        f"threshold of {threshold} — the sameness counter is stopping this "
-        "storm, so the budget assertions below would prove nothing"
-    )
-    assert "doom" not in verdict.reason.lower(), (
-        f"the storm was stopped by the sameness counter, not the budget: {verdict.reason}"
+    assert passed == cfg.delegation_budget_limit
+    assert verdict.type is VerdictType.TERMINATE, (
+        f"stopped with {verdict.type.name} after {passed} asks — the doom loop "
+        "returns BLOCK and the conversation budget returns TERMINATE, so this "
+        "storm was held by the sameness counter and the budget is untested"
     )
 
 
