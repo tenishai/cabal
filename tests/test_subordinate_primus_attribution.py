@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from cabal.agents.primus import MAX_LEGS_PER_FANOUT
 from cabal.agents.subordinate import SUBORDINATE_PROMPTS, Subordinate
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
@@ -481,3 +482,261 @@ def test_the_factory_hands_the_primus_the_ROUTER_S_guard_instances() -> None:
         "counts separately, which is the bug #158 and #171 both exist to stop"
     )
     assert primus._delegation_budget is router_budget
+
+
+def _subordinate_for_breadth():
+    from cabal.agents.subordinate import Subordinate
+
+    return Subordinate(
+        primus="mason",
+        role="implementer",
+        llm_client=_client(),
+        model="anthropic/claude-sonnet-4-6",
+    )
+
+
+def test_an_operator_can_LOWER_the_breadth_ceiling_per_persona() -> None:
+    """cabal#172 — the config path that made "a policy may only lower it" true.
+
+    Until `max_legs_override` existed, `max_legs` occurred in four files and
+    none of them was config: `_max_legs` was `MAX_LEGS_PER_FANOUT` in every
+    shipped deployment and only tests could lower it. The clamp was real and
+    the story about it was vacuous — accurate about the code, and about a
+    policy that had no way to exist.
+
+    This asserts the path end to end, through the real factory, because the
+    clamp itself was never the part in doubt.
+
+    IT DOES NOT, ON ITS OWN, DISTINGUISH A DECLARATION CAP FROM A RUNTIME
+    THROTTLE, and that is stated here because the division of labour is not
+    obvious from either test alone. At cap == declared, both readings boot the
+    persona with all three legs, so this one passes under either. The
+    discrimination is carried entirely by
+    `test_a_cap_below_the_declared_legs_REMOVES_the_persona_it_does_not_narrow_it`.
+
+    SO DO NOT DELETE THAT TEST AS REDUNDANT. Measured: under a constructor that
+    clamps instead of raising, THIS test still passes -- it cannot tell the two
+    apart, so it reports green on a mutant that changes the field's meaning
+    entirely. That is the state review round 1 found this PR in, when the only
+    end-to-end test used one declared leg against a cap of one and pinned
+    neither reading (#178 r2).
+
+    What it does NOT mean is that the raise would be unguarded. The same mutant
+    also fails `test_mason_primus.py::
+    test_a_fan_out_wider_than_the_ceiling_is_refused_at_construction`, which
+    pins the constructor directly -- measured, two failures, not one. What
+    would be lost with the REMOVES test is the guard on this PATH: the override
+    travelling from config through the factory into that refusal. Nothing else
+    covers the config half.
+    """
+    from cabal.config.identity import IdentityConfig, PersonaConfig, SubordinateConfig
+    from cabal.core.abort import AbortCoordinator
+    from cabal.core.memory.session_tracker import NoOpSessionTracker
+    from cabal.core.memory.store import NoOpMemoryStore
+    from cabal.core.persona_factory import register_personas_from_identity
+
+    registered: list[Any] = []
+
+    class _StubRouter:
+        abort_coordinator = AbortCoordinator()
+
+        def input_guardrail_of(self, kind: type) -> Any:
+            return None
+
+        def register_local(self, handler: Any) -> None:
+            registered.append(handler)
+
+        def register_capabilities(self, agent_name: str, caps: list[str]) -> None:
+            pass
+
+    sub = SubordinateConfig(model="m")
+    # THREE DECLARED LEGS, CAPPED AT THREE, AND THE COUNTS MUST DIFFER FROM ONE
+    # ANOTHER (#178 r1). The first version of this test gave mason ONE leg and
+    # an override of 1 -- the single pair of values at which a declaration cap
+    # and a runtime throttle are indistinguishable, so it would have passed
+    # against either meaning and pinned neither. Three declared against a cap
+    # of three is the smallest arrangement where the field is doing its real
+    # job: admitting a persona that sits exactly at its policy.
+    identity = IdentityConfig(
+        personas={
+            "mason": PersonaConfig(
+                role="primus",
+                subordinates={"implementer": sub, "reviewer2": sub, "auditor": sub},
+                max_legs_override=3,
+            ),
+            # No override: must land on the module default, not on mason's 3.
+            "wright": PersonaConfig(
+                role="primus", subordinates={"implementer": sub}
+            ),
+        }
+    )
+    register_personas_from_identity(
+        dispatch_router=_StubRouter(),  # type: ignore[arg-type]
+        identity=identity,
+        litellm_client=_client(),
+        memory_store=NoOpMemoryStore(),
+        session_tracker=NoOpSessionTracker(),
+        hook_registry=HookRegistry(),
+    )
+
+    by_name = {h.name: h for h in registered}
+    assert by_name["mason-primus"]._max_legs == 3, (
+        "the operator's max_legs_override did not reach the primus — the "
+        "breadth ceiling is still not settable"
+    )
+    # AND THE PERSONA ACTUALLY BOOTS WITH ALL THREE. A cap equal to the
+    # declared count admits; nothing is trimmed on the way in.
+    assert len([r for r in by_name["mason-primus"].subordinates if r != "reviewer"]) == 3
+    assert by_name["wright-primus"]._max_legs == MAX_LEGS_PER_FANOUT, (
+        "a persona with no override did not get the module default; an "
+        "override leaked across personas"
+    )
+
+
+def test_a_cap_below_the_declared_legs_REMOVES_the_persona_it_does_not_narrow_it() -> None:
+    """cabal#178 r1 — the field is a declaration cap, so under-setting it is fatal.
+
+    `max_legs_override` is checked ONCE, in the constructor, against
+    `subordinates` — which is assigned at construction and never mutated. It
+    does not select a subset of legs at dispatch, and the dispatch check cannot
+    reach a primus built through the constructor, because `leg_roles` there is
+    derived from the same `subordinates` the constructor already bounded.
+
+    So a cap below a persona's declared leg count does not give you a narrower
+    persona. It gives you no persona: the constructor raises, `persona_factory`
+    catches it, logs `personas.primus_config_rejected`, and the deployment
+    boots without that agent.
+
+    That is the shape cabal#172 asked for — a config path feeding the
+    constructor check rather than the dispatch one, so a misconfiguration is
+    refused at boot instead of failing every dispatch forever after paying for
+    a plan call. This test exists because nothing else here distinguishes that
+    from a throttle, and the PR that added the field originally described it as
+    one.
+    """
+    from cabal.config.identity import IdentityConfig, PersonaConfig, SubordinateConfig
+    from cabal.core.abort import AbortCoordinator
+    from cabal.core.memory.session_tracker import NoOpSessionTracker
+    from cabal.core.memory.store import NoOpMemoryStore
+    from cabal.core.persona_factory import register_personas_from_identity
+
+    registered: list[Any] = []
+
+    class _StubRouter:
+        abort_coordinator = AbortCoordinator()
+
+        def input_guardrail_of(self, kind: type) -> Any:
+            return None
+
+        def register_local(self, handler: Any) -> None:
+            registered.append(handler)
+
+        def register_capabilities(self, agent_name: str, caps: list[str]) -> None:
+            pass
+
+    sub = SubordinateConfig(model="m")
+    identity = IdentityConfig(
+        personas={
+            "mason": PersonaConfig(
+                role="primus",
+                subordinates={"implementer": sub, "reviewer2": sub, "auditor": sub},
+                max_legs_override=2,  # BELOW the three it declares
+            ),
+        }
+    )
+    register_personas_from_identity(
+        dispatch_router=_StubRouter(),  # type: ignore[arg-type]
+        identity=identity,
+        litellm_client=_client(),
+        memory_store=NoOpMemoryStore(),
+        session_tracker=NoOpSessionTracker(),
+        hook_registry=HookRegistry(),
+    )
+
+    assert not [h for h in registered if h.name == "mason-primus"], (
+        "a max_legs_override below the declared leg count registered a primus "
+        "anyway — the field would then be trimming declared work silently, "
+        "which is the one thing the constructor's raise exists to refuse"
+    )
+
+
+def test_an_operator_cannot_RAISE_the_breadth_ceiling_and_is_told() -> None:
+    """The clamp holds against config, and no longer does it silently.
+
+    Silently lowering a number an operator wrote down is the same defect shape
+    as silently discarding one: the deployment runs bounded, the config says
+    otherwise, and nothing reconciles them. That is the failure this repo has
+    been paying for elsewhere today, so the clamp announces itself.
+    """
+    from structlog.testing import capture_logs
+
+    from cabal.agents.personas.mason import MasonPrimusPersona
+
+    # `capture_logs`, NOT pytest's `caplog`. cabal logs through structlog's own
+    # processor chain, which never reaches the stdlib handlers caplog installs
+    # — a caplog assertion here goes green against a silent clamp AND red
+    # against a loud one, i.e. it measures the wrong thing in both directions.
+    # Found by writing it the obvious way first and watching the warning appear
+    # in captured stdout while the assertion failed.
+    with capture_logs() as logs:
+        mason = MasonPrimusPersona(
+            _client(),
+            subordinates={"implementer": _subordinate_for_breadth()},
+            max_legs=MAX_LEGS_PER_FANOUT + 5,
+        )
+
+    assert mason._max_legs == MAX_LEGS_PER_FANOUT, "a policy raised the ceiling"
+    events = [e for e in logs if e.get("event") == "primus.max_legs_clamped"]
+    assert events, (
+        "the ceiling was clamped without saying so — an operator reading their "
+        f"own config would believe a number the deployment is not using: {logs}"
+    )
+    assert events[0]["requested"] == MAX_LEGS_PER_FANOUT + 5
+    assert events[0]["ceiling"] == MAX_LEGS_PER_FANOUT
+
+
+def test_a_persona_within_the_ceiling_is_not_warned_about() -> None:
+    """The control. Without it the assertion above passes on an implementation
+    that warns unconditionally, which would train the reader to ignore it."""
+    from structlog.testing import capture_logs
+
+    from cabal.agents.personas.mason import MasonPrimusPersona
+
+    with capture_logs() as logs:
+        MasonPrimusPersona(
+            _client(),
+            subordinates={"implementer": _subordinate_for_breadth()},
+            max_legs=2,
+        )
+    assert not [e for e in logs if e.get("event") == "primus.max_legs_clamped"]
+
+
+def test_a_sub_one_breadth_override_is_refused_not_clamped_up() -> None:
+    """The constructor has a FLOOR (`max(1, ...)`), so a zero would silently
+    become a working one-leg fan-out. That is the wrong direction for a number
+    an operator wrote: zero legs is not a narrow fan-out they could have meant,
+    it is a primus that can never dispatch. Refuse at the config boundary
+    rather than let the floor reinterpret it.
+
+    Found because a mutant that neutered this validator survived everything
+    else in the suite.
+    """
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from cabal.config.identity import PersonaConfig
+
+    for bad in (0, -1):
+        with _pytest.raises(ValidationError, match="max_legs_override must be >= 1"):
+            PersonaConfig(role="primus", max_legs_override=bad)
+
+    # And the floor is still there for a DIRECT constructor caller, which is
+    # the path the validator does not guard.
+    from cabal.agents.personas.mason import MasonPrimusPersona
+
+    mason = MasonPrimusPersona(
+        _client(),
+        subordinates={"implementer": _subordinate_for_breadth()},
+        max_legs=0,
+    )
+    assert mason._max_legs == 1
