@@ -17,17 +17,31 @@ against the same database — which is the half the incident actually turned on.
 A mechanism test and an incident test fail for different reasons, and the
 incident is the thing we promised an operator we had bounded.
 
-WHAT THIS FILE DOES NOT REPRODUCE, stated because a regression test that
-overstates its own coverage is worse than a smaller honest one. cabal#146 names
-THREE evasions, and this exercises one and a half:
+WHAT THIS FILE COVERS, AGAINST cabal#146'S OWN ACCOUNTING, because a
+regression test that overstates its coverage is worse than a smaller honest
+one — and an earlier version of this docstring got the accounting wrong. It
+listed {rephrasing, TTL, the restart} as "cabal#146's three evasions". The
+restart is not one of them: it comes from the incident's narrative and is
+cabal#174's subject. Substituting it silently dropped the first evasion the
+issue actually names. Caught in pre-pass.
 
-  - rephrasing moving the storm off the doom key — exercised, and the wording
-    count is sized so the budget is demonstrably the guard that fires;
-  - the doom-loop TTL (600s by default), where a loop that pauses longer than
-    the window "restarts from count 1" — NOT exercised. These tests run in
-    milliseconds, so no key ever ages out. A real slow storm has an evasion
-    this file does not cover.
-  - the restart — exercised, and it is the one with a witness.
+The issue names these three, under "Why the existing guard did not stop it":
+
+  1. IT ADVISES RATHER THAN HALTS — BLOCK is a nudge, so the agent took the
+     advice ~270 times. EXERCISED here, by
+     `test_the_storm_terminates_and_stays_terminated`, which pins TERMINATE
+     rather than BLOCK. Closed by cabal#152, not by the budget.
+  2. THE COUNTER KEYS ON THE PAYLOAD, so paraphrase resets it. EXERCISED, and
+     the wording count below is sized so the budget is demonstrably the guard
+     that fires rather than the sameness counter.
+  3. THE TTL (600s by default), where a loop pausing longer than the window
+     "restarts from count 1 (intentional)" — so a SLOW storm evades the counter
+     even with byte-identical payloads. NOT EXERCISED. These tests run in
+     milliseconds and no key ever ages out.
+
+And separately from the three: THE RESTART, which is how the incident actually
+continued and what cabal#174 closed. Exercised, and the only claim in this file
+with a witness in the repo's history.
 """
 
 from __future__ import annotations
