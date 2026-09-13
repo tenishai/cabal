@@ -673,7 +673,7 @@ async def test_the_second_guard_at_the_boundary_still_reaches_its_own_limit() ->
 
     The comment at this boundary used to justify its order by saying the doom
     threshold trips long before the budget limit. That is a fact about the
-    shipped defaults (5 vs 20), not about anything the code enforces: the two
+    shipped defaults AT THE TIME, not about anything the code enforces: the two
     limits have independent validators and no cross-field check.
 
     So this runs the configuration the old justification forbids —

@@ -181,6 +181,65 @@ class PersonaConfig(_Open):
     system_prompt_override: str | None = None
     model_override: str | None = None
     max_tokens_override: int | None = None
+    #: cabal#172 -- the most fan-out legs THIS primus may DECLARE. None means
+    #: the module ceiling (`MAX_LEGS_PER_FANOUT`). Ignored for a non-primus
+    #: persona, which has no fan-out.
+    #:
+    #: A DECLARATION CAP, NOT A RUNTIME THROTTLE, and the difference is the
+    #: whole behaviour of the field (#178 r1). It is checked ONCE, in the
+    #: constructor, against the non-reviewer `subordinates` -- which are
+    #: assigned at construction and never mutated. THE REVIEWER DOES NOT COUNT:
+    #: legs are what a fan-out dispatches concurrently, and the reviewer runs
+    #: after them (`primus.py` builds `legs` by excluding it). A mason
+    #: declaring implementer and reviewer declares ONE leg. It does not select a subset of legs at dispatch and
+    #: there is no path by which it could: `leg_roles` there is derived from
+    #: the same `subordinates` the constructor already bounded.
+    #:
+    #: SO SETTING IT BELOW A PERSONA'S DECLARED LEG COUNT DOES NOT NARROW THAT
+    #: PERSONA -- IT REMOVES IT. The constructor raises, `persona_factory`
+    #: catches and skips the handler with a `personas.primus_config_rejected`
+    #: error, and the deployment boots WITHOUT that agent. Measured on a mason
+    #: declaring three legs: override 3, 4 or 8 all register and all open three
+    #: legs; override 1 or 2 register nothing at all.
+    #:
+    #: That is the shape cabal#172 asked for and the reason it asked ("a config
+    #: path has to feed the constructor check, not the dispatch one, or a
+    #: misconfigured deployment goes back to booting successfully and failing
+    #: every dispatch"). Read it as a POLICY ASSERTION -- this persona must not
+    #: declare more than N legs -- rather than as a dial that trims a wide
+    #: fan-out down to size. Bounding CONCURRENCY without dropping declared
+    #: work is a different feature and is cabal#181.
+    #:
+    #: PER-PERSONA RATHER THAN A SINGLE `[guardrails]` NUMBER, because breadth
+    #: is a property of the persona: a mason with three legs and a wright with
+    #: one do not want the same ceiling. cabal#172 flagged this as setting a
+    #: precedent for per-persona guardrail knobs -- it does not. `may_delegate_to`
+    #: a few lines down is already one, and the `*_override` naming here is
+    #: already the shape for a per-persona bound on a constructor argument.
+    #:
+    #: LOWERS ONLY. A value above `MAX_LEGS_PER_FANOUT` is clamped to it and
+    #: logged, never honoured; the module constant is the hard backstop and a
+    #: policy cannot raise it. Until this field existed the clamp had nothing
+    #: to clamp FROM, which made the "a policy may only lower it" story
+    #: vacuous -- accurate about the code and about a policy that could not
+    #: exist (#156 r2).
+    max_legs_override: int | None = None
+
+    @field_validator("max_legs_override")
+    @classmethod
+    def _max_legs_at_least_one(cls, v: int | None) -> int | None:
+        # Refused rather than clamped up, unlike an over-wide value. Zero or
+        # negative is not a narrow fan-out an operator could have meant -- it
+        # is a primus that can never dispatch, and the constructor's floor
+        # would silently turn it into 1. Same argument as
+        # `delegation_depth_limit`'s validator (#144 pre-pass).
+        if v is not None and v < 1:
+            raise ValueError(
+                f"max_legs_override must be >= 1 (got {v}); a primus with no "
+                "legs cannot dispatch, and the floor would silently read it "
+                "as 1."
+            )
+        return v
     #: Extra keyword arguments passed through to `litellm.acompletion`, for
     #: provider- or model-specific knobs cabal has no first-class field for.
     #: Deliberately untyped and unvalidated: the set is defined by the provider,

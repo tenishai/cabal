@@ -88,8 +88,11 @@ class WrightPrimusPersona(PrimusPersona):
         model: str | None = None,
         max_tokens: int = 8192,
         doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
-        # cabal#156 — forwarded so a CALLER can lower the breadth ceiling.
-        # Not a policy: there is no config path to it (#156 r2, cabal#172).
+        # cabal#156 — forwarded so a caller can lower the breadth ceiling, and
+        # since cabal#172 that caller is usually `persona_factory` passing this
+        # persona's `max_legs_override`. It caps how many legs the persona may
+        # DECLARE, checked once in the constructor; a persona declaring more is
+        # skipped at boot, not trimmed (#178 r1).
         max_legs: int = MAX_LEGS_PER_FANOUT,
         # cabal#158 — forwarded so the factory can share the ROUTER's budget
         # instance; a second instance would double a conversation's allowance.
