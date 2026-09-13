@@ -187,8 +187,11 @@ class PersonaConfig(_Open):
     #:
     #: A DECLARATION CAP, NOT A RUNTIME THROTTLE, and the difference is the
     #: whole behaviour of the field (#178 r1). It is checked ONCE, in the
-    #: constructor, against `subordinates` -- which is assigned at construction
-    #: and never mutated. It does not select a subset of legs at dispatch and
+    #: constructor, against the non-reviewer `subordinates` -- which are
+    #: assigned at construction and never mutated. THE REVIEWER DOES NOT COUNT:
+    #: legs are what a fan-out dispatches concurrently, and the reviewer runs
+    #: after them (`primus.py` builds `legs` by excluding it). A mason
+    #: declaring implementer and reviewer declares ONE leg. It does not select a subset of legs at dispatch and
     #: there is no path by which it could: `leg_roles` there is derived from
     #: the same `subordinates` the constructor already bounded.
     #:

@@ -242,8 +242,12 @@ class PrimusPersona(LLMPersona):
         # version of this comment claimed it did (#178 r1). The unset default
         # and an explicit value EQUAL TO the ceiling arrive here identical --
         # both are MAX_LEGS_PER_FANOUT, and nothing downstream can tell them
-        # apart. What the guard actually tests is whether the clamp CHANGED the
-        # number, which is the property worth announcing: an operator only
+        # apart. What the guard actually tests is whether the CEILING lowered
+        # the number -- `>` only, so the floor below is not covered and a direct
+        # caller's 0 still becomes 1 in silence. That asymmetry is deliberate
+        # and the next paragraph is where it is argued; said precisely here
+        # because this comment's whole job is prose precision. It is the
+        # property worth announcing: an operator only
         # needs telling when the deployment is running on a bound other than
         # the one they wrote. Unset therefore never logs, and neither does an
         # explicit value the clamp did not move.

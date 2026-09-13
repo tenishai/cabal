@@ -506,6 +506,28 @@ def test_an_operator_can_LOWER_the_breadth_ceiling_per_persona() -> None:
 
     This asserts the path end to end, through the real factory, because the
     clamp itself was never the part in doubt.
+
+    IT DOES NOT, ON ITS OWN, DISTINGUISH A DECLARATION CAP FROM A RUNTIME
+    THROTTLE, and that is stated here because the division of labour is not
+    obvious from either test alone. At cap == declared, both readings boot the
+    persona with all three legs, so this one passes under either. The
+    discrimination is carried entirely by
+    `test_a_cap_below_the_declared_legs_REMOVES_the_persona_it_does_not_narrow_it`.
+
+    SO DO NOT DELETE THAT TEST AS REDUNDANT. Measured: under a constructor that
+    clamps instead of raising, THIS test still passes -- it cannot tell the two
+    apart, so it reports green on a mutant that changes the field's meaning
+    entirely. That is the state review round 1 found this PR in, when the only
+    end-to-end test used one declared leg against a cap of one and pinned
+    neither reading (#178 r2).
+
+    What it does NOT mean is that the raise would be unguarded. The same mutant
+    also fails `test_mason_primus.py::
+    test_a_fan_out_wider_than_the_ceiling_is_refused_at_construction`, which
+    pins the constructor directly -- measured, two failures, not one. What
+    would be lost with the REMOVES test is the guard on this PATH: the override
+    travelling from config through the factory into that refusal. Nothing else
+    covers the config half.
     """
     from cabal.config.identity import IdentityConfig, PersonaConfig, SubordinateConfig
     from cabal.core.abort import AbortCoordinator
