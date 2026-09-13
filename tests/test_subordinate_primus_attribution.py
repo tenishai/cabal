@@ -528,14 +528,21 @@ def test_an_operator_can_LOWER_the_breadth_ceiling_per_persona() -> None:
             pass
 
     sub = SubordinateConfig(model="m")
+    # THREE DECLARED LEGS, CAPPED AT THREE, AND THE COUNTS MUST DIFFER FROM ONE
+    # ANOTHER (#178 r1). The first version of this test gave mason ONE leg and
+    # an override of 1 -- the single pair of values at which a declaration cap
+    # and a runtime throttle are indistinguishable, so it would have passed
+    # against either meaning and pinned neither. Three declared against a cap
+    # of three is the smallest arrangement where the field is doing its real
+    # job: admitting a persona that sits exactly at its policy.
     identity = IdentityConfig(
         personas={
             "mason": PersonaConfig(
                 role="primus",
-                subordinates={"implementer": sub},
-                max_legs_override=1,
+                subordinates={"implementer": sub, "reviewer2": sub, "auditor": sub},
+                max_legs_override=3,
             ),
-            # No override: must land on the module default, not on mason's 1.
+            # No override: must land on the module default, not on mason's 3.
             "wright": PersonaConfig(
                 role="primus", subordinates={"implementer": sub}
             ),
@@ -551,13 +558,83 @@ def test_an_operator_can_LOWER_the_breadth_ceiling_per_persona() -> None:
     )
 
     by_name = {h.name: h for h in registered}
-    assert by_name["mason-primus"]._max_legs == 1, (
+    assert by_name["mason-primus"]._max_legs == 3, (
         "the operator's max_legs_override did not reach the primus — the "
         "breadth ceiling is still not settable"
     )
+    # AND THE PERSONA ACTUALLY BOOTS WITH ALL THREE. A cap equal to the
+    # declared count admits; nothing is trimmed on the way in.
+    assert len([r for r in by_name["mason-primus"].subordinates if r != "reviewer"]) == 3
     assert by_name["wright-primus"]._max_legs == MAX_LEGS_PER_FANOUT, (
         "a persona with no override did not get the module default; an "
         "override leaked across personas"
+    )
+
+
+def test_a_cap_below_the_declared_legs_REMOVES_the_persona_it_does_not_narrow_it() -> None:
+    """cabal#178 r1 — the field is a declaration cap, so under-setting it is fatal.
+
+    `max_legs_override` is checked ONCE, in the constructor, against
+    `subordinates` — which is assigned at construction and never mutated. It
+    does not select a subset of legs at dispatch, and the dispatch check cannot
+    reach a primus built through the constructor, because `leg_roles` there is
+    derived from the same `subordinates` the constructor already bounded.
+
+    So a cap below a persona's declared leg count does not give you a narrower
+    persona. It gives you no persona: the constructor raises, `persona_factory`
+    catches it, logs `personas.primus_config_rejected`, and the deployment
+    boots without that agent.
+
+    That is the shape cabal#172 asked for — a config path feeding the
+    constructor check rather than the dispatch one, so a misconfiguration is
+    refused at boot instead of failing every dispatch forever after paying for
+    a plan call. This test exists because nothing else here distinguishes that
+    from a throttle, and the PR that added the field originally described it as
+    one.
+    """
+    from cabal.config.identity import IdentityConfig, PersonaConfig, SubordinateConfig
+    from cabal.core.abort import AbortCoordinator
+    from cabal.core.memory.session_tracker import NoOpSessionTracker
+    from cabal.core.memory.store import NoOpMemoryStore
+    from cabal.core.persona_factory import register_personas_from_identity
+
+    registered: list[Any] = []
+
+    class _StubRouter:
+        abort_coordinator = AbortCoordinator()
+
+        def input_guardrail_of(self, kind: type) -> Any:
+            return None
+
+        def register_local(self, handler: Any) -> None:
+            registered.append(handler)
+
+        def register_capabilities(self, agent_name: str, caps: list[str]) -> None:
+            pass
+
+    sub = SubordinateConfig(model="m")
+    identity = IdentityConfig(
+        personas={
+            "mason": PersonaConfig(
+                role="primus",
+                subordinates={"implementer": sub, "reviewer2": sub, "auditor": sub},
+                max_legs_override=2,  # BELOW the three it declares
+            ),
+        }
+    )
+    register_personas_from_identity(
+        dispatch_router=_StubRouter(),  # type: ignore[arg-type]
+        identity=identity,
+        litellm_client=_client(),
+        memory_store=NoOpMemoryStore(),
+        session_tracker=NoOpSessionTracker(),
+        hook_registry=HookRegistry(),
+    )
+
+    assert not [h for h in registered if h.name == "mason-primus"], (
+        "a max_legs_override below the declared leg count registered a primus "
+        "anyway — the field would then be trimming declared work silently, "
+        "which is the one thing the constructor's raise exists to refuse"
     )
 
 

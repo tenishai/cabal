@@ -89,19 +89,25 @@ class _DoomLoopError(Exception):
 
 #: The most subordinate legs one fan-out may open at once (cabal#156).
 #:
-#: A HARD CEILING IN CODE, and TODAY IT IS THE ONLY CEILING. There is no
-#: identity-config field for breadth: `max_legs` reaches a primus only through
-#: its constructor, and persona_factory passes none, so `_max_legs` is this
-#: constant in every shipped deployment and the only callers that can lower it
-#: are tests.
+#: THE HARD BACKSTOP, AND NO LONGER THE ONLY CEILING (cabal#172, #178). A
+#: policy can now lower it per persona: `PersonaConfig.max_legs_override`
+#: reaches the constructor through `persona_factory`, so `_max_legs` is this
+#: constant only for a persona that sets nothing. A policy still cannot RAISE
+#: it -- an over-wide override is clamped here and logged.
 #:
-#: SO DO NOT READ THE "CLAMPED, NOT HONOURED" STORY ONTO IT (#156 r2). That
-#: phrase is meaningful about MAX_DELEGATIONS_PER_CONTEXT because
-#: `delegation_budget_limit` IS operator-settable and reaches the guard, so
-#: there is something to clamp FROM. Here there is nothing, and three comments
-#: claimed a policy could lower this when no policy path exists. Wiring one is
-#: cabal#172; until it lands, this is a constructor seam for tests with the
-#: ceiling fixed in code.
+#: AND THE "CLAMPED, NOT HONOURED" STORY IS TRUE OF IT NOW, which it was not
+#: when this paragraph was written (#156 r2). That phrase was meaningful about
+#: MAX_DELEGATIONS_PER_CONTEXT because `delegation_budget_limit` IS
+#: operator-settable and reaches the guard, so there is something to clamp
+#: FROM; here there was nothing, and three comments claimed a policy could
+#: lower this when no policy path existed. The path exists, so the clamp now
+#: has a source and the story has a subject.
+#:
+#: WHAT THE POLICY BOUNDS IS DECLARATION, NOT DISPATCH. The check it feeds is
+#: the constructor's, against `subordinates`; a persona declaring more legs
+#: than its cap is refused and skipped at boot rather than trimmed to fit. See
+#: `max_legs_override`'s own docstring for why that is the shape #172 asked
+#: for, and cabal#181 for bounding concurrency without dropping declared work.
 #:
 #: BREADTH IS ITS OWN AXIS and neither existing bound covers it. #144 bounds
 #: how DEEP a chain runs; #146 bounds how MANY delegations a conversation makes
@@ -181,8 +187,17 @@ class PrimusPersona(LLMPersona):
         #
         # Raising rather than clamping, unlike `max_legs` below: a clamped
         # breadth would silently drop subordinates the operator declared, and
-        # dropping work is worse than refusing to start. The ceiling is not
-        # policy-settable, so there is no "still boot, bounded" case to serve.
+        # dropping work is worse than refusing to start.
+        #
+        # THE PREMISE OF THAT LAST SENTENCE MOVED; THE ARGUMENT DID NOT (#178
+        # r1). It used to read "the ceiling is not policy-settable, so there is
+        # no 'still boot, bounded' case to serve." The ceiling IS policy-
+        # settable now (`max_legs_override`, cabal#172) -- and there is still
+        # no such case, because serving it would mean running a persona with
+        # fewer legs than its operator declared, which is the silent dropping
+        # this raise exists to refuse. So a too-low policy removes the persona
+        # rather than narrowing it, and `persona_factory` logs
+        # `personas.primus_config_rejected` when it does.
         ceiling = max(1, min(max_legs, MAX_LEGS_PER_FANOUT))
         if len(legs) > ceiling:
             raise ValueError(
@@ -221,9 +236,17 @@ class PrimusPersona(LLMPersona):
         # AND THE CLAMP SAYS SO NOW. Silently lowering a number an operator
         # wrote down is the same defect shape as silently discarding one -- the
         # deployment runs bounded, the config says otherwise, and nothing
-        # reconciles them. Only an explicit over-wide value is logged; the
-        # unset default reaches here as MAX_LEGS_PER_FANOUT and is not a
-        # request to be refused.
+        # reconciles them.
+        #
+        # "EXPLICIT" IS NOT A NOTION THIS CODE HAS ACCESS TO, and an earlier
+        # version of this comment claimed it did (#178 r1). The unset default
+        # and an explicit value EQUAL TO the ceiling arrive here identical --
+        # both are MAX_LEGS_PER_FANOUT, and nothing downstream can tell them
+        # apart. What the guard actually tests is whether the clamp CHANGED the
+        # number, which is the property worth announcing: an operator only
+        # needs telling when the deployment is running on a bound other than
+        # the one they wrote. Unset therefore never logs, and neither does an
+        # explicit value the clamp did not move.
         #
         # The floor exists so a sub-1 value is a working narrow fan-out rather
         # than a boot failure. It is unreachable from config -- the field's

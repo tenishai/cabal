@@ -181,9 +181,31 @@ class PersonaConfig(_Open):
     system_prompt_override: str | None = None
     model_override: str | None = None
     max_tokens_override: int | None = None
-    #: cabal#172 -- how many fan-out legs THIS primus may open at once. None
-    #: means the module ceiling (`MAX_LEGS_PER_FANOUT`). Ignored for a
-    #: non-primus persona, which has no fan-out.
+    #: cabal#172 -- the most fan-out legs THIS primus may DECLARE. None means
+    #: the module ceiling (`MAX_LEGS_PER_FANOUT`). Ignored for a non-primus
+    #: persona, which has no fan-out.
+    #:
+    #: A DECLARATION CAP, NOT A RUNTIME THROTTLE, and the difference is the
+    #: whole behaviour of the field (#178 r1). It is checked ONCE, in the
+    #: constructor, against `subordinates` -- which is assigned at construction
+    #: and never mutated. It does not select a subset of legs at dispatch and
+    #: there is no path by which it could: `leg_roles` there is derived from
+    #: the same `subordinates` the constructor already bounded.
+    #:
+    #: SO SETTING IT BELOW A PERSONA'S DECLARED LEG COUNT DOES NOT NARROW THAT
+    #: PERSONA -- IT REMOVES IT. The constructor raises, `persona_factory`
+    #: catches and skips the handler with a `personas.primus_config_rejected`
+    #: error, and the deployment boots WITHOUT that agent. Measured on a mason
+    #: declaring three legs: override 3, 4 or 8 all register and all open three
+    #: legs; override 1 or 2 register nothing at all.
+    #:
+    #: That is the shape cabal#172 asked for and the reason it asked ("a config
+    #: path has to feed the constructor check, not the dispatch one, or a
+    #: misconfigured deployment goes back to booting successfully and failing
+    #: every dispatch"). Read it as a POLICY ASSERTION -- this persona must not
+    #: declare more than N legs -- rather than as a dial that trims a wide
+    #: fan-out down to size. Bounding CONCURRENCY without dropping declared
+    #: work is a different feature and is cabal#181.
     #:
     #: PER-PERSONA RATHER THAN A SINGLE `[guardrails]` NUMBER, because breadth
     #: is a property of the persona: a mason with three legs and a wright with
