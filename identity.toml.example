@@ -216,6 +216,27 @@ safety_tier = "moderate"
 description = "Engineering / SRE primus"
 role = "primus"
 safety_tier = "strict"
+# max_legs_override = 1
+#
+# A DECLARATION CAP, NOT A THROTTLE (cabal#172). It caps how many fan-out legs
+# this primus may DECLARE -- checked once, when the handler is built. It does
+# not trim a wide fan-out down to size.
+#
+# THE REVIEWER IS NOT A LEG, AND THAT IS THE TRAP HERE. Legs are the
+# subordinates dispatched CONCURRENTLY on the plan; the reviewer runs after
+# them, so it is excluded from the count. Mason declares implementer AND
+# reviewer below and that is ONE leg, not two -- so `max_legs_override = 1`
+# admits mason exactly as shipped. Count your non-reviewer subordinates, not
+# your subordinates.
+#
+# SETTING IT BELOW THAT COUNT REMOVES THE PERSONA RATHER THAN NARROWING IT.
+# Add a second non-reviewer subordinate here and `max_legs_override = 1` stops
+# mason booting altogether: the handler is skipped with a
+# `personas.primus_config_rejected` error and the rest of the roster still
+# starts. Read it as "this persona must not declare more than N legs".
+#
+# Lowers only. A value above the module ceiling (8) is clamped to it and
+# logged. A value below 1 is refused outright when the config loads.
 
 [personas.mason.subordinates.implementer]
 model = "anthropic/claude-sonnet-4-6"
@@ -237,6 +258,9 @@ max_tokens = 8192
 description = "Senior software engineer — general-engineering primus"
 role = "primus"
 safety_tier = "strict"
+# max_legs_override = 1   # see the note under [personas.mason]. Wright ships
+#                         # one subordinate and no reviewer -- one leg either
+#                         # way -- so 1 admits it and 0 is refused at load.
 
 [personas.wright.subordinates.implementer]
 model = "anthropic/claude-sonnet-5"

@@ -146,6 +146,18 @@ def register_personas_from_identity(
                     delegation_depth=dispatch_router.input_guardrail_of(
                         DelegationDepthGuardrail
                     ),
+                    # cabal#172 — the operator's per-persona breadth ceiling.
+                    # Omitted means the module default, which is also the hard
+                    # backstop; an over-wide value is clamped to it and logged
+                    # rather than honoured. This feeds the CONSTRUCTOR check
+                    # deliberately: the dispatch check is a backstop, and a
+                    # config path that only reached it would let a misconfigured
+                    # deployment boot clean and fail every dispatch (#172).
+                    **(
+                        {"max_legs": persona_cfg.max_legs_override}
+                        if persona_cfg.max_legs_override is not None
+                        else {}
+                    ),
                 )
             except ValueError as exc:
                 log.error(
