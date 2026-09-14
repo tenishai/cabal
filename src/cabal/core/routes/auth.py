@@ -127,10 +127,19 @@ async def liminal_token(
     persona token is a call credential, not a standing identity to
     exchange.
 
-    The gate is inlined (verify + aud + scope) rather than borrowed from
-    the admin module: the shared scope helper is still in flight on
-    another branch, and this route must hold its walls standing alone.
-    Folding it into the shared gate when that lands is welcome.
+    The gate is inlined rather than borrowed from the admin module. That
+    was written while the shared scope helper was still in flight; it has
+    since LANDED (`admin._require_scope`, cabal#124), so folding this route
+    into it is now a live follow-up rather than a future one.
+
+    Two things to carry across if you do. There are THREE gates here, not
+    the two this sentence used to imply: a missing bearer dies in
+    `extract_bearer` before `verify()` runs, then audience, then scope.
+    And audience is enforced INSIDE `verify(expected_audience="cabal-core")`,
+    so a validly-signed token aimed elsewhere gets 401 here — while
+    `_require_scope` verifies with `expected_audience=None` and checks `aud`
+    by hand, giving 403 per CABAL-DECISIONS D-017. Folding without deciding
+    which status is right would change this route's contract silently.
     """
     try:
         claims = verify(
