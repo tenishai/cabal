@@ -111,13 +111,19 @@ async def test_exchanged_token_cannot_be_re_exchanged(
 ) -> None:
     """The 15 minutes is a wall, not a refresh interval.
 
-    This route has two gates and only one was pinned. The three refusal
-    tests above all mint `aud="cabal-core"` and are turned away by the
-    SCOPE check, so none of them reaches the audience check — delete
-    `expected_audience="cabal-core"` and the suite stays green while an
-    exchanged token buys a fresh one indefinitely. This pins the audience
-    gate on its own: a token already wearing `aud="liminal"` is refused
-    even though its scope would otherwise be irrelevant.
+    The route has three gates, not the two its own docstring lists
+    ("verify + aud + scope"), and the audience one was unpinned.
+
+    Of the refusal tests above, two mint `aud="cabal-core"` and are turned
+    away by the SCOPE check; the third sends no Authorization header at all
+    and dies in `extract_bearer` before `verify()` runs. So none of the
+    three reaches the audience check — delete `expected_audience="cabal-core"`
+    and the suite stays green while an exchanged token buys a fresh one
+    indefinitely.
+
+    This pins the audience gate on its own: a token already wearing
+    `aud="liminal"` is refused even though its scope would otherwise be
+    irrelevant.
     """
     stored = await _signing_key(app)
     colleague = mint(
