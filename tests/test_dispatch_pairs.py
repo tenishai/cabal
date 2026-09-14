@@ -394,3 +394,78 @@ async def test_replace_all_is_atomic_under_interleaved_read(app: FastAPI) -> Non
     async with open_session(app.state.sessionmaker) as session:
         pairs = await dispatch_pairs.list_all(session)
     assert pairs == [("agent:new", "target-new")]
+
+
+# ---- 4. the same policy on the JSON-RPC door ---------------------------
+
+
+async def _dispatch_jsonrpc(
+    client: AsyncClient, token: str, *, target: str = TARGET, req_id: str = "rpc-1"
+):
+    return await client.post(
+        f"/agents/{target}",
+        json={
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": "message/send",
+            "params": {
+                "message": {"role": "user", "parts": [{"kind": "text", "text": "hi"}]}
+            },
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_honours_dispatch_pairs(app: FastAPI, client: AsyncClient) -> None:
+    """A policy enforced on one of two doors is not enforced.
+
+    `routes/a2a_jsonrpc._resolve_dispatch_token` is a twin of the one in
+    `routes/tasks`, and it re-minted without ever consulting the table --
+    so the same token refused by POST /a2a/tasks dispatched happily through
+    POST /agents/{name}. Both doors, same answer.
+    """
+    from cabal.core import dispatch_pairs
+
+    async with open_session(app.state.sessionmaker) as session:
+        await dispatch_pairs.replace_all(session, [("agent:sizing-agent", TARGET)])
+
+    rogue = await _mint_token(app, sub="agent:rogue", scope=["colleague"])
+
+    rest = await _dispatch(client, rogue, task_id="t-rogue-rest")
+    assert rest.status_code == 403, rest.text
+
+    rpc = await _dispatch_jsonrpc(client, rogue, req_id="rpc-rogue")
+    assert rpc.status_code == 200, rpc.text
+    body = rpc.json()
+    assert body.get("error") is not None, f"JSON-RPC let a refused caller through: {body}"
+    assert "not a colleague" in body["error"]["message"], body
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_allows_a_synced_pair(app: FastAPI, client: AsyncClient) -> None:
+    """The twin must not be refusing everything either."""
+    from cabal.core import dispatch_pairs
+
+    async with open_session(app.state.sessionmaker) as session:
+        await dispatch_pairs.replace_all(session, [("agent:sizing-agent", TARGET)])
+
+    allowed = await _mint_token(app, sub="agent:sizing-agent", scope=["colleague"])
+    rpc = await _dispatch_jsonrpc(client, allowed, req_id="rpc-allowed")
+    assert rpc.status_code == 200, rpc.text
+    assert rpc.json().get("error") is None, rpc.json()
+
+
+@pytest.mark.asyncio
+async def test_empty_table_is_open_for_any_sub_shape(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """Empty means open, and it has to mean open for every caller shape.
+
+    An earlier draft refused any sub that was not "agent:<name>" outright,
+    which broke the deploy-safety guarantee: with a never-synced table, main
+    re-mints such a token and this refused it.
+    """
+    token = await _mint_token(app, sub="persona:archivist", scope=["colleague"])
+    resp = await _dispatch(client, token, task_id="t-any-shape")
+    assert resp.status_code == 200, resp.text

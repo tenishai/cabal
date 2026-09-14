@@ -120,27 +120,25 @@ async def _resolve_dispatch_token(
             )
 
         if "operator" not in scope:
-            # Room-owned policy: a caller whose sub is "agent:<name>" is
-            # asking to be re-minted toward a NEW target. Whether that is
-            # allowed is decided by the flat dispatch_pairs table the room
-            # syncs via PUT /admin/dispatch-pairs -- an empty table means
-            # every such request is open (enforcement starts at the first
-            # sync). A colleague-scoped token whose sub is NOT "agent:<name>"
-            # carries no caller identity the pairs table can key on, so it
-            # gets the same plain rejection it always has.
-            if sub.startswith("agent:"):
-                if not await dispatch_pairs.is_allowed(session, caller=sub, target=target):
-                    raise HTTPException(
-                        status_code=403,
-                        detail=(
-                            f"{sub} is not a colleague of {target} yet. "
-                            "Ask in the room."
-                        ),
-                    )
-            else:
+            # Room-owned policy: the flat dispatch_pairs table the room syncs
+            # via PUT /admin/dispatch-pairs decides which caller->target pairs
+            # are permitted. An empty table means every request is open --
+            # enforcement starts at the first sync, which is what makes the
+            # migration deploy-safe.
+            #
+            # NO SUB-SHAPE BRANCH. An earlier draft refused any sub that was
+            # not "agent:<name>" outright, which broke that guarantee: with an
+            # empty table, main re-mints such a token and this refused it.
+            # `is_allowed` already answers for any caller string -- open while
+            # the table is empty, room-decided once it is not -- so the shape
+            # of the sub is the table's business, not this gate's.
+            if not await dispatch_pairs.is_allowed(session, caller=sub, target=target):
                 raise HTTPException(
                     status_code=403,
-                    detail=f"token aud={claims.get('aud')!r} cannot dispatch to {target!r}",
+                    detail=(
+                        f"{sub} is not a colleague of {target} yet. "
+                        "Ask in the room."
+                    ),
                 )
 
         # Operator, or a colleague the room allows -> re-mint as a per-target
