@@ -5,9 +5,13 @@ presented tokens against a literal `"liminal"`, so an operator whose MCP
 gateway answers to a different audience had their correctly-minted service
 token rejected with `invalid_audience` and no setting that would explain it.
 
-The third test is the one that carries the point: with `jwt_aud` reconfigured,
-a token bearing the OLD default must now be refused. Without it the suite
-would pass just as happily against the hardcoded literal.
+Two of these carry the point. `test_configured_audience_accepted` fails
+against the hardcoded literal because "my-gateway" is not in
+{"cabal-core", "liminal"}, and `test_default_audience_refused_once_reconfigured`
+fails against a half-fix that keeps "liminal" as a permanent extra member of
+`audiences`. Together they catch both shapes of a config-not-consulted
+regression; measured by reverting the config read, which fails exactly these
+two.
 """
 
 from __future__ import annotations
