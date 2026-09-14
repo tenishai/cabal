@@ -47,6 +47,16 @@ async def _operator_token(app: FastAPI, client: AsyncClient) -> str:
 async def _mint_token(
     app: FastAPI, *, sub: str, aud: str = "cabal-core", scope: list[str] | None = None
 ) -> str:
+    """Mint a token for these tests.
+
+    The dispatch cases pass scope=["colleague"] deliberately. This branch was
+    written before cabal#124 existed, when an "agent:<name>" sub alone reached
+    the dispatch_pairs check; since #124 landed, scope decides whether a
+    credential may ask for a re-mint at all and the pairs table decides which
+    caller->target pairs are permitted. A scopeless agent token is refused by
+    the scope gate and never reaches the policy these tests exercise -- which
+    matches what the room actually issues.
+    """
     async with open_session(app.state.sessionmaker) as session:
         stored = await load_active_signing_key(session, master_key=app.state.master_key)
     assert stored is not None
@@ -80,7 +90,7 @@ async def _dispatch(client: AsyncClient, token: str, *, target: str = TARGET, ta
 @pytest.mark.asyncio
 async def test_empty_table_is_open(app: FastAPI, client: AsyncClient) -> None:
     """No pairs have ever been synced: every agent may dispatch anywhere."""
-    token = await _mint_token(app, sub="agent:room")
+    token = await _mint_token(app, sub="agent:room", scope=["colleague"])
     resp = await _dispatch(client, token, task_id="t-open")
     assert resp.status_code == 200, resp.text
 
@@ -92,7 +102,7 @@ async def test_allowed_pair_dispatches(app: FastAPI, client: AsyncClient) -> Non
     async with open_session(app.state.sessionmaker) as session:
         await dispatch_pairs.replace_all(session, [("agent:sizing-agent", TARGET)])
 
-    token = await _mint_token(app, sub="agent:sizing-agent")
+    token = await _mint_token(app, sub="agent:sizing-agent", scope=["colleague"])
     resp = await _dispatch(client, token, task_id="t-allowed")
     assert resp.status_code == 200, resp.text
 
@@ -105,7 +115,7 @@ async def test_missing_pair_is_403_with_readable_body(app: FastAPI, client: Asyn
     async with open_session(app.state.sessionmaker) as session:
         await dispatch_pairs.replace_all(session, [("agent:sizing-agent", TARGET)])
 
-    token = await _mint_token(app, sub="agent:rogue")
+    token = await _mint_token(app, sub="agent:rogue", scope=["colleague"])
     resp = await _dispatch(client, token, task_id="t-missing")
     assert resp.status_code == 403
     detail = resp.json()["detail"]
