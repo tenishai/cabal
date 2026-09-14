@@ -89,6 +89,45 @@ async def test_list_conversations_filters_by_target(app, client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_conversations_filters_by_caller(app, client) -> None:
+    """`caller=` is the other half of participant scoping: `target=` finds
+    the conversations an agent ANSWERED, this finds the ones it STARTED.
+    A consumer wanting one agent's whole history (kobo's terminal feed)
+    queries both instead of paging the room-wide window and filtering
+    client-side -- which silently under-fetched behind the default limit."""
+    token = await _bootstrap_token(app, client)
+    await _dispatch_echo(app, client, token, "t-caller-filter", "x")
+
+    # Read the recorded caller verbatim (the operator token's sub, e.g.
+    # `operator:<id>`) -- the filter must match it exactly, no prefix magic.
+    r_all = await client.get(
+        "/admin/conversations", headers={"Authorization": f"Bearer {token}"}
+    )
+    [recorded] = [
+        c for c in r_all.json()["conversations"] if c["task_id"] == "t-caller-filter"
+    ]
+    caller = recorded["caller_agent"]
+    assert caller  # the dispatch stamped one
+
+    r = await client.get(
+        "/admin/conversations",
+        params={"caller": caller},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    rows = r.json()["conversations"]
+    assert rows and all(c["caller_agent"] == caller for c in rows)
+    assert "t-caller-filter" in [c["task_id"] for c in rows]
+
+    r_none = await client.get(
+        "/admin/conversations",
+        params={"caller": "agent:nobody-ever"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r_none.json()["conversations"] == []
+
+
+@pytest.mark.asyncio
 async def test_get_conversation_includes_events(app, client) -> None:
     token = await _bootstrap_token(app, client)
     await _dispatch_echo(app, client, token, "t-detail", "hello")
