@@ -54,6 +54,17 @@ class LLMInvalidRequestError(CabalLLMError):
     """Provider returned 4xx other than 429 (bad request, invalid model, etc.)."""
 
 
+class LLMTruncatedError(CabalLLMError):
+    """The model stopped at its output ceiling before producing any content.
+
+    NOT an error the provider reports as one: the call returns 200 with
+    `finish_reason: "length"` and an empty message. cabal used to record that
+    as a completed task with an empty answer (cabal#134) — 65k tokens and 15
+    minutes of wall clock, logged as a success. The condition is only
+    detectable by reading `finish_reason`, which nothing did.
+    """
+
+
 # litellm doesn't export a single base for these; we sniff by class name to
 # avoid hard-importing every variant.
 RATE_LIMIT_CLASSES = {"RateLimitError"}
@@ -72,6 +83,56 @@ INVALID_REQUEST_CLASSES = {
     "NotFoundError",
     "UnprocessableEntityError",
 }
+
+
+def classify_truncation(
+    *,
+    agent: str,
+    finish_reason: str | None,
+    text: str,
+    has_executable_tool_calls: bool,
+) -> bool:
+    """Is this response cut off, and is it cut off fatally? (cabal#134, #136)
+
+    ONE IMPLEMENTATION FOR BOTH PATHS. It lives here rather than on LLMPersona
+    because the streaming path cannot reach a persona method — the client is
+    where the chunks are — and two copies of this rule would drift. The #135
+    review kept finding exactly that shape: two predicates that ought to be one.
+
+      text present       -> True when the reason is `length`. The answer was cut
+                            off but is worth keeping; a human can see it stops
+                            mid-word.
+      empty + tool calls -> False. The one genuinely legitimate empty, and it is
+                            keyed on whether the calls are EXECUTABLE rather
+                            than on the reason string.
+      empty + `stop`     -> True. Completes, but flagged: litellm's
+                            _FINISH_REASON_MAP collapses ERROR,
+                            MALFORMED_RESPONSE, MALFORMED_FUNCTION_CALL,
+                            network_error and FINISH_REASON_UNSPECIFIED onto
+                            `stop`, and defaults every unmapped reason there
+                            too — exactly the states that arrive empty.
+      empty + anything   -> LLMTruncatedError. Covers `length`,
+      else                  `content_filter`, and anything not reaching us
+                            through litellm's mapper.
+    """
+    if text.strip():
+        return finish_reason == "length"
+    if has_executable_tool_calls:
+        return False
+    if finish_reason == "stop":
+        return True
+    if finish_reason == "length":
+        raise LLMTruncatedError(
+            f"{agent}: the model stopped at its output ceiling "
+            "(finish_reason='length') before producing any content. Raise "
+            "max_tokens, or reduce what the model must produce before it "
+            "can answer."
+        )
+    raise LLMTruncatedError(
+        f"{agent}: the model produced no content and stopped with "
+        f"finish_reason={finish_reason!r}, which is not a reason cabal "
+        "treats as a legitimate empty answer."
+    )
 
 
 def _classify(exc: Exception) -> type[CabalLLMError]:
@@ -211,9 +272,18 @@ class LiteLLMClient:
         trace_id: str | None = None,
         span_id: str | None = None,
         task_id: str | None = None,
+        on_finish: Callable[[str | None], None] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Stream a completion as text deltas. Yields each non-empty chunk.
+
+        `on_finish` receives the stream's terminal `finish_reason` once the
+        stream ends. It exists because the reason arrives on the last CHUNK
+        while this method yields plain strings, so a caller could not otherwise
+        see it — which is why cabal#134 stayed live on the streaming path after
+        the three non-streaming sites were fixed (cabal#136). A callback rather
+        than instance state: one handler serves concurrent dispatches, so a
+        field here would be whatever the last stream wrote.
 
         Same pre/post hooks + breaker + budget machinery as acompletion(),
         but the call is made with `stream=True` and the underlying response
@@ -278,8 +348,12 @@ class LiteLLMClient:
             raise cabal_class(str(exc)) from exc
 
         full_text = ""
+        finish_reason: str | None = None
         try:
             async for chunk in stream:
+                # Keep the last NON-NULL: the reason rides the final chunk and
+                # is None on all the others.
+                finish_reason = _extract_finish_reason(chunk) or finish_reason
                 delta_text = _extract_delta(chunk)
                 if delta_text:
                     full_text += delta_text
@@ -300,6 +374,8 @@ class LiteLLMClient:
             )
             raise cabal_class(str(exc)) from exc
 
+        if on_finish is not None:
+            on_finish(finish_reason)
         self.breaker.on_success()
         # No usage object on most stream APIs — estimate by character count.
         # ~4 chars per token is a reasonable approximation.
@@ -315,6 +391,23 @@ class LiteLLMClient:
                 "tokens_used_approx": approx_used,
             },
         )
+
+
+def _extract_finish_reason(chunk: Any) -> str | None:
+    """Pull `finish_reason` off a streaming chunk, dict- or object-shaped.
+
+    It rides on the FINAL chunk and is `None` on every one before it, which is
+    why the caller keeps the last non-null value rather than the last value
+    (cabal#136).
+    """
+    try:
+        if isinstance(chunk, dict):
+            choices = chunk.get("choices") or []
+            return choices[0].get("finish_reason") if choices else None
+        choices = getattr(chunk, "choices", None) or []
+        return getattr(choices[0], "finish_reason", None) if choices else None
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return None
 
 
 def _extract_delta(chunk: Any) -> str:

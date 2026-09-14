@@ -25,23 +25,59 @@ import re
 import secrets
 from dataclasses import dataclass, field
 
+import structlog
+
 from cabal.agents.llm_persona import LLMPersona, _message_to_chat
 from cabal.agents.subordinate import Subordinate
-from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, CabalReason, annotate
+from cabal.core.a2a.codes import (
+    CODE_BUDGET_EXHAUSTED,
+    CODE_ESCALATION,
+    CODE_POLICY_VIOLATION,
+    CabalReason,
+    annotate,
+)
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import KIND_SUBORDINATE
 from cabal.core.guardrails import GuardrailContext, VerdictType
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import (
+    BUDGET_KEY,
+    DEPTH_KEY,
+    DelegationBudgetGuardrail,
+    DelegationDepthGuardrail,
+    DoomLoopGuardrail,
+    next_delegation_depth,
+)
 from cabal.core.hooks.registry import HookName, HookRegistry
-from cabal.core.llm.litellm_client import LiteLLMClient
+from cabal.core.llm.litellm_client import LiteLLMClient, LLMTruncatedError
+
+log = structlog.get_logger(__name__)
 
 # Sentinel: distinguishes "caller passed doom_loop=None (disabled)" from
 # "caller omitted doom_loop (use default DoomLoopGuardrail())".
 _DOOM_LOOP_DEFAULT: object = object()
 
 
+class _LegFailedError(Exception):
+    """A fan-out leg came back as a failed Task.
+
+    Carries the leg's OWN reason code so the primus fails with what actually
+    happened rather than flattening every subordinate failure into one code.
+    """
+
+    def __init__(self, *, role: str, code: int, message: str) -> None:
+        super().__init__(f"{role} subordinate failed: {message}")
+        self.role = role
+        self.code = code
+        self.message = message
+
+
 class _DoomLoopError(Exception):
-    """Internal signal: doom-loop guardrail blocked a subordinate dispatch.
+    """Internal signal: A ROUTER-LEVEL GUARD refused a subordinate dispatch.
+
+    Named for the doom-loop guard because it was the only one at this boundary
+    until #158 added the delegation budget. Kept rather than renamed: the name
+    is internal, and the user-visible message carries the refusing guard's own
+    reason, so an operator reads "budget exhausted" rather than "doom loop".
 
     Raised inside _dispatch_subordinate and caught in handle_task so the
     primus can return an annotated failed Task to its own caller.
@@ -49,6 +85,49 @@ class _DoomLoopError(Exception):
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
+
+
+#: The most subordinate legs one fan-out may open at once (cabal#156).
+#:
+#: THE HARD BACKSTOP, AND NO LONGER THE ONLY CEILING (cabal#172, #178). A
+#: policy can now lower it per persona: `PersonaConfig.max_legs_override`
+#: reaches the constructor through `persona_factory`, so `_max_legs` is this
+#: constant only for a persona that sets nothing. A policy still cannot RAISE
+#: it -- an over-wide override is clamped here and logged.
+#:
+#: AND THE "CLAMPED, NOT HONOURED" STORY IS TRUE OF IT NOW, which it was not
+#: when this paragraph was written (#156 r2). That phrase was meaningful about
+#: MAX_DELEGATIONS_PER_CONTEXT because `delegation_budget_limit` IS
+#: operator-settable and reaches the guard, so there is something to clamp
+#: FROM; here there was nothing, and three comments claimed a policy could
+#: lower this when no policy path existed. The path exists, so the clamp now
+#: has a source and the story has a subject.
+#:
+#: WHAT THE POLICY BOUNDS IS DECLARATION, NOT DISPATCH. The check it feeds is
+#: the constructor's, against `subordinates`; a persona declaring more legs
+#: than its cap is refused and skipped at boot rather than trimmed to fit. See
+#: `max_legs_override`'s own docstring for why that is the shape #172 asked
+#: for, and cabal#181 for bounding concurrency without dropping declared work.
+#:
+#: BREADTH IS ITS OWN AXIS and neither existing bound covers it. #144 bounds
+#: how DEEP a chain runs; #146 bounds how MANY delegations a conversation makes
+#: in total. Forty concurrent legs sit inside a depth bound of 8 and inside a
+#: total budget of 40 -- by spending the whole budget in one burst. Concurrency
+#: has costs total-volume cannot express: connections, tokens, and the liveness
+#: starvation that killed the container in the incident behind #146.
+#:
+#: Sympozium checks the same thing at spawn_router.go:422, with a policy
+#: default of 3 children against a controller constant.
+MAX_LEGS_PER_FANOUT = 8
+
+
+class _FanOutTooWideError(_DoomLoopError):
+    """The plan fans out past MAX_LEGS_PER_FANOUT (cabal#156).
+
+    A SUBCLASS so handle_task's existing `except _DoomLoopError` turns it into
+    the same annotated policy-violation Task -- no second refusal path -- while
+    the type stays honest about which bound was hit.
+    """
 
 
 @dataclass
@@ -88,11 +167,44 @@ class PrimusPersona(LLMPersona):
         default_model: str,
         max_tokens: int = 8192,
         doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
+        max_legs: int = MAX_LEGS_PER_FANOUT,
+        delegation_budget: DelegationBudgetGuardrail | None = None,
+        delegation_depth: DelegationDepthGuardrail | None = None,
     ) -> None:
-        if not any(role != "reviewer" for role in subordinates):
+        legs = [role for role in subordinates if role != "reviewer"]
+        if not legs:
             raise ValueError(
                 f"{name!r} requires at least one non-reviewer subordinate "
                 "(a fan-out leg); 'reviewer' alone has nothing to review"
+            )
+        # BREADTH IS A CONFIG ERROR, SO IT IS REFUSED WHERE THE CONFIG IS KNOWN
+        # (cabal#156 r1). `leg_roles` is derived from `subordinates`, which is
+        # assigned once and never mutated, and `_max_legs` is fixed here -- so
+        # the runtime comparison is INVARIANT for the life of the instance and
+        # cannot depend on the task. Leaving it only at dispatch meant a
+        # deployment declaring nine legs constructed fine and then failed EVERY
+        # dispatch forever, each one after paying for a full plan call.
+        #
+        # Raising rather than clamping, unlike `max_legs` below: a clamped
+        # breadth would silently drop subordinates the operator declared, and
+        # dropping work is worse than refusing to start.
+        #
+        # THE PREMISE OF THAT LAST SENTENCE MOVED; THE ARGUMENT DID NOT (#178
+        # r1). It used to read "the ceiling is not policy-settable, so there is
+        # no 'still boot, bounded' case to serve." The ceiling IS policy-
+        # settable now (`max_legs_override`, cabal#172) -- and there is still
+        # no such case, because serving it would mean running a persona with
+        # fewer legs than its operator declared, which is the silent dropping
+        # this raise exists to refuse. So a too-low policy removes the persona
+        # rather than narrowing it, and `persona_factory` logs
+        # `personas.primus_config_rejected` when it does.
+        ceiling = max(1, min(max_legs, MAX_LEGS_PER_FANOUT))
+        if len(legs) > ceiling:
+            raise ValueError(
+                f"{name!r} declares {len(legs)} fan-out legs, above the ceiling "
+                f"of {ceiling}. Breadth is bounded because concurrency costs "
+                "connections and tokens at once rather than over time. Declare "
+                "fewer subordinates."
             )
         super().__init__(
             name=name,
@@ -115,16 +227,86 @@ class PrimusPersona(LLMPersona):
         self.hook_registry = hook_registry
         # doom_loop is default-on: a fresh guard is created unless the caller
         # explicitly passes None (disabled) or a custom DoomLoopGuardrail instance.
+        # CLAMPED RATHER THAN HONOURED so a caller cannot raise its own bound,
+        # and "a policy may only lower it" is finally a true story rather than
+        # a vacuous one: `max_legs_override` (cabal#172) is the policy, and
+        # MAX_LEGS_PER_FANOUT is the backstop it cannot raise. Until that field
+        # existed the clamp was real and had nothing to clamp FROM (#156 r2).
+        #
+        # AND THE CLAMP SAYS SO NOW. Silently lowering a number an operator
+        # wrote down is the same defect shape as silently discarding one -- the
+        # deployment runs bounded, the config says otherwise, and nothing
+        # reconciles them.
+        #
+        # "EXPLICIT" IS NOT A NOTION THIS CODE HAS ACCESS TO, and an earlier
+        # version of this comment claimed it did (#178 r1). The unset default
+        # and an explicit value EQUAL TO the ceiling arrive here identical --
+        # both are MAX_LEGS_PER_FANOUT, and nothing downstream can tell them
+        # apart. What the guard actually tests is whether the CEILING lowered
+        # the number -- `>` only, so the floor below is not covered and a direct
+        # caller's 0 still becomes 1 in silence. That asymmetry is deliberate
+        # and the next paragraph is where it is argued; said precisely here
+        # because this comment's whole job is prose precision. It is the
+        # property worth announcing: an operator only
+        # needs telling when the deployment is running on a bound other than
+        # the one they wrote. Unset therefore never logs, and neither does an
+        # explicit value the clamp did not move.
+        #
+        # The floor exists so a sub-1 value is a working narrow fan-out rather
+        # than a boot failure. It is unreachable from config -- the field's
+        # validator refuses <1 outright, because zero legs is not a fan-out an
+        # operator could have meant -- and remains for direct constructor
+        # callers. The ceiling check that CAN fail boot is above, on the
+        # DECLARED subordinates, where dropping work would be the alternative.
+        if max_legs > MAX_LEGS_PER_FANOUT:
+            log.warning(
+                "primus.max_legs_clamped",
+                persona=name,
+                requested=max_legs,
+                ceiling=MAX_LEGS_PER_FANOUT,
+            )
+        self._max_legs = max(1, min(max_legs, MAX_LEGS_PER_FANOUT))
         if doom_loop is _DOOM_LOOP_DEFAULT:
             self._doom_loop: DoomLoopGuardrail | None = DoomLoopGuardrail()
         else:
             self._doom_loop = doom_loop
+        # cabal#158 — the SAME DelegationBudgetGuardrail instance the router
+        # holds, not a second one, and that is the whole point.
+        #
+        # The budget is per-conversation and keyed on context_id. Two instances
+        # would give one conversation two separate allowances, so an agent that
+        # mixed router hops with fan-out legs would get double the budget --
+        # which is worse than the gap being closed, because it would look
+        # bounded. Sharing the instance makes a conversation's delegations
+        # count once, wherever they happen.
+        #
+        # None when the operator disabled the budget, or when a primus is
+        # constructed outside app.py (tests, direct use). Nothing here creates
+        # one by default: an unshared default would be exactly the second
+        # instance this comment exists to prevent.
+        self._delegation_budget = delegation_budget
+        # cabal#171 — THE ROUTER'S depth instance, for the same reason #158 took
+        # the router's budget: one enforcement point rather than two that can
+        # disagree. Until this landed the counter and the check NEVER MET --
+        # `next_delegation_depth` stamped a depth on every fan-out leg and
+        # nothing read it at a decision point, because the guard ran only in
+        # `build_router_input_guardrails` and a leg goes straight to
+        # `subord.handle_task`. The increment was write-only, so cabal's own
+        # delegation could not accumulate depth and the limit of 8 was
+        # unreachable by accumulation.
+        self._delegation_depth = delegation_depth
 
     async def handle_task(self, task: Task) -> Task:
         # cabal#11 — the parent dispatch node (task.id) is registered by the
         # router; checks here cancel the primus's own pipeline between stages.
         self.abort_coordinator.raise_if_aborted(task.id)
-        plan_text = await self._plan(task)
+        # _plan and _aggregate are the two stages that can raise
+        # LLMTruncatedError: a subordinate leg annotates its own failure and
+        # returns a Task, so it never reaches here as an exception (cabal#134).
+        try:
+            plan_text = await self._plan(task)
+        except LLMTruncatedError as exc:
+            return self._truncated(task, exc)
 
         # cabal#69 — fan-out: every non-reviewer subordinate is a leg,
         # dispatched CONCURRENTLY on the plan. `subordinates` is insertion-
@@ -132,6 +314,36 @@ class PrimusPersona(LLMPersona):
         # to the old sequential behaviour (gather-of-one).
         leg_roles = [role for role in self.subordinates if role != "reviewer"]
         try:
+            # A BACKSTOP, NOT THE BOUND. The bound is in __init__, where the
+            # input is known and nothing has been spent; this cannot be reached
+            # by a primus constructed through it, because `subordinates` is
+            # never mutated after construction.
+            #
+            # AN EARLIER COMMENT HERE SAID "BOUND THE BREADTH BEFORE SPENDING
+            # ANYTHING" AND IT WAS FALSE (#156 r1): `_plan` runs above this, so
+            # a refused dispatch had already paid for one full primus LLM call.
+            # What IS true, and is what the test pins, is the narrower claim --
+            # refusing after the gather has opened the connections bounds
+            # nothing, because the cost is paid at open time.
+            #
+            # INSIDE the try so it becomes an annotated policy-violation Task
+            # through the existing handler, rather than propagating as an
+            # exception the caller never asked to handle.
+            if len(leg_roles) > self._max_legs:
+                raise _FanOutTooWideError(
+                    f"this agent is configured with {len(leg_roles)} "
+                    f"subordinates, above the breadth ceiling of "
+                    f"{self._max_legs}. Breadth is bounded separately from "
+                    "depth and from total volume because concurrency costs "
+                    "connections and tokens at once rather than over time. "
+                    # NO REVIEW-ROUND CITATION IN A RUNTIME STRING. An earlier
+                    # wording said "narrow the plan" -- advice the reader cannot
+                    # act on -- and the commit that fixed it left the review
+                    # reference inside the f-string rather than in a comment, so
+                    # operators and models read it off the annotated Task
+                    # (#156 r3 Nit).
+                    "This is a configuration error; no plan can avoid it."
+                )
             leg_outputs = await self._dispatch_legs(task, leg_roles, plan_text)
             reviewer_critique: str | None = None
             self.abort_coordinator.raise_if_aborted(task.id)
@@ -141,6 +353,11 @@ class PrimusPersona(LLMPersona):
                     role="reviewer",
                     instruction=self._reviewer_instruction(plan_text, leg_outputs),
                 )
+        except _LegFailedError as exc:
+            return annotate(
+                task,
+                CabalReason(code=exc.code, message=f"{self.name}: {exc.message}"),
+            )
         except _DoomLoopError as exc:
             # Doom-loop guard blocked a subordinate dispatch. Return an
             # annotated failed Task to the caller (mirrors the router's own
@@ -154,9 +371,12 @@ class PrimusPersona(LLMPersona):
                 ),
             )
 
-        final_text = await self._aggregate(
-            task, plan_text, leg_outputs, reviewer_critique
-        )
+        try:
+            final_text, truncated = await self._aggregate(
+                task, plan_text, leg_outputs, reviewer_critique
+            )
+        except LLMTruncatedError as exc:
+            return self._truncated(task, exc)
 
         agent_msg = Message(role="agent", parts=[TextPart(text=final_text)])
         history = list(task.history)
@@ -168,7 +388,14 @@ class PrimusPersona(LLMPersona):
                 "contextId": task.context_id,
                 "status": TaskStatus(state="completed", message=agent_msg),
                 "history": history,
-                "metadata": task.metadata,
+                # A kept-but-truncated summary is still the answer, so the task
+                # completes — but it says so, rather than the flag being
+                # computed and dropped (cabal#134 review).
+                "metadata": (
+                    {**task.metadata, "cabal_truncated": "aggregate"}
+                    if truncated
+                    else task.metadata
+                ),
             }
         )
 
@@ -211,14 +438,34 @@ class PrimusPersona(LLMPersona):
             ),
             return_exceptions=True,
         )
+        # PRECEDENCE, AND WHY: a real exception beats both deferred kinds
+        # (raised in-loop at its position); between the two deferred kinds a
+        # DOOM BLOCK OUTRANKS A LEG FAILURE, because a guardrail block is a
+        # structural refusal — the leg never ran — while a leg failure is the
+        # outcome of one that did. That order was comment-only until
+        # test_a_doom_loop_outranks_a_leg_failure; swapping the two raises left
+        # the whole suite green.
+        #
+        # A LEG FAILURE MUST NOT OUTRANK A SIBLING'S ABORT. Results are in
+        # insertion order, so raising the first BaseException would let leg 1's
+        # _LegFailedError win over leg 2's TaskAborted and report an operator
+        # cancellation as a budget failure. Both deferred kinds are held back
+        # until every real exception has had its chance to propagate. Latent
+        # today — no shipped identity configures two concurrent legs — and a
+        # live bug the day one does.
         doom: _DoomLoopError | None = None
+        leg_failed: _LegFailedError | None = None
         for res in results:
             if isinstance(res, _DoomLoopError):
                 doom = doom or res
+            elif isinstance(res, _LegFailedError):
+                leg_failed = leg_failed or res
             elif isinstance(res, BaseException):
                 raise res  # abort / real errors propagate, as before
         if doom is not None:
             raise doom
+        if leg_failed is not None:
+            raise leg_failed
         return dict(zip(roles, results, strict=True))
 
     def _reviewer_instruction(
@@ -238,8 +485,23 @@ class PrimusPersona(LLMPersona):
         )
 
     async def _plan(self, task: Task) -> str:
+        # THE BUDGET NOTE BELONGS ON THIS HOP, and reaching it needed a second
+        # site (cabal#156 r1 Important 1). It was folded into
+        # LLMPersona.build_messages under the belief that that is where every
+        # persona's system content is composed. A primus overrides handle_task
+        # and never calls build_messages: instrumented across a real Mason
+        # dispatch, the note landed on the LEG and on neither the plan nor the
+        # aggregate call. So the number reached a Subordinate, which is a leaf
+        # that cannot delegate, and was withheld from the one agent deciding
+        # how wide to fan out.
+        #
+        # NOT ON _aggregate, deliberately: it joins outputs and spends nothing,
+        # so telling it the budget is noise in a prompt that is already long.
         messages = [
-            {"role": "system", "content": self._plan_prompt},
+            {
+                "role": "system",
+                "content": self._plan_prompt + self._delegation_budget_note(task),
+            },
             *(_message_to_chat(m) for m in task.history),
         ]
         if task.status.message is not None:
@@ -255,9 +517,49 @@ class PrimusPersona(LLMPersona):
                 trace_id=task.metadata.get("cabal_trace_id"),
                 span_id=task.metadata.get("cabal_span_id"),
                 max_tokens=self.max_tokens,
+                # LLMPersona.extra_kwargs reaches its own call, the tool-loop
+                # re-entry that shares that call's dict, and the stream — but
+                # BOTH primus stages omitted it, so a provider knob set on a
+                # primus applied to its subordinates and not to the primus
+                # itself. Two of the five acompletion/astream call sites.
+                **self.extra_kwargs,
             ),
         )
-        return self.parse_response(response)
+        plan = self.parse_response(response)
+        # EMPTINESS FIRST, INDEPENDENT OF THE REASON. check_truncation blesses
+        # empty-with-`stop`, and litellm's map_finish_reason defaults every
+        # reason it cannot map to exactly that — provider ERROR states included
+        # — so an empty plan escaped through `stop`, fanned out, and completed
+        # a confident summary over nothing. A terminal answer may legitimately
+        # be empty; an INSTRUCTION never can.
+        if not plan.strip():
+            raise LLMTruncatedError(
+                f"{self.name}: the plan hop returned no content, so there is "
+                "no instruction to hand a subordinate."
+            )
+        # An empty plan hands the implementer an empty instruction, so this
+        # must fail here rather than fan out (cabal#134). A HALF plan is fatal
+        # too, and that is the one place this differs from a terminal answer:
+        # a cut-off answer reaches a human who can see it stops mid-word, while
+        # a cut-off plan reaches an agent that cannot tell a truncated
+        # instruction from a terse one.
+        if self.check_truncation(response, plan):
+            raise LLMTruncatedError(
+                f"{self.name}: the plan was cut off at the output ceiling, and "
+                "a truncated instruction is indistinguishable from a terse one "
+                "to the subordinate receiving it."
+            )
+        return plan
+
+    def _truncated(self, task: Task, exc: LLMTruncatedError) -> Task:
+        """A failed Task with a reason code, not a raw exception at the router.
+
+        Same treatment a plain persona's own dispatch gets for this condition,
+        so a primus and a singleton fail identically (cabal#134).
+        """
+        return annotate(
+            task, CabalReason(code=CODE_BUDGET_EXHAUSTED, message=str(exc))
+        )
 
     async def _dispatch_subordinate(
         self, parent_task: Task, *, role: str, instruction: str
@@ -274,9 +576,25 @@ class PrimusPersona(LLMPersona):
                     message=Message(role="user", parts=[TextPart(text=instruction)]),
                 ),
                 "metadata": {
-                    **parent_task.metadata,
+                    **{
+                        k: v
+                        for k, v in parent_task.metadata.items()
+                        # THE BUDGET NOTE IS FOR SPENDERS (#156 r2 Nit). A leg
+                        # is a leaf -- no tool_proxy, so it cannot delegate --
+                        # and inheriting the stamp put "plan the delegations
+                        # you have left" in front of N subordinates that have
+                        # none to plan. That is the same noise the aggregate
+                        # hop was deliberately spared, multiplied by the
+                        # fan-out width. The primus keeps it; the legs do not.
+                        if k != BUDGET_KEY
+                    },
                     "cabal_parent_task": parent_task.id,
                     "cabal_subordinate_role": role,
+                    # cabal#144 — the hop counter. Inherited-plus-one rather
+                    # than recomputed, so a chain that leaves this process and
+                    # comes back keeps counting; depth is a property of the
+                    # CHAIN, not of one primus's view of it.
+                    DEPTH_KEY: next_delegation_depth(parent_task),
                     "cabal_span_id": secrets.token_hex(8),
                 },
             }
@@ -286,14 +604,140 @@ class PrimusPersona(LLMPersona):
         # the router's input_guardrails check (cabal#42) for the primus fan-out
         # path, which bypasses the router entirely. The guard runs BEFORE we
         # register the abort node so there is nothing to clean up on a BLOCK.
-        if self._doom_loop is not None:
+        # BOTH GUARDS RUN HERE, and #158 is that only the first one did. The
+        # router chain never sees a subordinate leg -- handle_task is called
+        # directly below -- so a delegation budget wired only into the router
+        # bounds router-mediated delegation and nothing else. That left fan-out
+        # legs bounded by the sameness counter alone, which is the counter #146
+        # exists precisely because rewording defeats.
+        if (
+            self._doom_loop is not None
+            or self._delegation_budget is not None
+            or self._delegation_depth is not None
+        ):
             sub_task.metadata["cabal_target_agent"] = role
             guard_ctx = GuardrailContext(
                 persona_name=self.name, task_id=sub_task.id, phase="router"
             )
-            verdict = await self._doom_loop.check(sub_task, guard_ctx)
-            if verdict.type == VerdictType.BLOCK:
-                raise _DoomLoopError(verdict.reason)
+            # ORDER MATCHES build_router_input_guardrails. It is immaterial to
+            # WHETHER a leg is refused and material to two other things -- see
+            # both paragraphs below, which an earlier version of this block ran
+            # together under the heading "WHY ORDER CANNOT MATTER" while the
+            # tuple beneath it had three entries and the prose said "neither"
+            # and "both" (#177 r1 nit 4).
+            #
+            # WHY ORDER CANNOT DECIDE THE OUTCOME, structurally rather than by
+            # threshold. No guard starves another before the outcome is decided:
+            # each is checked on every call until one of them first refuses, so
+            # whichever is listed first still reaches its own natural trip
+            # point. The rest are only skipped AFTER the first has begun
+            # refusing -- by which point the task is refused either way.
+            #
+            # WHAT ORDER DOES DECIDE, and it is more than the wording. The
+            # obvious part is the MESSAGE: the router's own comment says "a
+            # tight repeat is reported as a doom loop and a paraphrase storm as
+            # an exhausted budget", and reporting a tight repeat as a depth
+            # violation instead is a worse message, not a neutral one.
+            #
+            # The part I had wrong, measured by the #177 reviewer rather than
+            # reasoned: a guard that is SKIPPED does not run its SIDE EFFECT.
+            # DoomLoopGuardrail's counter increments near the top of `check()`,
+            # BEFORE the threshold comparison, so merely being called advances
+            # it. Under doom-FIRST a leg that depth later refuses has still
+            # advanced the sameness counter; under depth-first it has not. That
+            # changes a later, shallower delegation's outcome. Doom-first is
+            # what a router hop does, so matching it makes the fan-out's counter
+            # accumulate the same way -- the order fix is more than cosmetic,
+            # and correct for a better reason than this comment first gave.
+            #
+            # THE BUDGET: NO DEPTH-REFUSED LEG REACHES IT UNDER EITHER ORDER,
+            # since it is last in both, so the no-refund property is not
+            # implicated by THIS reorder. Do not read that as order-invariance
+            # (#177 r2, and the reviewer falsified her own r1 claim to get it).
+            # The set of legs that DO reach it is "legs where doom and depth
+            # both passed", and doom's verdict depends on the state that
+            # diverges above -- so the divergence carries one guard further.
+            # Measured over a sequence rather than a single leg: three deep
+            # legs sharing a context and a delegation key, then a shallow one,
+            # leaves the budget's counts EMPTY under doom-first and holding an
+            # entry under depth-first. Nothing escapes a bound either way --
+            # doom-first REFUSES the shallow leg that depth-first dispatches --
+            # so the divergence is in accounting, not in safety.
+            #
+            # And "empty" is a property of that sequence, not of the guard:
+            # since #158 this is the ROUTER'S shared instance and it persists
+            # across hops, so what can be asserted is "unaffected by that leg",
+            # never "empty".
+            #
+            # Said that way it holds for any configuration. An earlier version
+            # of this comment argued instead that "the doom threshold trips
+            # long before the budget limit", which was true of the shipped
+            # defaults AT THE TIME and NOT enforced anywhere: the two limits have
+            # independent validators and no cross-field check, so
+            # doom_loop_threshold=30 with the default budget of 20 is a legal
+            # config in which the budget trips first. A default dressed as an
+            # invariant (#158 pre-pass, r2).
+            #
+            # Matching the router's order stops the module contradicting itself.
+            #
+            # ANY NON-PASS VERDICT STOPS, rather than an enumeration of the
+            # ones that exist today. Fail-closed is the right default at a
+            # guard boundary, and it absorbs #152's TERMINATE without anyone
+            # remembering to come back -- a terminating budget falling through
+            # a `== BLOCK` check would dispatch the leg silently. It also
+            # stops REWRITE being dropped on the floor, which the enumeration
+            # did: neither guard here returns one, but ignoring it would have
+            # dispatched the UNREWRITTEN task.
+            #
+            # IT ABSORBS THE STOP, NOT THE DISTINCTION (#158 r3 Nit). Both
+            # verdicts funnel into _DoomLoopError(verdict.reason) and the type
+            # is DELIBERATELY FLATTENED here -- a terminal budget and an
+            # advisory doom-loop produce the same annotated failed Task,
+            # because _DoomLoopError already fails the whole fan-out and that
+            # is the "end the task" effect either way. Said explicitly so
+            # whoever merges #152 does not read "absorbs TERMINATE" as a reason
+            # to skip this site and go looking for a distinction to preserve. Note this REFUSES a rewrite
+            # rather than applying it -- the honest fail-closed reading, and
+            # unreachable besides: this boundary calls guard.check() directly
+            # rather than run_guardrails, so the PASS-carrying-`rewritten`
+            # shape never arises here and neither guard returns REWRITE.
+            # DEPTH IS CHECKED AGAINST THE STAMP THIS SAME METHOD APPLIED.
+            # `sub_task`'s DEPTH_KEY was set above from
+            # `next_delegation_depth(parent_task)`, and the guard reads that key
+            # -- so the number the guard SEES is the number the fan-out STAMPED.
+            # That identity is what cabal#171 was about and what every prior
+            # test missed, because each looked at only one of the two.
+            #
+            # ORDER MATCHES `build_router_input_guardrails` EXACTLY, and an
+            # earlier version of this comment CLAIMED that while the code did
+            # the opposite (cabal#177 pre-pass). The router appends doom_loop,
+            # then depth, then budget, and `run_guardrails` evaluates in list
+            # order with first-refusal-wins -- so a depth-first loop here made
+            # the two paths disagree about a leg that is BOTH a tight repeat and
+            # past its limit. Same task, two different refusals, decided by
+            # which path dispatched it.
+            #
+            # THE ROUTER'S ORDER IS DELIBERATE and says so: "ORDER MATTERS ONLY
+            # FOR THE MESSAGE, not for safety: the first BLOCK short-circuits,
+            # so a tight repeat is reported as a doom loop and a paraphrase
+            # storm as an exhausted budget." Reporting a tight repeat as a depth
+            # violation instead is a worse message, not a neutral one.
+            #
+            # (`app.py`'s "depth first among the three bounds" is about depth
+            # against BUDGET and EDGES -- the three bounds. DoomLoopGuardrail is
+            # a sameness counter, not a bound, and is not one of the three. Both
+            # files are self-consistent under that reading; only my comment was
+            # not.)
+            for guard in (
+                self._doom_loop,
+                self._delegation_depth,
+                self._delegation_budget,
+            ):
+                if guard is None:
+                    continue
+                verdict = await guard.check(sub_task, guard_ctx)
+                if verdict.type is not VerdictType.PASS:
+                    raise _DoomLoopError(verdict.reason)
 
         # cabal#11 — register the subordinate under the parent so an abort of
         # the parent reaches its in-flight LLM call. The primus calls
@@ -309,6 +753,22 @@ class PrimusPersona(LLMPersona):
         finally:
             self.abort_coordinator.complete(sub_task.id)
 
+        # A FAILED LEG IS NOT OUTPUT (cabal#134 review). This read the parts
+        # without ever looking at the state, so a subordinate that failed —
+        # truncated, guardrail-blocked, anything — had its REASON STRING
+        # consumed as its answer, and the aggregator wrote a confident summary
+        # on top of it. The task then completed clean, which is worse than the
+        # empty answer it replaced: an operator can spot zero characters.
+        if response.status.state == "failed":
+            raise _LegFailedError(
+                role=role,
+                # 704, not 701: an unexplained leg failure is "subordinate
+                # handed back to caller", whereas 701 asserts a safety-tier
+                # refusal the code has no way to know happened — the same class
+                # of confident-wrong-label this PR exists to remove.
+                code=int(response.metadata.get("cabal_reason_code", CODE_ESCALATION)),
+                message=str(response.metadata.get("cabal_reason_message", "no reason given")),
+            )
         if response.status.message is None:
             return ""
         return " ".join(
@@ -321,7 +781,7 @@ class PrimusPersona(LLMPersona):
         plan_text: str,
         leg_outputs: dict[str, str],
         reviewer_critique: str | None = None,
-    ) -> str:
+    ) -> tuple[str, bool]:
         messages = [
             {"role": "system", "content": self._aggregate_prompt},
             *(_message_to_chat(m) for m in task.history),
@@ -351,9 +811,18 @@ class PrimusPersona(LLMPersona):
                 trace_id=task.metadata.get("cabal_trace_id"),
                 span_id=task.metadata.get("cabal_span_id"),
                 max_tokens=self.max_tokens,
+                **self.extra_kwargs,
             ),
         )
-        return self.parse_response(response)
+        summary = self.parse_response(response)
+        # Every empty answer in cabal#134's evidence came from this hop. A
+        # truncated-but-present summary is kept — it is the terminal answer and
+        # a human can see it stops mid-word — and the flag RIDES BACK ON THE
+        # RETURN VALUE for handle_task to stamp into the Task. Deliberately not
+        # an instance attribute: register_local holds ONE handler per agent, so
+        # concurrent dispatches interleave on this object at every await and a
+        # flag written here would be whatever the last one wrote.
+        return summary, self.check_truncation(response, summary)
 
     async def _fire(self, name: HookName, task: Task, role: str) -> None:
         if self.hook_registry is None:

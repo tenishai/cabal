@@ -75,6 +75,10 @@ class Agent(Base):
     # own container); "federated" = a sovereign peer this cabal is a client of.
     # federation_audience is the sovereign service id callers mint into `aud`.
     kind: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'member'"))
+    # cabal#142 — presence payload for kind='session' rows: what this live
+    # session is working on right now (repo / branch / one-line task). NULL on
+    # every persona row and on any session that has not heartbeated yet.
+    work_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     federation_audience: Mapped[str | None] = mapped_column(String)
 
     persona: Mapped[Persona] = relationship(back_populates="agents")
@@ -189,6 +193,46 @@ class TaskCheckpoint(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_utcnow_default(),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class DelegationBudget(Base):
+    """cabal#174 — the delegation budget counter, made to survive a restart.
+
+    CONVERSATION KEYS ONLY, and the clock is why. `DelegationBudgetGuardrail`
+    keys on `task.context_id` when present and falls back to the caller's
+    persona name otherwise, and it reads `time.monotonic()` directly, which
+    resets on restart. (No `_now` seam: that attribute belongs to
+    `DoomLoopGuardrail`, and an earlier version of this docstring cited it
+    here -- right substance, wrong class, #175 r1 nit 2.) A caller key carries
+    a `window_start` on that clock, so restoring one after a restart would
+    mean restoring a count against a window whose origin no longer exists. A
+    conversation key has no TTL and no window by deliberate design -- the
+    count is its whole state -- so it is the class that can be persisted
+    soundly.
+
+    SCOPED, NOT COMPLETE (#175 r1 Important). A **threaded** resumed task
+    falls into this class. An un-threaded one does not: `context_id` defaults
+    to `None`, the guard falls back to a windowed caller key, and that is
+    never written here -- so a caller-keyed budget is still zeroed by every
+    restart, at a cost of one extra window of a rolling rate limit. See
+    `cabal.core.budget_store` for the full accounting.
+
+    COUNT IS MONOTONIC HERE even though the in-memory counter is not. Memory
+    keeps an LRU (`_BUDGET_MAXSIZE`) whose eviction is a known refill path;
+    the upsert takes `max(stored, incoming)` so an eviction cannot lower the
+    durable record and re-open the hole this table closes.
+    """
+
+    __tablename__ = "delegation_budgets"
+
+    session_key: Mapped[str] = mapped_column(String, primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

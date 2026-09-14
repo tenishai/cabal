@@ -12,6 +12,8 @@ Phase 1 surface (per cabal-handoff.md §4):
 from __future__ import annotations
 
 import json
+import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -57,6 +59,89 @@ def daemon_up(
 
     fastapi_app = create_app(agent=agent, config_path=config)
     uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
+
+
+def _auth_hint(detail: str) -> str:
+    """Append the remedy when a failure is really a stale operator token.
+
+    A token signed by a rotated (or reset) signing key comes back as
+    `No key for kid` — accurate, and useless to anyone who does not know
+    cabal's crypto model. cabal#92 Mode B: the token does not self-heal and
+    nothing tells you to re-authenticate.
+    """
+    if "No key for kid" in detail or "invalid_key_id" in detail:
+        return (
+            f"{detail}\n"
+            "  → your saved token was signed by a signing key that no longer "
+            "exists (rotation, reset-auth, or a fresh database).\n"
+            "  → re-authenticate: `cbl login --code <CODE>` using the code in "
+            "the daemon's startup log."
+        )
+    return detail
+
+
+@app.command("reset-auth")
+def reset_auth_cmd(
+    purge_secrets: bool = typer.Option(
+        False,
+        "--purge-secrets",
+        help="ALSO delete every stored secret. They are encrypted with the "
+        "master key you no longer have, so this is unrecoverable.",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
+    db_url: str = typer.Option(
+        "", "--db-url", help="Override the database URL (default: CABAL_DB_URL)."
+    ),
+) -> None:
+    """Recover from a lost or changed CABAL_MASTER_KEY (cabal#92).
+
+    Backs the database up, clears the signing keys cabal can no longer decrypt,
+    and drops the cached operator token that the deleted key signed. The next
+    `cbl daemon up` mints a fresh key and prints a new bootstrap code.
+
+    Secrets are LEFT IN PLACE unless --purge-secrets: they are the one thing
+    here that cannot be regenerated.
+    """
+    from cabal.core.auth.reset import ResetError, reset_auth, sqlite_path_from_url
+    from cabal.core.db import DEFAULT_DB_URL
+
+    url = db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL
+    try:
+        path = sqlite_path_from_url(url)
+    except ResetError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"database:  {path}")
+    typer.echo("clears:    signing_keys, ~/.cabal/token")
+    if purge_secrets:
+        typer.echo("ALSO clears: secrets — UNRECOVERABLE")
+    else:
+        typer.echo("keeps:     secrets (use --purge-secrets to drop them too)")
+
+    if not yes:
+        typer.confirm("Proceed?", abort=True)
+
+    try:
+        report = reset_auth(
+            url, purge_secrets=purge_secrets, token_path=api.TokenStore().path
+        )
+    except ResetError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"backup:            {report.backup_path}")
+    typer.echo(f"signing keys gone: {report.signing_keys_deleted}")
+    if report.secrets_purged:
+        typer.echo(f"secrets purged:    {report.secrets_purged}")
+    if report.secrets_remaining:
+        typer.echo(
+            f"secrets kept:      {report.secrets_remaining} "
+            "(still encrypted with the old key — undecryptable until it is restored)"
+        )
+    if report.token_removed:
+        typer.echo("operator token:    removed")
+    typer.echo("next: `cbl daemon up`, then `cbl login --code <CODE>` from its log.")
 
 
 @app.command("login")
@@ -108,7 +193,7 @@ def dispatch(
             detail = exc.response.json().get("detail", exc.response.text)
         except Exception:  # noqa: BLE001
             detail = exc.response.text
-        typer.echo(f"dispatch failed: {detail}", err=True)
+        typer.echo(f"dispatch failed: {_auth_hint(detail)}", err=True)
         raise typer.Exit(code=1) from exc
     except httpx.RequestError as exc:
         typer.echo(f"could not reach daemon at {api.base_url()}: {exc}", err=True)
@@ -362,15 +447,117 @@ def status() -> None:
     if not agents:
         typer.echo("(no agents registered)")
         return
-    header = f"{'NAME':<22} {'GEN':>4} {'ROLE':<10} {'STATUS':<10} {'TIER':<8} HEARTBEAT"
+    header = (
+        f"{'NAME':<22} {'GEN':>4} {'KIND':<10} {'ROLE':<10} "
+        f"{'STATUS':<10} {'TIER':<8} HEARTBEAT"
+    )
     typer.echo(header)
     typer.echo("-" * len(header))
     for a in agents:
-        hb = a.get("last_heartbeat") or "—"
+        hb = _heartbeat_cell(a.get("last_heartbeat"), kind=a.get("kind", "member"))
         typer.echo(
-            f"{a['name']:<22} {a['generation']:>4} {a['role']:<10} "
-            f"{a['status']:<10} {a['safety_tier']:<8} {hb}"
+            f"{a['name']:<22} {a['generation']:>4} {a.get('kind', 'member'):<10} "
+            f"{a['role']:<10} {a['status']:<10} {a['safety_tier']:<8} {hb}"
         )
+        # cabal#142 — what a live session is doing does not fit a column, and it
+        # is the whole reason the row exists. Indented under its own row.
+        work = a.get("work") or {}
+        if work:
+            typer.echo(f"{'':<22} ↳ {_format_work(work)}")
+
+
+#: A session heartbeats once per turn, so a gap this long means the session is
+#: gone rather than thinking. Clean de-registration cannot be relied on: the
+#: Stop hook fires per-turn, and a crashed or SIGKILLed session never runs it at
+#: all -- so staleness, not `cbl session end`, is what makes a dead session read
+#: as dead. Acting on it (reaping the row) is cabal#70; this only shows it.
+SESSION_STALE_AFTER_S = 15 * 60
+
+
+def _heartbeat_cell(raw: str | None, *, kind: str, now: datetime | None = None) -> str:
+    """Render a heartbeat, flagging a session that has stopped reporting."""
+    if not raw:
+        return "—"
+    if kind != "session":
+        return raw
+    try:
+        seen = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        # An unparseable timestamp is shown as-is rather than guessed at; a
+        # rendering helper must not invent liveness it cannot determine.
+        return raw
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=UTC)
+    current = now or datetime.now(UTC)
+    if (current - seen).total_seconds() > SESSION_STALE_AFTER_S:
+        return f"{raw}  STALE"
+    return raw
+
+
+def _format_work(work: dict[str, object]) -> str:
+    """Render a session's work payload for one terminal line.
+
+    `repo`, `branch` and `task` are rendered in that order when present; any
+    other keys are appended as `k=v` so an experiment with the shape still shows
+    up rather than being silently dropped.
+    """
+    known = [str(work[k]) for k in ("repo", "branch", "task") if work.get(k)]
+    extra = [f"{k}={v}" for k, v in sorted(work.items()) if k not in {"repo", "branch", "task"}]
+    return " · ".join(known + extra) or "—"
+
+
+session_app = typer.Typer(help="Register this agent session's presence (cabal#142).")
+app.add_typer(session_app, name="session")
+
+
+def _session_token() -> str:
+    token = api.TokenStore().load()
+    if token is None:
+        typer.echo("no token; run `cbl login` first.", err=True)
+        raise typer.Exit(code=1)
+    return token
+
+
+def _work_payload(
+    repo: str | None, branch: str | None, task: str | None
+) -> dict[str, str] | None:
+    work = {k: v for k, v in (("repo", repo), ("branch", branch), ("task", task)) if v}
+    return work or None
+
+
+@session_app.command("register")
+def session_register(
+    name: str = typer.Argument(..., help="A stable name for this session, e.g. poe2."),
+    repo: str = typer.Option(None, "--repo"),
+    branch: str = typer.Option(None, "--branch"),
+    task: str = typer.Option(None, "--task", help="One line: what you are doing."),
+) -> None:
+    """Announce this session as present. Idempotent — safe to re-run."""
+    body = api.register_session(
+        token=_session_token(), name=name, work=_work_payload(repo, branch, task)
+    )
+    typer.echo(f"registered {body['name']} (kind={body['kind']})")
+
+
+@session_app.command("heartbeat")
+def session_heartbeat(
+    name: str = typer.Argument(...),
+    repo: str = typer.Option(None, "--repo"),
+    branch: str = typer.Option(None, "--branch"),
+    task: str = typer.Option(None, "--task"),
+) -> None:
+    """Refresh liveness, and update the work line when given one."""
+    api.heartbeat_session(
+        token=_session_token(), name=name, work=_work_payload(repo, branch, task)
+    )
+    typer.echo(f"heartbeat {name}")
+
+
+@session_app.command("end")
+def session_end(name: str = typer.Argument(...)) -> None:
+    """De-register on clean shutdown."""
+    api.end_session(token=_session_token(), name=name)
+    typer.echo(f"ended {name}")
 
 
 conv_app = typer.Typer(help="Browse past Task conversations.")

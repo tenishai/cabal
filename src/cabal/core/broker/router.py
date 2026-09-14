@@ -47,6 +47,18 @@ class AgentNotFoundError(DispatchError):
     """Target agent has no registered or stored bulletin entry."""
 
 
+class GuardrailBlocked(DispatchError):
+    """An input guardrail refused this dispatch (cabal#151, #153 review).
+
+    A SUBCLASS so every existing `except DispatchError` keeps working, and a
+    distinct type so the streaming route can report it as ERROR_FORBIDDEN
+    rather than ERROR_INTERNAL. That distinction is not cosmetic: -32603 says
+    "server fault", and the conventional response to a server fault is to
+    retry -- so reporting a guardrail refusal as one sustains, at the
+    transport layer, the loop the guardrail exists to break.
+    """
+
+
 class CallerJWTError(DispatchError):
     """Caller JWT failed verification at the router boundary."""
 
@@ -178,6 +190,20 @@ class DispatchRouter:
             capabilities=sorted(self._capabilities[agent]),
         )
 
+    def input_guardrail_of[T](self, kind: type[T]) -> T | None:
+        """The router's own instance of `kind`, or None (cabal#158).
+
+        Exists so a caller can SHARE a guard rather than construct a second
+        one. The delegation budget is per-conversation and keyed on
+        context_id, so two instances would hand one conversation two separate
+        allowances -- an agent mixing router hops with primus fan-out legs
+        would get double the budget while looking bounded.
+        """
+        for guard in self._input_guardrails:
+            if isinstance(guard, kind):
+                return guard
+        return None
+
     def capabilities_for(self, agent: str) -> set[str]:
         return set(self._capabilities.get(agent, set()))
 
@@ -249,12 +275,42 @@ class DispatchRouter:
                     persona_name=ctx.caller_persona or ctx.caller_agent or "",
                     task_id=task.id,
                     phase="router",
+                    caller_persona=ctx.caller_persona,
+                    caller_agent=ctx.caller_agent,
                 )
                 # cabal#42 — expose the target agent name to router-level
                 # guardrails (e.g. DoomLoopGuardrail) via task metadata.
                 # Consistent with cabal_trace_id / cabal_span_id convention.
                 task.metadata["cabal_target_agent"] = target_agent
                 verdict = await run_guardrails(self._input_guardrails, task, guard_ctx)
+                if verdict.type == VerdictType.TERMINATE:
+                    # ENDS THE TASK (cabal#152). GuardrailBlocked is the same
+                    # signal #153 raises from dispatch_streaming, but the
+                    # FORBIDDEN wiring was streaming-only: every caller of this
+                    # non-streaming method caught the DispatchError base and
+                    # answered 502 / ERROR_INTERNAL -- "server fault, retry" --
+                    # for a refusal that no retry changes. An earlier version of
+                    # this comment claimed the distinction already applied here;
+                    # it did not, and the #152 pre-pass caught it. Both callers
+                    # now have their own arm: routes/tasks.py (403) and
+                    # a2a_jsonrpc._message_send (ERROR_FORBIDDEN). Add one to any
+                    # third caller, or it will inherit 502 silently.
+                    # A BLOCK below still advises.
+                    #
+                    # NO on_dispatch_failure CALL HERE, unlike the streaming
+                    # path this was copied from (#152 r1 Important 1). This
+                    # raise is INSIDE the try opened above, whose `except
+                    # Exception` already closes the record. on_dispatch_failure
+                    # inserts an Event and publishes to the bus, so calling it
+                    # here too wrote the failure twice -- measured as
+                    # ['dispatch_start', 'dispatch_failure', 'dispatch_failure']
+                    # against the streaming path's two. The Conversation update
+                    # is an idempotent state="failed", which is why nothing
+                    # else showed it. dispatch_streaming raises from OUTSIDE
+                    # its own try, so its explicit call is correct where it is.
+                    raise GuardrailBlocked(
+                        f"router guardrail terminated the task: {verdict.reason}"
+                    )
                 if verdict.type == VerdictType.BLOCK:
                     response = annotate(
                         task,
@@ -358,8 +414,66 @@ class DispatchRouter:
         if not hasattr(handler, "astream_task"):
             raise DispatchError(f"agent {target_agent!r}'s handler does not implement astream_task")
 
+        # cabal#151 — the SAME input-guardrail chain dispatch() runs. Without
+        # this, every router-level bound was opt-out by choosing the streaming
+        # endpoint, which makes a bound not a bound. On this branch that is
+        # DoomLoopGuardrail (#42); the delegation budget (#146) joins it when
+        # that branch merges, and would have shipped bypassable without this.
+        #
+        # AFTER the structural refusals above, deliberately: a guardrail that
+        # ran first would charge a delegation budget for a dispatch that could
+        # never have happened (unknown agent, no astream_task). dispatch() has
+        # the same ordering -- _prepare resolves and raises before any guard.
+        #
+        # BLOCK raises rather than yielding an error delta. The three refusals
+        # above already establish "this stream will not happen" as a pre-yield
+        # raise, and both callers already handle DispatchError -- the SSE route
+        # emits an error frame carrying partial_text (a2a_jsonrpc.py), the TUI
+        # catches it. Yielding a delta instead would mean a blocked stream had
+        # opened, which is the opposite of an *input* guardrail's contract.
+        # BOOKKEEPING OPENS BEFORE THE GUARD, matching dispatch() (#153 review).
+        # dispatch() calls on_dispatch_start before its own guard, and a
+        # BLOCK there then falls
+        # through to on_dispatch_success, which writes the annotated
+        # CODE_POLICY_VIOLATION task into Conversation.result_json with an Event
+        # row -- so a non-streaming refusal is fully audited. Guarding first
+        # here would have made streaming the one path where a refusal leaves no
+        # trace, which is the fail-silent shape #148 removed from the presence
+        # hook. It also contradicted this method's own docstring promise of
+        # "Conversation/Event bookkeeping".
         task = _ensure_trace(task)
         await self._bookkeeper.on_dispatch_start(task, ctx.target, ctx.caller_agent)
+
+        if self._input_guardrails:
+            guard_ctx = GuardrailContext(
+                persona_name=ctx.caller_persona or ctx.caller_agent or "",
+                task_id=task.id,
+                phase="router",
+                caller_persona=ctx.caller_persona,
+                caller_agent=ctx.caller_agent,
+            )
+            # Same metadata contract as dispatch(): DoomLoopGuardrail keys its
+            # delegation hash on this and would otherwise hash an empty target.
+            task.metadata["cabal_target_agent"] = target_agent
+            verdict = await run_guardrails(self._input_guardrails, task, guard_ctx)
+            if verdict.type in (VerdictType.BLOCK, VerdictType.TERMINATE):
+                # The streaming path has no advisory mode: there is no partial
+                # Task to annotate and hand back, so a BLOCK already ends the
+                # stream. TERMINATE lands here identically, and the wording
+                # follows the verdict so the caller can tell which it was.
+                word = (
+                    "terminated the task"
+                    if verdict.type == VerdictType.TERMINATE
+                    else "blocked"
+                )
+                blocked = GuardrailBlocked(f"router guardrail {word}: {verdict.reason}")
+                # CLOSE the record we just opened. Without this the refusal
+                # leaves a started-and-never-finished dispatch, which is worse
+                # than no row: it reads as an in-flight call that vanished.
+                await self._bookkeeper.on_dispatch_failure(task, blocked)
+                raise blocked
+            if verdict.rewritten is not None:
+                task = verdict.rewritten
 
         is_session_root = "cabal_session_started" not in task.metadata
         if is_session_root:
