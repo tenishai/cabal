@@ -76,12 +76,19 @@ async def _resolve_dispatch_token(
     if claims.get("aud") == target:
         return raw_token, None
 
+    # Mirrors routes/tasks._resolve_dispatch_token. JSON-RPC is the A2A surface
+    # an external agent actually dials, so the two gates must agree on who may
+    # dispatch; a colleague accepted over REST and refused here is the same
+    # token getting two answers.
     scope = claims.get("cabal_scope") or []
-    if "operator" not in scope:
+    if not ({"operator", "colleague"} & set(scope)):
         return None, make_error_response(
             id=None,
             code=ERROR_UNAUTHORIZED,
-            message=f"token aud={claims.get('aud')!r} cannot dispatch to {target!r}",
+            message=(
+                f"token aud={claims.get('aud')!r} cannot dispatch to {target!r} "
+                "(requires operator or colleague scope)"
+            ),
         )
 
     sessionmaker = request.app.state.sessionmaker
