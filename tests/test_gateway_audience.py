@@ -90,7 +90,10 @@ async def test_default_audience_refused_once_reconfigured(
         "/admin/secrets/archivist/files",
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert r.status_code == 401, r.text
+    # 403, not 401: CABAL-DECISIONS D-017 (landed with cabal#124) made
+    # authenticated-but-wrong-audience a 403 uniformly. A bad signature is
+    # still 401; this token is validly signed and simply aimed elsewhere.
+    assert r.status_code == 403, r.text
     assert r.json()["detail"] == "invalid_audience"
 
 
