@@ -35,7 +35,26 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 # Operator tokens: aud="cabal-core" (minted in routes/auth.py bootstrap).
 # Liminal service tokens: aud="liminal" (minted by `cbl token mint-service`).
 _AUD_OPERATOR = "cabal-core"
+
+#: FALLBACK ONLY (cabal#187). The gateway audience is deployment policy, not a
+#: constant: an operator whose MCP gateway answers to some other audience sets
+#: `[liminal] jwt_aud`. Read it through `_gateway_audience`, never directly —
+#: this name exists for the window where no identity is loaded at all.
 _AUD_LIMINAL = "liminal"
+
+
+def _gateway_audience(request: Request) -> str:
+    """The audience this deployment expects on a gateway service token.
+
+    `app.state.identity` is None when cabal is built without a config file
+    (app.py:489, and every test app), so the fallback is load-bearing rather
+    than decorative. `IdentityConfig.liminal` always exists once identity does
+    — it is a `default_factory` field — so only the outer None needs guarding.
+    """
+    identity = getattr(request.app.state, "identity", None)
+    if identity is None:
+        return _AUD_LIMINAL
+    return identity.liminal.jwt_aud or _AUD_LIMINAL
 
 
 def _require_operator_claims(request: Request, raw_token: str) -> dict[str, Any]:
@@ -899,7 +918,8 @@ def _require_secrets_fetch(request: Request, raw_token: str) -> dict[str, Any]:
 
     Accepted audiences:
       - "cabal-core" — operator token (full operator access)
-      - "liminal"    — liminal service token (secrets-fetch scope only)
+      - the gateway audience (`[liminal] jwt_aud`, default "liminal") —
+        gateway service token, secrets-fetch scope only
     A token minted for any other audience is rejected regardless of scope.
     """
     try:
@@ -912,7 +932,7 @@ def _require_secrets_fetch(request: Request, raw_token: str) -> dict[str, Any]:
         raise HTTPException(401, detail=str(exc)) from exc
 
     aud = claims.get("aud")
-    if aud not in {_AUD_OPERATOR, _AUD_LIMINAL}:
+    if aud not in {_AUD_OPERATOR, _gateway_audience(request)}:
         raise HTTPException(401, detail="invalid_audience")
 
     scope = claims.get("cabal_scope") or []
