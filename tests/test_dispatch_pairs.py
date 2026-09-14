@@ -8,7 +8,7 @@ them at the re-mint step in `POST /a2a/tasks` (see
 An EMPTY table means OPEN: before the room has ever synced a set of
 pairs, every agent-to-agent dispatch is allowed. Enforcement begins the
 instant the first (possibly empty-again) sync lands via
-`PUT /admin/dispatch-pairs` (CABAL-DECISIONS.md D-017).
+`PUT /admin/dispatch-pairs` (CABAL-DECISIONS.md D-018).
 
 Covers:
   1. Enforcement matrix on POST /a2a/tasks: pair allowed, pair missing

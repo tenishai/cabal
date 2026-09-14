@@ -284,7 +284,7 @@ class DispatchPair(Base):
     Room-owned policy (kobo decides who may call whom); cabal just stores
     the pairs and enforces them at the dispatch re-mint step
     (`routes/tasks.py::_resolve_dispatch_token`). An EMPTY table means
-    every dispatch is allowed -- see CABAL-DECISIONS.md D-017.
+    every dispatch is allowed -- see CABAL-DECISIONS.md D-018.
     """
 
     __tablename__ = "dispatch_pairs"

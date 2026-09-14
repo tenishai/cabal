@@ -1047,7 +1047,7 @@ async def put_dispatch_pairs(
     steps -- see `dispatch_pairs.replace_all`.
 
     An empty `pairs` list is a valid body, and per "empty means open"
-    (CABAL-DECISIONS.md D-017) it reopens dispatch entirely -- with zero
+    (CABAL-DECISIONS.md D-018) it reopens dispatch entirely -- with zero
     rows in the table, every caller may reach every target again, exactly
     like a fresh install. Once any non-empty set has been synced, an
     agent with no listed pair for a target is refused; syncing `[]`

@@ -4,7 +4,7 @@ kobo (the room) owns the policy of which agent may dispatch to which
 target. Cabal stores the pairs dumbly and enforces them at the re-mint
 step in `routes/tasks.py::_resolve_dispatch_token`.
 
-EMPTY TABLE MEANS OPEN (CABAL-DECISIONS.md D-017): before the room has
+EMPTY TABLE MEANS OPEN (CABAL-DECISIONS.md D-018): before the room has
 ever synced a set of pairs, every agent-to-agent dispatch is allowed.
 Enforcement begins the instant the first sync lands via
 `PUT /admin/dispatch-pairs` -- deploy-safe, no separate "turn on

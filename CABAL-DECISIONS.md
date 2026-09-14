@@ -355,14 +355,17 @@ Linked feedback memory: `feedback-decision-authority`.
   table with an empty `PUT` re-opens dispatch exactly like a fresh
   install would. That's intentional (matches "empty means open"
   uniformly) but worth knowing before reaching for it as a kill switch.
-- **What this does NOT do**: gate on any JWT scope claim (e.g. a
-  `colleague` scope). The enforcement point keys purely on the `sub`
-  prefix (`agent:`) plus the pairs table, deliberately independent of
-  how a given agent-sub token came to exist. This repo's colleague-scope
-  work (PR #124, `feat/colleague-scope`) was still open/unmerged as of
-  this entry — this feature does not depend on it landing first, and
-  will keep working unchanged once it does (a `colleague`-scoped
-  `agent:` token hits the exact same gate as any other `agent:` token).
+- **Amended when #124 landed**: this entry was written while
+  `feat/colleague-scope` was still open, and said the pairs check keys
+  purely on the `sub` prefix, independent of any JWT scope claim. That is
+  no longer true. With #124 merged, `_resolve_dispatch_token` applies TWO
+  gates in order: `{operator, colleague}` scope decides whether a
+  credential may ask for a re-mint at all, and only then does the pairs
+  table decide which caller->target pairs are permitted. An `agent:`-sub
+  token carrying neither scope is refused at the first gate and never
+  reaches `dispatch_pairs.is_allowed`. The pairs decision itself — flat,
+  room-owned, empty-means-open — is unchanged; what changed is that it is
+  now the second of two checks rather than the only one.
 - **Revocation lag**: revoking a pair does not revoke a token already in
   a caller's hand. `_resolve_dispatch_token`'s fast path — a token whose
   `aud` already matches the target — returns that token as-is without
