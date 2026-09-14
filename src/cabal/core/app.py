@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -49,13 +50,26 @@ from cabal.core.auth.master_key import (
 from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.broker.heartbeat import HeartbeatScheduler
 from cabal.core.broker.router import DispatchRouter
+from cabal.core.budget_store import (
+    DelegationBudgetStore,
+    SqliteDelegationBudgetStore,
+)
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import DEFAULT_DB_URL, make_engine, make_sessionmaker, open_session
 from cabal.core.db_pragmas import install_sqlite_pragmas
+from cabal.core.dispatch_timeout import (
+    DISPATCH_CONNECT_TIMEOUT_S,  # noqa: F401  re-exported; imported from app by tests
+    dispatch_timeout,
+)
 from cabal.core.guardrails import Guardrail
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import (
+    DelegationBudgetGuardrail,
+    DelegationDepthGuardrail,
+    DelegationEdgeGuardrail,
+    DoomLoopGuardrail,
+)
 from cabal.core.hooks.registry import HookRegistry
-from cabal.core.identity_sync import sync_personas
+from cabal.core.identity_sync import agent_name_for, sync_personas
 from cabal.core.llm.budget import BudgetGuard
 from cabal.core.llm.litellm_client import LiteLLMClient
 from cabal.core.memory.session_tracker import (
@@ -75,8 +89,39 @@ from cabal.core.routes import a2a_jsonrpc, admin, auth, healthz, tasks, well_kno
 log = structlog.get_logger(__name__)
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-ALEMBIC_INI = REPO_ROOT / "alembic.ini"
+def _migrations_dir() -> Path:
+    """Where alembic's scripts live, resolved INSIDE the installed package (#79).
+
+    The old resolution walked UP three parents to a repo root. That is correct
+    for an editable checkout and wrong for a non-editable `pip install cabal`,
+    where it lands in site-packages and finds neither `alembic.ini` nor
+    `migrations/`. The escape hatch (`CABAL_ALEMBIC_MIGRATIONS`, which Docker
+    sets) meant it failed loudly rather than silently, but a bare install plus
+    run-server on a clean machine broke with no indication that an undocumented
+    env var was the cure.
+
+    `migrations/` now lives under `src/cabal/` and ships as package data, so
+    this resolves the same way in both install shapes. `importlib.resources` is
+    the API that answers "where is this package's data", rather than inferring
+    it from a source file's position in a tree.
+    """
+    override = os.environ.get("CABAL_ALEMBIC_MIGRATIONS")
+    if override:
+        return Path(override)
+    return Path(str(resources.files("cabal") / "migrations"))
+
+# Re-exported from cabal.core.dispatch_timeout so the `cbl` CLI can resolve the
+# SAME ceiling without importing this module (which pulls FastAPI, alembic and
+# SQLAlchemy). The names stay bound here because the existing tests and call
+# sites import them from app; the definitions moved, the surface did not.
+_dispatch_timeout = dispatch_timeout
+
+# The doom-loop TTL must exceed the dispatch timeout by this factor. A hanging
+# federated peer burns the whole read ceiling before the guard is consulted
+# again, so the gap between two checks of the same delegation key is ~one
+# timeout; anything less than 1.0 here defeats the guard outright, and the
+# margin absorbs the rest of a hop (auth, bookkeeping, the peer's own work).
+DOOM_LOOP_TTL_SAFETY_FACTOR = 2.0
 
 
 def _ensure_sqlite_parent_dir(db_url: str) -> None:
@@ -105,12 +150,19 @@ def _ensure_sqlite_parent_dir(db_url: str) -> None:
 
 
 def _run_migrations(db_url: str) -> None:
-    # In Docker / installed packages, REPO_ROOT points inside site-packages
-    # which doesn't have alembic.ini or migrations/. Env vars override.
-    ini = Path(os.environ.get("CABAL_ALEMBIC_INI", str(ALEMBIC_INI)))
-    migrations = os.environ.get("CABAL_ALEMBIC_MIGRATIONS", str(REPO_ROOT / "migrations"))
-    cfg = AlembicConfig(str(ini))
-    cfg.set_main_option("script_location", migrations)
+    """Bring the schema to head (#79).
+
+    THE CONFIG IS BUILT IN CODE, NOT READ FROM A FILE. `alembic.ini` carried
+    exactly two things this path needed -- `script_location`, which is set
+    below, and logging config, which is optional -- so requiring the file
+    bought a second thing to package and a second way to fail on a clean
+    install. It stays in the repo for the `alembic` CLI during development,
+    where the CLI genuinely wants it.
+
+    `CABAL_ALEMBIC_INI` is still honoured for a deployment that pins it.
+    """
+    cfg = AlembicConfig(os.environ.get("CABAL_ALEMBIC_INI") or None)
+    cfg.set_main_option("script_location", str(_migrations_dir()))
     os.environ["CABAL_DB_URL"] = db_url
     command.upgrade(cfg, "head")
 
@@ -144,7 +196,47 @@ def _default_acompletion() -> Callable[..., Any]:
     return litellm.acompletion
 
 
-def build_router_input_guardrails(identity: IdentityConfig | None) -> list[Guardrail]:
+def _doom_loop_ttl(configured: float | None, dispatch_timeout_s: float) -> float | None:
+    """Raise the doom-loop TTL when the dispatch timeout would defeat it.
+
+    ``DoomLoopGuardrail`` counts N repeats of a delegation key *within* its
+    TTL, resetting a key that hasn't recurred inside the window. A federated
+    peer that hangs burns the entire read ceiling per attempt, so with
+    ``CABAL_DISPATCH_TIMEOUT_S`` at or above the TTL every check falls outside
+    the window, the count resets to 1, and the guard silently never fires --
+    on the one path (``kind="federated"``) it is the sole enforcement point
+    for. Measured: with the 600s default TTL the guard fires at attempt 3 for
+    a 599s timeout and never for 601s.
+
+    Returning a widened TTL rather than rejecting the config is deliberate: a
+    long timeout is a legitimate deployment choice for a slow peer, and a
+    guard that is present-but-wider beats one that is silently inert. ``None``
+    (time-based reset disabled) is already immune and passes through.
+    """
+    if configured is None:
+        return None
+    required = dispatch_timeout_s * DOOM_LOOP_TTL_SAFETY_FACTOR
+    if configured >= required:
+        return configured
+    log.warning(
+        "guardrails.doom_loop_ttl_raised",
+        configured_s=configured,
+        raised_to_s=required,
+        dispatch_timeout_s=dispatch_timeout_s,
+        reason=(
+            "TTL at or below the dispatch timeout lets a hanging federated "
+            "peer reset the doom-loop count on every attempt"
+        ),
+    )
+    return required
+
+
+def build_router_input_guardrails(
+    identity: IdentityConfig | None,
+    *,
+    dispatch_timeout_s: float = 30.0,
+    budget_store: DelegationBudgetStore | None = None,
+) -> list[Guardrail]:
     """Router-level input guardrails for the production DispatchRouter (cabal#76).
 
     These run in ``DispatchRouter.dispatch`` BEFORE the local-vs-remote branch,
@@ -153,12 +245,81 @@ def build_router_input_guardrails(identity: IdentityConfig | None) -> list[Guard
     subordinate boundary and never reaches a remote hop, so without this a
     delegation to a federated peer gets JWT auth + bookkeeping + AbortGraph but
     ZERO guardrails. Default-on; identity.toml ``[guardrails]`` opts out.
+
+    ``dispatch_timeout_s`` is the federated read ceiling; it is needed because
+    the doom-loop TTL has to stay above it or the guard is silently defeated
+    (see ``_doom_loop_ttl``). The default matches the historical httpx timeout
+    so callers that don't tune dispatch keep today's behaviour -- it must stay
+    in step with ``resolve_dispatch_timeout_s``'s own "30" default, which is
+    the only other place that number lives.
     """
     gconf = identity.guardrails if identity is not None else GuardrailsConfig()
     guardrails: list[Guardrail] = []
     if gconf.doom_loop:
-        guardrails.append(DoomLoopGuardrail(threshold=gconf.doom_loop_threshold))
+        guardrails.append(
+            DoomLoopGuardrail(
+                threshold=gconf.doom_loop_threshold,
+                ttl_seconds=_doom_loop_ttl(gconf.doom_loop_ttl_s, dispatch_timeout_s),
+            )
+        )
+    # ORDER MATTERS ONLY FOR THE MESSAGE, not for safety: the first BLOCK
+    # short-circuits, so a tight repeat is reported as a doom loop and a
+    # paraphrase storm as an exhausted budget. Both stop the dispatch.
+    # cabal#144 — depth first among the three bounds. It is STRUCTURAL, so it
+    # is the one a paraphrase cannot evade, and a chain already too deep should
+    # hear that rather than "your budget is spent".
+    if gconf.delegation_depth:
+        guardrails.append(
+            DelegationDepthGuardrail(max_depth=gconf.delegation_depth_limit)
+        )
+    if gconf.delegation_budget:
+        # `budget_store=None` leaves the guard on its no-op store, which is the
+        # pre-cabal#174 behaviour: bounded in memory, re-armed by a restart.
+        # Every caller that has a sessionmaker should pass one; the ones that
+        # do not (tests, and any embedding without a database) still get a
+        # bounded guard rather than an unbounded one.
+        guardrails.append(
+            DelegationBudgetGuardrail(
+                limit=gconf.delegation_budget_limit,
+                caller_window_seconds=gconf.delegation_budget_caller_window_seconds,
+                store=budget_store,
+                retention_s=gconf.delegation_budget_retention_s,
+            )
+        )
+    # LAST, AND THAT IS DELIBERATE THOUGH NOT LOAD-BEARING. Any BLOCK stops the
+    # dispatch, so order only decides which reason the caller is told. A caller
+    # storming a colleague it IS permitted to ask should hear "budget
+    # exhausted"; one asking a colleague it may not ask hears the edge refusal
+    # either way, because the budget guard passes it through.
+    if gconf.delegation_edges:
+        guardrails.append(DelegationEdgeGuardrail(edges=_delegation_edges(identity)))
     return guardrails
+
+
+def _delegation_edges(identity: IdentityConfig | None) -> dict[str, frozenset[str]]:
+    """Caller persona -> the AGENT names it may dispatch to (cabal#154).
+
+    Resolution happens ONCE, here, for two reasons. Edges are declared against
+    personas while `cabal_target_agent` carries an agent name, and those differ
+    for a role="primus" persona; doing it at check time would mean stripping a
+    suffix on the hot path, which would silently authorize a persona literally
+    named "x-primus" as though it were the primus of "x". And an edge map built
+    at startup from the config is one an agent cannot reach -- the property
+    that makes this authorization rather than advice.
+
+    A name that matches no declared persona passes through verbatim, so an edge
+    to a federated peer is expressible.
+    """
+    if identity is None or not identity.personas:
+        return {}
+    resolved = {
+        name: agent_name_for(name, persona)
+        for name, persona in identity.personas.items()
+    }
+    return {
+        caller: frozenset(resolved.get(t, t) for t in persona.may_delegate_to)
+        for caller, persona in identity.personas.items()
+    }
 
 
 #: The operator-facing text for a key that cannot decrypt the database.
@@ -357,8 +518,50 @@ def create_app(
         event_bus = EventBus()
         _app.state.event_bus = event_bus
 
-        http_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+        # Federated dispatch rides this client; see _dispatch_timeout for why
+        # the read ceiling is tunable and the connect ceiling is not.
+        resolved_dispatch_timeout = _dispatch_timeout()
+        http_client = httpx.AsyncClient(timeout=resolved_dispatch_timeout)
         bookkeeper = Bookkeeper(sessionmaker, event_bus=event_bus)
+        # cabal#174 — the delegation budget must survive a restart, because the
+        # incident it exists for ended in one: liveness-killed, restarted,
+        # resumed from persisted task state against a counter that did not
+        # persist, and the storm was rebuilt against a fresh budget.
+        #
+        # HYDRATED HERE, BEFORE THE ROUTER IS SERVING, and that is the only
+        # read the guard ever does: `check()` must stay await-free (a primus
+        # fan-out shares one instance across concurrent legs), so it cannot
+        # touch an aiosqlite store. Writes are behind.
+        router_guardrails = build_router_input_guardrails(
+            identity,
+            dispatch_timeout_s=resolved_dispatch_timeout.read,
+            budget_store=SqliteDelegationBudgetStore(sessionmaker=sessionmaker),
+        )
+        for _g in router_guardrails:
+            _hydrate = getattr(_g, "hydrate", None)
+            if _hydrate is not None:
+                # hydrate() swallows its own store errors and returns 0, so a
+                # cold or broken table degrades to the in-memory bound rather
+                # than taking startup with it.
+                #
+                # THE #77 CITATION THIS COMMENT USED TO CARRY WAS WRONG, and the
+                # pre-pass caught it. It claimed #77's lesson is "a startup that
+                # exits on a recoverable condition is worse than a weaker bound".
+                # #77 argues close to the opposite emphasis: its two fixes were
+                # to CREATE the missing directory (eliminate the recoverable
+                # condition rather than tolerate it) and to SURFACE swallowed
+                # startup errors, and its "Why it matters" is about visibility --
+                # "it cost three diagnostic rounds to see errors that should have
+                # been on the terminal".
+                #
+                # What #77 does support is the half that is easy to get wrong
+                # here: degrading QUIETLY would be the defect. So hydrate logs at
+                # exception level, and the reason to degrade at all is argued on
+                # its own merits -- a budget guard that refuses to boot leaves
+                # the fleet with NO bound, which is strictly worse than the
+                # in-memory bound it had before cabal#174.
+                log.info("cabal.delegation_budget.hydrated", keys=await _hydrate())
+
         dispatch_router = DispatchRouter(
             sessionmaker=sessionmaker,
             bookkeeper=bookkeeper,
@@ -367,7 +570,9 @@ def create_app(
             hook_registry=hook_registry,
             # cabal#76 — default-on router guardrails so FEDERATED dispatch is
             # doom-loop protected (the Mason DoomLoop never reaches remote hops).
-            input_guardrails=build_router_input_guardrails(identity),
+            # The read ceiling is passed through so the doom-loop TTL can be
+            # kept above it -- see _doom_loop_ttl.
+            input_guardrails=router_guardrails,
         )
         dispatch_router.register_local(EchoAgent())
 

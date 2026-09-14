@@ -40,7 +40,11 @@ from cabal.core.broker.router import DispatchRouter
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import make_engine, make_sessionmaker
 from cabal.core.db_pragmas import install_sqlite_pragmas
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import (
+    DelegationBudgetGuardrail,
+    DelegationDepthGuardrail,
+    DoomLoopGuardrail,
+)
 from cabal.core.models import Base, Persona
 
 # ======================================================================
@@ -101,9 +105,76 @@ def test_build_router_input_guardrails_threshold_from_config() -> None:
 
 
 def test_build_router_input_guardrails_opt_out() -> None:
-    """identity.toml ``[guardrails] doom_loop = false`` → no guardrails wired."""
+    """``doom_loop = false`` removes the doom-loop guard.
+
+    It no longer empties the list: cabal#146 added a second, independent
+    guard, and the two opt out separately on purpose -- turning off the
+    sameness counter must not silently disable the delegation budget.
+    """
     identity = IdentityConfig(guardrails=GuardrailsConfig(doom_loop=False))
+    wired = build_router_input_guardrails(identity)
+    assert not [g for g in wired if isinstance(g, DoomLoopGuardrail)]
+    assert [g for g in wired if isinstance(g, DelegationBudgetGuardrail)]
+
+
+def test_every_router_guard_opts_out_independently() -> None:
+    identity = IdentityConfig(
+        guardrails=GuardrailsConfig(
+            doom_loop=False, delegation_budget=False, delegation_depth=False
+        )
+    )
     assert build_router_input_guardrails(identity) == []
+
+
+def test_delegation_budget_is_wired_with_its_configured_limit() -> None:
+    identity = IdentityConfig(
+        guardrails=GuardrailsConfig(delegation_budget_limit=7)
+    )
+    budgets = [
+        g
+        for g in build_router_input_guardrails(identity)
+        if isinstance(g, DelegationBudgetGuardrail)
+    ]
+    assert len(budgets) == 1
+    assert budgets[0].limit == 7
+
+
+def test_delegation_depth_is_wired_with_its_configured_limit() -> None:
+    """cabal#144 r1 Important — THE MUTANT THAT SURVIVED ALL 873 TESTS.
+
+    Dropping `max_depth=` at the wiring site left the whole suite green, so
+    every operator setting `delegation_depth_limit = 3` silently got 8 — the
+    backstop, not their policy — and nothing noticed. The budget axis has had
+    this test all along; depth had the same knob and no assertion.
+
+    It matters most on THIS branch, which added a config validator so a typo is
+    caught at load. That makes the operator's number well-formed and says
+    nothing about whether it is connected.
+
+    3 DISCRIMINATES: it is neither the config default nor MAX_DELEGATION_DEPTH,
+    which are both 8, so this fails under the mutant rather than passing by
+    coincidence.
+    """
+    identity = IdentityConfig(guardrails=GuardrailsConfig(delegation_depth_limit=3))
+    depths = [
+        g
+        for g in build_router_input_guardrails(identity)
+        if isinstance(g, DelegationDepthGuardrail)
+    ]
+    assert len(depths) == 1
+    assert depths[0].max_depth == 3
+
+
+def test_every_router_guard_is_wired_by_default() -> None:
+    """Default-on for both. A deployment that never edits identity.toml gets
+    the paraphrase bound as well as the sameness bound."""
+    wired = build_router_input_guardrails(IdentityConfig())
+    kinds = {type(g).__name__ for g in wired}
+    assert kinds == {
+        "DoomLoopGuardrail",
+        "DelegationBudgetGuardrail",
+        "DelegationDepthGuardrail",
+    }
 
 
 # ======================================================================

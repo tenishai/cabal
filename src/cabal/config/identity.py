@@ -181,6 +181,65 @@ class PersonaConfig(_Open):
     system_prompt_override: str | None = None
     model_override: str | None = None
     max_tokens_override: int | None = None
+    #: cabal#172 -- the most fan-out legs THIS primus may DECLARE. None means
+    #: the module ceiling (`MAX_LEGS_PER_FANOUT`). Ignored for a non-primus
+    #: persona, which has no fan-out.
+    #:
+    #: A DECLARATION CAP, NOT A RUNTIME THROTTLE, and the difference is the
+    #: whole behaviour of the field (#178 r1). It is checked ONCE, in the
+    #: constructor, against the non-reviewer `subordinates` -- which are
+    #: assigned at construction and never mutated. THE REVIEWER DOES NOT COUNT:
+    #: legs are what a fan-out dispatches concurrently, and the reviewer runs
+    #: after them (`primus.py` builds `legs` by excluding it). A mason
+    #: declaring implementer and reviewer declares ONE leg. It does not select a subset of legs at dispatch and
+    #: there is no path by which it could: `leg_roles` there is derived from
+    #: the same `subordinates` the constructor already bounded.
+    #:
+    #: SO SETTING IT BELOW A PERSONA'S DECLARED LEG COUNT DOES NOT NARROW THAT
+    #: PERSONA -- IT REMOVES IT. The constructor raises, `persona_factory`
+    #: catches and skips the handler with a `personas.primus_config_rejected`
+    #: error, and the deployment boots WITHOUT that agent. Measured on a mason
+    #: declaring three legs: override 3, 4 or 8 all register and all open three
+    #: legs; override 1 or 2 register nothing at all.
+    #:
+    #: That is the shape cabal#172 asked for and the reason it asked ("a config
+    #: path has to feed the constructor check, not the dispatch one, or a
+    #: misconfigured deployment goes back to booting successfully and failing
+    #: every dispatch"). Read it as a POLICY ASSERTION -- this persona must not
+    #: declare more than N legs -- rather than as a dial that trims a wide
+    #: fan-out down to size. Bounding CONCURRENCY without dropping declared
+    #: work is a different feature and is cabal#181.
+    #:
+    #: PER-PERSONA RATHER THAN A SINGLE `[guardrails]` NUMBER, because breadth
+    #: is a property of the persona: a mason with three legs and a wright with
+    #: one do not want the same ceiling. cabal#172 flagged this as setting a
+    #: precedent for per-persona guardrail knobs -- it does not. `may_delegate_to`
+    #: a few lines down is already one, and the `*_override` naming here is
+    #: already the shape for a per-persona bound on a constructor argument.
+    #:
+    #: LOWERS ONLY. A value above `MAX_LEGS_PER_FANOUT` is clamped to it and
+    #: logged, never honoured; the module constant is the hard backstop and a
+    #: policy cannot raise it. Until this field existed the clamp had nothing
+    #: to clamp FROM, which made the "a policy may only lower it" story
+    #: vacuous -- accurate about the code and about a policy that could not
+    #: exist (#156 r2).
+    max_legs_override: int | None = None
+
+    @field_validator("max_legs_override")
+    @classmethod
+    def _max_legs_at_least_one(cls, v: int | None) -> int | None:
+        # Refused rather than clamped up, unlike an over-wide value. Zero or
+        # negative is not a narrow fan-out an operator could have meant -- it
+        # is a primus that can never dispatch, and the constructor's floor
+        # would silently turn it into 1. Same argument as
+        # `delegation_depth_limit`'s validator (#144 pre-pass).
+        if v is not None and v < 1:
+            raise ValueError(
+                f"max_legs_override must be >= 1 (got {v}); a primus with no "
+                "legs cannot dispatch, and the floor would silently read it "
+                "as 1."
+            )
+        return v
     #: Extra keyword arguments passed through to `litellm.acompletion`, for
     #: provider- or model-specific knobs cabal has no first-class field for.
     #: Deliberately untyped and unvalidated: the set is defined by the provider,
@@ -200,6 +259,22 @@ class PersonaConfig(_Open):
     # and no explicit target gets routed to any persona whose capability
     # set is a superset of the requirement. Examples: ["architectural-advice"],
     # ["code-search", "blame"], ["team-memory.read"].
+    #: cabal#154 -- the personas this one may DELEGATE to. Operator-authored,
+    #: never agent-supplied; that is what makes it an authorization control.
+    #:
+    #: READ THE DEFAULT CAREFULLY, because it is the opposite of the one on
+    #: `mcp.allowed_handlers` a few lines up: omitting `allowed_handlers` means
+    #: UNRESTRICTED, while omitting `may_delegate_to` means NO DELEGATION. The
+    #: two are not siblings and the names are deliberately unalike so they do
+    #: not read as a pair. "No relationships declared permits no delegation" is
+    #: the property being borrowed; a permissive default would make this a
+    #: suggestion rather than a control.
+    #:
+    #: Inert unless `[guardrails] delegation_edges = true`.
+    #:
+    #: Names are PERSONAS. A role="primus" persona is reached under the agent
+    #: name "<persona>-primus"; the guard resolves that, so declare the persona.
+    may_delegate_to: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
     # Output format for code-editing personas. "search-replace" appends
     # aider-style SEARCH/REPLACE block instructions to the system prompt
@@ -253,6 +328,153 @@ class GuardrailsConfig(_Open):
 
     doom_loop: bool = True
     doom_loop_threshold: int = 5
+    # Per-key window in which repeats must recur to count toward the threshold;
+    # None disables the time-based reset. MUST stay comfortably above the
+    # federated dispatch timeout — a hanging peer burns the whole read ceiling
+    # per attempt, so if the TTL is at or below that ceiling every check lands
+    # outside the window, the count resets to 1, and the guard never fires.
+    # app.py raises this at wiring time rather than letting it be silently
+    # defeated; see _doom_loop_ttl.
+    doom_loop_ttl_s: float | None = 600.0
+
+    @field_validator("doom_loop_ttl_s")
+    @classmethod
+    def _ttl_positive(cls, v: float | None) -> float | None:
+        if v is not None and v <= 0:
+            raise ValueError(
+                f"guardrails.doom_loop_ttl_s must be > 0 (got {v}); "
+                "omit it for the default, or set it to null to disable the "
+                "time-based reset entirely"
+            )
+        return v
+
+    #: cabal#146 -- total delegations per conversation, payload-independent.
+    #: Complements doom_loop rather than replacing it: that one catches a tight
+    #: repeat quickly, this one catches the paraphrase storm that walks past it.
+    #: A deployment may LOWER this; MAX_DELEGATIONS_PER_CONTEXT is the ceiling
+    #: and a larger value is clamped, not honoured.
+    #: cabal#154 -- delegation is permitted where an edge was declared.
+    #: OPT-IN, and deliberately unlike its two neighbours, which default True.
+    #: The guard's own default is DENY (a persona with no `may_delegate_to`
+    #: may delegate to nobody), which is the load-bearing half of the control;
+    #: every room that exists today has no edges declared, so switching this on
+    #: by default would turn all delegation off at upgrade with no warning.
+    #: The default-deny lives in the guard; the migration lives here.
+    delegation_edges: bool = False
+    #: cabal#144 — bound how deep a delegation chain runs. Default-on like its
+    #: two neighbours; the guard's own ceiling (MAX_DELEGATION_DEPTH) is a hard
+    #: backstop a policy can only lower.
+    #:
+    #: IT BOUNDS A DEPTH AN ARRIVING CHAIN DECLARES, not one cabal accumulates:
+    #: cabal's own fan-out stamps a depth the router never sees, and a federated
+    #: hop forwards without incrementing, so this cannot trip on cabal-only
+    #: traffic (cabal#171). Reading it as a bound on your own delegation is the
+    #: misreading to avoid, and this is the field an operator sets.
+    delegation_depth: bool = True
+    delegation_depth_limit: int = 8
+    delegation_budget: bool = True
+    #: THE MEANING SHIFTED WITH #158, SO THE NUMBER MOVED WITH IT. The budget
+    #: now counts fan-out legs as well as router hops, so on the shipped config
+    #: an operator turn costs 2 (the router hop plus the implementer leg) where
+    #: it cost 1 -- and at the old default of 20 that halved `cbl chat` from
+    #: twenty turns to ten, then blocked permanently, because a conversation
+    #: key does not refill with time. Measured at r3: turn 11 refused, no
+    #: recovery. (#152 adds the one exception: a cold key can be evicted by the
+    #: LRU, which needs 512 other conversations and is not something the
+    #: blocked operator can cause.)
+    #:
+    #: 40 RESTORES THE EFFECTIVE ALLOWANCE rather than raising the bound: it is
+    #: the same twenty operator turns the old default bought, re-expressed in
+    #: the unit the field now counts. It is also MAX_DELEGATIONS_PER_CONTEXT,
+    #: so a deployment wanting more must change the backstop in code, which is
+    #: the intended shape.
+    #:
+    #: A DEPLOYMENT WITH A REVIEWER COSTS 3 PER TURN, not 2, so it gets
+    #: thirteen. Tune this per identity rather than assuming the default suits
+    #: a wider fan-out.
+    delegation_budget_limit: int = 40
+    #: Seconds before a CALLER-keyed delegation budget refills. Only the caller
+    #: fallback is windowed; a conversation budget does not refill with time
+    #: (an LRU eviction can still retire a cold key -- see
+    #: DelegationBudgetGuardrail). Without this a caller -- whose key is stable
+    #: for the daemon's lifetime -- is blocked until restart once it is over
+    #: budget, because retrying keeps its key too warm for the LRU to reclaim.
+    delegation_budget_caller_window_seconds: float = 3600.0
+    #: cabal#174 -- how long a PERSISTED conversation count is honoured. Only
+    #: the conversation class is persisted: the guard's clock is
+    #: `time.monotonic`, which resets on restart, so a restored caller-keyed
+    #: window would be measured against an origin that no longer exists.
+    #:
+    #: This has no in-memory counterpart because `_BUDGET_MAXSIZE` is the
+    #: counter's ceiling there and a table has none. A restored count only ever
+    #: tightens the bound, so erring long is the safe direction.
+    delegation_budget_retention_s: float = 86400.0
+
+    @field_validator("delegation_budget_retention_s")
+    @classmethod
+    def _retention_positive(cls, v: float) -> float:
+        # Same door-count argument as caller_window_seconds: the guard is
+        # constructible directly and validates there too, so neither the config
+        # model nor the constructor is the only entry point. A zero or negative
+        # retention prunes every row on every hydrate, which would silently
+        # restore the pre-#174 behaviour while looking configured.
+        if v <= 0:
+            raise ValueError(
+                f"guardrails.delegation_budget_retention_s must be > 0 (got {v}); "
+                "a non-positive retention prunes every persisted count on "
+                "startup, silently re-arming the budget on restart."
+            )
+        return v
+
+    @field_validator("delegation_depth_limit")
+    @classmethod
+    def _depth_at_least_one(cls, v: int) -> int:
+        # ADDED BY THE #144 PRE-PASS, which found depth was the one bounded
+        # axis with no config validator: delegation_depth_limit = 0 loaded
+        # silently and the guard floored it to 1, where the same typo in
+        # delegation_budget_limit refuses to start. The guard still clamps
+        # rather than raising -- a depth of 1 is a working bound, unlike a
+        # budget of 0 -- but a value the operator cannot have meant should be
+        # named at load on every axis.
+        if v < 1:
+            raise ValueError(
+                f"guardrails.delegation_depth_limit must be >= 1 (got {v}); "
+                "raise it or disable the guard with delegation_depth = false"
+            )
+        return v
+
+    @field_validator("delegation_budget_limit")
+    @classmethod
+    def _budget_at_least_one(cls, v: int) -> int:
+        # Mirrors the doom_loop validator: surface a field-named error at
+        # config load rather than aborting create_app inside router
+        # construction. The guard itself also raises for < 1.
+        if v < 1:
+            raise ValueError(
+                f"guardrails.delegation_budget_limit must be >= 1 (got {v}); "
+                "raise it or disable the guard with delegation_budget = false"
+            )
+        return v
+
+    @field_validator("delegation_budget_caller_window_seconds")
+    @classmethod
+    def _caller_window_is_positive(cls, v: float) -> float:
+        # THE DANGEROUS DIRECTION HERE IS DOWNWARD, which is why this needs a
+        # floor at all (#159). For delegation_budget_limit, weakening the guard
+        # means raising the number, and that is clamped at the ceiling. For the
+        # window, weakening means LOWERING it -- and at 0 the window expires
+        # before every check, so the counter is pinned at 1 and the caller-keyed
+        # budget is silently off. An operator shortening the window to help
+        # blocked callers recover sooner is walking toward disabling the
+        # backstop, and without this gets no error on arrival.
+        if v <= 0:
+            raise ValueError(
+                "guardrails.delegation_budget_caller_window_seconds must be > 0 "
+                f"(got {v}); a window of zero silently disables the caller-keyed "
+                "budget. Disable the guard with delegation_budget = false if that "
+                "is what you mean."
+            )
+        return v
 
     @field_validator("doom_loop_threshold")
     @classmethod

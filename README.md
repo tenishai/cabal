@@ -6,7 +6,7 @@ the Mason primus run as agent modules registered with the bulletin board.
 
 ## Status
 
-**305 tests passing.** All phases through the security + hygiene sweep are complete:
+**The suite passes.** All phases through the security + hygiene sweep are complete:
 trust boundary enforcement, streaming dispatch router, techne correctness, async
 hygiene, SSRF defense, CI on all three repos, MCP spec compliance, and a full
 hygiene pass. The end-to-end demo (`make demo`) runs cleanly with Docker Compose.
@@ -41,8 +41,8 @@ src/cabal/
   cli/            cbl entrypoint
   personas/       LLMPersona, MasonPrimusPersona, EchoPersona
   config/         identity.toml loader
-migrations/       Alembic revisions
-tests/            pytest suite (305 tests)
+  migrations/     Alembic revisions (ship as package data; cabal#79)
+tests/            pytest suite
 scripts/          bootstrap.sh, demo.sh
 compose/          identity.dev.toml, litellm-config.yaml, litestream.yml
 ```
@@ -142,6 +142,38 @@ public_key_env = "LANGFUSE_PUBLIC_KEY"
 secret_key_env = "LANGFUSE_SECRET_KEY"
 ```
 
+### `CABAL_DISPATCH_TIMEOUT_S`
+
+Environment variable (not identity.toml). Bounds the read ceiling of the
+HTTP client used for federated dispatch — default 30s, the historical
+hardcoded value. Raise it if a federated peer fronts a real model call and
+can legitimately take minutes; connect stays pinned at 10s regardless, so an
+unreachable peer still fails fast rather than hanging for the full read
+ceiling. Must parse as a finite number > 0.
+
+Coupled to the doom-loop guardrail: `DoomLoopGuardrail`'s TTL (default 600s,
+`guardrails.doom_loop_ttl_s`) has to stay above the dispatch timeout or a
+hanging federated peer resets the guard's repeat count on every attempt
+before it ever reaches its threshold. Rather than requiring operators to
+hand-tune both, cabal auto-widens the TTL to `2 * CABAL_DISPATCH_TIMEOUT_S`
+whenever the configured TTL would fall below that, logging
+`guardrails.doom_loop_ttl_raised` when it does. In practice: raising this
+above 300s (half the default TTL) triggers the widening automatically.
+
+**`cbl` follows it automatically, on dispatch routes only.** The CLI's own HTTP
+client used to be pinned at 30s, so raising this variable produced a daemon
+that waited minutes and a `cbl` that gave up at 30s — the exact failure the
+knob exists to prevent, on the route the knob is for. `cbl` now resolves the
+same variable and allows `2 * CABAL_DISPATCH_TIMEOUT_S` for the two routes
+that trigger a federated dispatch (`cbl dispatch` / `cbl chat`), since the client
+additionally waits on auth, bookkeeping and the response trip. Most other
+`cbl` calls keep the short 30s ceiling on purpose: a hung daemon should not
+make `cbl agents list` sit for minutes. The session-presence calls
+(`register_session`, `heartbeat_session`, `end_session`) are tighter still at
+5s: they run from a Stop hook on every turn, so a firewall that DROPs rather
+than refuses would stall the turn itself. An unparseable value fails the CLI
+the same way it aborts the daemon, rather than silently falling back to 30.
+
 ## Recovering a lost master key
 
 `CABAL_MASTER_KEY` encrypts the `signing_keys` and `secrets` tables. Start cabal
@@ -176,6 +208,52 @@ takes an explicit `--purge-secrets`.
 
 If the daemon starts but dispatch fails with `No key for kid`, the saved token
 was signed by a key that no longer exists: run `cbl login --code <CODE>` again.
+
+## Seeing the fleet (`cbl status`)
+
+`cbl status` lists the personas this cabal owns. It also lists **live agent
+sessions** — the Claude Code sessions actually doing work — once they register:
+
+```
+NAME                    GEN KIND       ROLE       STATUS     TIER     HEARTBEAT
+-------------------------------------------------------------------------------
+echo                      1 member     builtin    active     strict   —
+poe2                      1 session    session    active     strict   2026-09-10T12:04:00+00:00
+                       ↳ liminal · fix/73-hardening · working the hardening bill
+poe3                      1 session    session    active     strict   2026-09-10T11:31:00+00:00  STALE
+```
+
+A session row is **presence only** — it exists to answer "what is running, and
+what is it doing". Nothing can route work to it, and the reason is not the empty
+capability map on the row: capability routing matches against an in-memory
+registry that only `identity.toml` personas are ever added to, so a session is
+absent from it entirely. The `session://` endpoint and empty agent card are
+belt to that suspenders.
+
+Wire it up with the hook cabal ships:
+
+```jsonc
+// ~/.claude/settings.json, or a project .claude/settings.json
+"hooks": {
+  "SessionStart": [{"hooks": [{"type": "command",
+     "command": "/path/to/cabal/hooks/cabal-session-presence.sh start"}]}],
+  "Stop":         [{"hooks": [{"type": "command",
+     "command": "/path/to/cabal/hooks/cabal-session-presence.sh beat"}]}]
+}
+```
+
+Set `CABAL_SESSION_NAME=poe2` for a readable roster (it falls back to a short
+session id), and `CABAL_SESSION_TASK="..."` for the one-line what-I-am-doing.
+Repo and branch are read from git; a detached worktree reports `detached@<sha>`.
+
+The hook **fails open everywhere** — no `cbl` on PATH, a daemon that is down, or
+a failing call all exit 0. Presence is an operator convenience and must never
+break a turn.
+
+`STALE` marks a session that has not heartbeated in 15 minutes. Clean
+de-registration cannot be relied on — a crashed session never runs its Stop
+hook — so staleness, not `cbl session end`, is what makes a dead session read
+as dead. Reaping those rows is tracked in #70.
 
 ## Modes
 

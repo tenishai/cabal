@@ -10,11 +10,16 @@ from __future__ import annotations
 
 from cabal.agents.primus import (
     _DOOM_LOOP_DEFAULT,
+    MAX_LEGS_PER_FANOUT,
     PrimusPersona,
     _DoomLoopError,
 )
 from cabal.agents.subordinate import Subordinate
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import (
+    DelegationBudgetGuardrail,
+    DelegationDepthGuardrail,
+    DoomLoopGuardrail,
+)
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
@@ -81,6 +86,16 @@ class MasonPrimusPersona(PrimusPersona):
         model: str | None = None,
         max_tokens: int = 8192,
         doom_loop: DoomLoopGuardrail | None = _DOOM_LOOP_DEFAULT,  # type: ignore[assignment]
+        # cabal#156 — forwarded so a caller can lower the breadth ceiling, and
+        # since cabal#172 that caller is usually `persona_factory` passing this
+        # persona's `max_legs_override`. It caps how many legs the persona may
+        # DECLARE, checked once in the constructor; a persona declaring more is
+        # skipped at boot, not trimmed (#178 r1).
+        max_legs: int = MAX_LEGS_PER_FANOUT,
+        # cabal#158 — forwarded so the factory can share the ROUTER's budget
+        # instance; a second instance would double a conversation's allowance.
+        delegation_budget: DelegationBudgetGuardrail | None = None,
+        delegation_depth: DelegationDepthGuardrail | None = None,
     ) -> None:
         super().__init__(
             llm_client,
@@ -93,4 +108,7 @@ class MasonPrimusPersona(PrimusPersona):
             default_model=DEFAULT_MODEL,
             max_tokens=max_tokens,
             doom_loop=doom_loop,
+            max_legs=max_legs,
+            delegation_budget=delegation_budget,
+            delegation_depth=delegation_depth,
         )

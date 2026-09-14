@@ -23,6 +23,10 @@ from cabal.config.identity import IdentityConfig
 from cabal.core.auth.keys import StoredKey
 from cabal.core.broker.router import DispatchRouter
 from cabal.core.checkpoint import CheckpointStore
+from cabal.core.guardrails_builtin import (
+    DelegationBudgetGuardrail,
+    DelegationDepthGuardrail,
+)
 from cabal.core.hooks.registry import HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 from cabal.core.memory.session_tracker import SessionTracker
@@ -109,13 +113,59 @@ def register_personas_from_identity(
                     ),
                 )
                 continue
-            handler: Any = primus_cls(
-                litellm_client,
-                subordinates=sub_instances,
-                hook_registry=hook_registry,
-                model=persona_cfg.model_override,
-                max_tokens=persona_cfg.max_tokens_override or 8192,
-            )
+            # SKIP THE PERSONA, NEVER THE PROCESS (cabal#156 r3 Important 2).
+            # Its two neighbours above log and `continue` precisely so one bad
+            # persona cannot cost the rest of the file, and the breadth ceiling
+            # added in #156 is the first OPERATOR-TRIGGERABLE exception on this
+            # path -- the pre-existing "requires a non-reviewer subordinate"
+            # raise is unreachable from here, because the implementer check
+            # above already continued. Unwrapped, a misdeclared breadth took
+            # down daemon startup and left every later persona unregistered,
+            # and `POST /admin/reload/identity` 500'd with state.identity
+            # already swapped and the handler set half rebuilt.
+            try:
+                handler: Any = primus_cls(
+                    litellm_client,
+                    subordinates=sub_instances,
+                    hook_registry=hook_registry,
+                    model=persona_cfg.model_override,
+                    max_tokens=persona_cfg.max_tokens_override or 8192,
+                    # cabal#158 — the ROUTER'S budget instance, not a new one,
+                    # so a conversation's delegations count once whether they go
+                    # through the router or through a fan-out leg. None when the
+                    # operator disabled the budget; the primus then behaves as
+                    # before.
+                    delegation_budget=dispatch_router.input_guardrail_of(
+                        DelegationBudgetGuardrail
+                    ),
+                    # cabal#171 — same mechanism, same reason. Without this the
+                    # depth the fan-out stamps is never read by anything, so an
+                    # A->B->A ping-pong carries a constant value for as many
+                    # hops as it likes and the limit is unreachable. None when
+                    # the operator disabled depth; the primus behaves as before.
+                    delegation_depth=dispatch_router.input_guardrail_of(
+                        DelegationDepthGuardrail
+                    ),
+                    # cabal#172 — the operator's per-persona breadth ceiling.
+                    # Omitted means the module default, which is also the hard
+                    # backstop; an over-wide value is clamped to it and logged
+                    # rather than honoured. This feeds the CONSTRUCTOR check
+                    # deliberately: the dispatch check is a backstop, and a
+                    # config path that only reached it would let a misconfigured
+                    # deployment boot clean and fail every dispatch (#172).
+                    **(
+                        {"max_legs": persona_cfg.max_legs_override}
+                        if persona_cfg.max_legs_override is not None
+                        else {}
+                    ),
+                )
+            except ValueError as exc:
+                log.error(
+                    "personas.primus_config_rejected",
+                    persona=persona_name,
+                    msg=f"{persona_name!r} skipping handler: {exc}",
+                )
+                continue
             handler.memory_store = memory_store
             handler.session_tracker = session_tracker
         else:
