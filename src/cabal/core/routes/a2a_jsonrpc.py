@@ -20,6 +20,7 @@ from fastapi import APIRouter, Header, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
+from cabal.core import dispatch_pairs
 from cabal.core.a2a.jsonrpc import (
     ERROR_AGENT_NOT_FOUND,
     ERROR_FORBIDDEN,
@@ -93,7 +94,21 @@ async def _resolve_dispatch_token(
 
     sessionmaker = request.app.state.sessionmaker
     master_key = request.app.state.master_key
+    sub = claims.get("sub") or ""
     async with open_session(sessionmaker) as session:
+        # THE PAIRS POLICY HAS TO LIVE HERE TOO, and its absence was a full
+        # bypass: the same colleague token refused by POST /a2a/tasks was
+        # dispatching through POST /agents/{name} because this twin re-minted
+        # without ever consulting the table. Scope alone is not the gate —
+        # scope says who may ask for a re-mint, the pairs table says who may
+        # call whom, and a policy enforced on one of two doors is not enforced.
+        if "operator" not in scope:
+            if not await dispatch_pairs.is_allowed(session, caller=sub, target=target):
+                return None, make_error_response(
+                    id=None,
+                    code=ERROR_FORBIDDEN,
+                    message=f"{sub} is not a colleague of {target} yet. Ask in the room.",
+                )
         stored = await load_active_signing_key(session, master_key=master_key)
     if stored is None:
         return None, make_error_response(
