@@ -45,6 +45,29 @@ url = "http://liminal:9100"
 token_ttl_seconds = 3600
 jwt_aud = "liminal"
 
+# ----- Router-level guardrails -----
+# These run in DispatchRouter.dispatch BEFORE the local-vs-remote branch, so
+# they are the one enforcement point that also covers federated peers. The
+# in-process Mason doom-loop guard fires at the subordinate boundary only and
+# never reaches a remote hop.
+#
+# NOTE none of them sees a primus fan-out: _dispatch_subordinate calls
+# handle_task directly and bypasses the router (cabal#158).
+
+[guardrails]
+# doom_loop = true             # sameness counter; threshold below
+# doom_loop_threshold = 5
+# delegation_budget = true     # payload-independent per-conversation cap
+# delegation_budget_limit = 20
+# delegation_budget_caller_window_seconds = 3600.0
+
+# cabal#154 -- refuse a delegation with no declared edge. OFF by default, and
+# that is a migration decision rather than a judgement about the control: the
+# guard's OWN default is deny, so enabling this in a room with no
+# `may_delegate_to` lines turns ALL delegation off at once. Declare the edges
+# first (see [personas.archivist] below), then switch this on.
+# delegation_edges = false
+
 # ----- Singletons (built-in personas) -----
 # Each persona declared here gets a bulletin-board row at daemon startup.
 # Personas named in PERSONA_REGISTRY (archivist, architect, librarian,
@@ -56,6 +79,30 @@ jwt_aud = "liminal"
 description = "Memory and search"
 role = "singleton"
 safety_tier = "moderate"
+
+# ----- Delegation edges (cabal#154) -----
+# Which PERSONAS this one may delegate to. The colleague list is a phone book
+# -- anything visible is askable; this makes it an adjacency list.
+#
+# READ THE DEFAULT CAREFULLY. It is the OPPOSITE of `allowed_handlers` below:
+#   allowed_handlers omitted  ->  UNRESTRICTED (every handler is reachable)
+#   may_delegate_to  omitted  ->  NO DELEGATION (nobody is reachable)
+# That is deliberate and it is the point. "A room with no declared
+# relationships permits no delegation" is what makes this an authorization
+# control rather than a suggestion; a permissive default would give any agent
+# that can name a colleague the right to storm it.
+#
+# INERT UNLESS [guardrails] delegation_edges = true, which is currently false
+# by default -- every existing room has no edges declared, so switching it on
+# would turn all delegation off at once. Declare edges first, then enable.
+#
+# Edges are OPERATOR-AUTHORED and never agent-supplied: they are read from this
+# file at startup and nothing on the dispatch path can add one.
+#
+# Names are personas. A role = "primus" persona is reached under the agent name
+# "<persona>-primus"; cabal resolves that, so write the persona name.
+#
+# may_delegate_to = ["librarian", "architect"]
 
 # Archivist opts into liminal's tool surface (memory lookups, web fetch,
 # files, etc. — whatever liminal's registry serves). With [liminal]
@@ -92,7 +139,50 @@ safety_tier = "moderate"
 # system_prompt_override = "You are my Architect. Recommend battle-tested patterns and call out the cost of every recommendation."
 # model_override = "anthropic/claude-opus-4-7"
 # max_tokens_override = 16384
+#
+# commit_to_memory — WRITE the persona's own Q&A back into its memory store.
+# OFF for every persona, including the Archivist (cabal#139). It was on for the
+# Archivist, which is the persona least able to afford it: every other persona
+# writing to memory pollutes a store someone ELSE reads, while the Archivist
+# pollutes the store IT searches, so its own answer is recallable on the next
+# dispatch. Reported in cabal#141: a recall returned two hits, both the
+# agent's prior answers, both carrying the same fabricated citation, from a
+# store of 1,118 curated rows.
+#
+# Turning it on is a legitimate choice for a persona whose exchanges you want
+# accumulated. Know what you are getting: rows land as type="fact" at medium
+# confidence -- the same standing as anything you curated by hand, and nothing
+# STRUCTURAL at recall time tells the two apart. (The `[archivist]` content
+# prefix and the `archivist` tag DO reach the prompt, on purpose, so search
+# results stay attributable -- but they are advisory text the model may ignore.
+# MemoryHit carries no source field, so nothing filters, ranks or gates on any
+# of it.) cabal#141 is the fix for that half.
+#
+# NOTE THE SECTION. This explanation sits under [personas.architect] because
+# that is where the generic override block lives -- so the line below would
+# enable accumulation on the ARCHITECT. To turn the ARCHIVIST's back on, put
+# `commit_to_memory = true` under [personas.archivist] above.
 # commit_to_memory = true
+# extra_kwargs — provider/model knobs Cabal has no field of its own for, passed
+# straight through to the LLM call. Example: switching OFF a local reasoning
+# model's thinking, without which it can spend its whole token budget
+# deliberating and return empty content.
+# extra_kwargs = { chat_template_kwargs = { enable_thinking = false } }
+# A fully worked non-Ollama example lives in identity.mtplx.toml, including the
+# CABAL_DB_URL requirement that applies to ANY second identity: cabal.data_dir
+# does not set the sqlite path, so a second identity run without it writes into
+# the first one's database.
+#
+# Keys Cabal binds itself are REFUSED at startup, naming the key: model,
+# messages, agent, trace_id, span_id, task_id, max_tokens, api_base, api_key,
+# tools, stream. Use max_tokens_override and the [litellm] block for those.
+#
+# A PRIMUS passes its extra_kwargs down to its subordinates, so one line covers
+# plan, implementer and aggregate. A subordinate that sets its own replaces the
+# inherited value; to send NOTHING on that hop, set it to empty explicitly:
+#     [personas.wright.subordinates.implementer]
+#     model = "openai/some-local-model"
+#     extra_kwargs = {}          # omit the line entirely to inherit instead
 # edit_format: "none" (default) or "search-replace". When set to
 # "search-replace", Cabal Core auto-appends aider-style SEARCH/REPLACE
 # block instructions to this persona's system prompt, AND `cbl chat`
@@ -126,6 +216,27 @@ safety_tier = "moderate"
 description = "Engineering / SRE primus"
 role = "primus"
 safety_tier = "strict"
+# max_legs_override = 1
+#
+# A DECLARATION CAP, NOT A THROTTLE (cabal#172). It caps how many fan-out legs
+# this primus may DECLARE -- checked once, when the handler is built. It does
+# not trim a wide fan-out down to size.
+#
+# THE REVIEWER IS NOT A LEG, AND THAT IS THE TRAP HERE. Legs are the
+# subordinates dispatched CONCURRENTLY on the plan; the reviewer runs after
+# them, so it is excluded from the count. Mason declares implementer AND
+# reviewer below and that is ONE leg, not two -- so `max_legs_override = 1`
+# admits mason exactly as shipped. Count your non-reviewer subordinates, not
+# your subordinates.
+#
+# SETTING IT BELOW THAT COUNT REMOVES THE PERSONA RATHER THAN NARROWING IT.
+# Add a second non-reviewer subordinate here and `max_legs_override = 1` stops
+# mason booting altogether: the handler is skipped with a
+# `personas.primus_config_rejected` error and the rest of the roster still
+# starts. Read it as "this persona must not declare more than N legs".
+#
+# Lowers only. A value above the module ceiling (8) is clamped to it and
+# logged. A value below 1 is refused outright when the config loads.
 
 [personas.mason.subordinates.implementer]
 model = "anthropic/claude-sonnet-4-6"
@@ -147,6 +258,9 @@ max_tokens = 8192
 description = "Senior software engineer — general-engineering primus"
 role = "primus"
 safety_tier = "strict"
+# max_legs_override = 1   # see the note under [personas.mason]. Wright ships
+#                         # one subordinate and no reviewer -- one leg either
+#                         # way -- so 1 admits it and 0 is refused at load.
 
 [personas.wright.subordinates.implementer]
 model = "anthropic/claude-sonnet-5"

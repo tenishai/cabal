@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from cabal.core.auth.bootstrap_codes import BootstrapCodeError, consume
-from cabal.core.auth.jwt import mint
+from cabal.core.auth.jwt import OPERATOR_SUB_PREFIX, mint
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.db import open_session
 
@@ -72,7 +72,7 @@ async def bootstrap(req: BootstrapRequest, request: Request) -> BootstrapRespons
                         "set cabal.operator_id in identity.toml or CABAL_OPERATOR_ID env var"
                     ),
                 )
-            sub = f"operator:{operator_id}"
+            sub = f"{OPERATOR_SUB_PREFIX}{operator_id}"
             aud = "cabal-core"
             scope = ["operator"]
         else:

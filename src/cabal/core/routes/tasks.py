@@ -30,7 +30,12 @@ from cabal.core import dispatch_pairs
 from cabal.core.a2a.types import Task
 from cabal.core.auth.jwt import JWTError, extract_bearer, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
-from cabal.core.broker.router import AgentNotFoundError, CallerJWTError, DispatchError
+from cabal.core.broker.router import (
+    AgentNotFoundError,
+    CallerJWTError,
+    DispatchError,
+    GuardrailBlocked,
+)
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 
@@ -180,5 +185,11 @@ async def submit_task(
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except AgentNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    # BEFORE DispatchError, WHICH IS ITS BASE (cabal#152). 502 says the upstream
+    # failed and the request was fine; a terminal guardrail verdict says the
+    # opposite, and 502 is what a client retries. See the matching arm in
+    # a2a_jsonrpc._message_send.
+    except GuardrailBlocked as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except DispatchError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

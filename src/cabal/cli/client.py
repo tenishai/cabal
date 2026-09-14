@@ -10,6 +10,8 @@ from typing import Any
 
 import httpx
 
+from cabal.core.dispatch_timeout import cli_dispatch_timeout
+
 DEFAULT_BASE_URL = "http://127.0.0.1:7400"
 DEFAULT_TOKEN_PATH = Path.home() / ".cabal" / "token"
 
@@ -40,8 +42,34 @@ def base_url() -> str:
     return os.environ.get("CABAL_URL", DEFAULT_BASE_URL)
 
 
-def make_client() -> httpx.Client:
-    return httpx.Client(base_url=base_url(), timeout=httpx.Timeout(30.0))
+def make_client(*, timeout: httpx.Timeout | None = None) -> httpx.Client:
+    """HTTP client for the daemon.
+
+    The default 30s ceiling is deliberately SHORT and stays that way for most
+    admin calls: a hung daemon should not make `cbl agents list` sit for
+    minutes. The session-presence trio is tighter still -- see
+    SESSION_TIMEOUT_S below.
+    Routes that trigger a FEDERATED DISPATCH pass `cli_dispatch_timeout()`
+    instead — the daemon's own ceiling is tunable via CABAL_DISPATCH_TIMEOUT_S,
+    and a client pinned to 30s would abort an exchange the daemon completes.
+
+    KEYWORD-ONLY, and that is a merge decision rather than a style one. This PR
+    changed the parameter from `timeout_s: float` to an `httpx.Timeout`; main
+    meanwhile added SESSION_TIMEOUT_S below and three POSITIONAL callers using
+    it. Keyword-only means those callers cannot silently pass a float where a
+    Timeout is expected — they are converted explicitly instead.
+    """
+    return httpx.Client(
+        base_url=base_url(), timeout=timeout or httpx.Timeout(30.0)
+    )
+
+
+#: Presence calls run from a Stop hook on every turn, so their cost is paid by
+#: the operator's latency, not by a batch job. 30s is right for a dispatch and
+#: wrong here: a firewall that DROPs rather than refuses would stall the turn.
+#: `beat` can make two of these back to back (heartbeat, then register on
+#: 404), so this bounds that pair at 10s rather than 60s (PR #148 review nit).
+SESSION_TIMEOUT_S = 5.0
 
 
 def bootstrap(code: str) -> dict[str, Any]:
@@ -54,6 +82,42 @@ def bootstrap(code: str) -> dict[str, Any]:
 def list_agents(*, token: str) -> dict[str, Any]:
     with make_client() as c:
         resp = c.get("/admin/agents", headers={"Authorization": f"Bearer {token}"})
+    resp.raise_for_status()
+    return resp.json()
+
+
+def register_session(
+    *, token: str, name: str, work: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    with make_client(timeout=httpx.Timeout(SESSION_TIMEOUT_S)) as c:
+        resp = c.post(
+            "/admin/sessions/register",
+            json={"name": name, "work": work},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def heartbeat_session(
+    *, token: str, name: str, work: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    with make_client(timeout=httpx.Timeout(SESSION_TIMEOUT_S)) as c:
+        resp = c.post(
+            f"/admin/sessions/{name}/heartbeat",
+            json={"work": work},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def end_session(*, token: str, name: str) -> dict[str, Any]:
+    with make_client(timeout=httpx.Timeout(SESSION_TIMEOUT_S)) as c:
+        resp = c.post(
+            f"/admin/sessions/{name}/end",
+            headers={"Authorization": f"Bearer {token}"},
+        )
     resp.raise_for_status()
     return resp.json()
 
@@ -291,7 +355,7 @@ def stream_dispatch(
         "method": "message/stream",
         "params": params,
     }
-    with make_client() as c:
+    with make_client(timeout=cli_dispatch_timeout()) as c:
         with c.stream(
             "POST",
             f"/agents/{target}/stream",
@@ -349,7 +413,7 @@ def dispatch(
         task["metadata"] = metadata
 
     payload = {"target": target, "task": task}
-    with make_client() as c:
+    with make_client(timeout=cli_dispatch_timeout()) as c:
         resp = c.post(
             "/a2a/tasks",
             json=payload,

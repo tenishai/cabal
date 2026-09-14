@@ -15,7 +15,7 @@ from typing import Any
 from cabal.cli.client import TokenStore
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.app import create_app
-from cabal.core.auth.jwt import JWTError, mint, verify
+from cabal.core.auth.jwt import OPERATOR_SUB_PREFIX, JWTError, mint, verify
 from cabal.core.auth.keys import StoredKey, load_active_signing_key
 from cabal.core.broker.router import DispatchError
 from cabal.core.db import open_session
@@ -195,7 +195,7 @@ class InProcessBrokerClient:
             raise BrokerError("_mint_operator_token called before __aenter__")
         return mint(
             signing_key=self._signing_key,
-            sub="operator:test",
+            sub=f"{OPERATOR_SUB_PREFIX}test",
             aud="cabal-core",
             scope=["operator"],
         )

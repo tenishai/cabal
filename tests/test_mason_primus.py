@@ -7,10 +7,17 @@ from typing import Any
 import pytest
 
 from cabal.agents.personas.mason import MASON_SYSTEM_PROMPT, MasonPrimusPersona
+from cabal.agents.primus import MAX_LEGS_PER_FANOUT
 from cabal.agents.subordinate import Subordinate
 from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, reason_code
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
-from cabal.core.guardrails_builtin import DoomLoopGuardrail
+from cabal.core.guardrails_builtin import (
+    DEPTH_KEY,
+    DelegationBudgetGuardrail,
+    DelegationDepthGuardrail,
+    DoomLoopGuardrail,
+    next_delegation_depth,
+)
 from cabal.core.hooks.registry import HookName, HookRegistry
 from cabal.core.llm.litellm_client import LiteLLMClient
 
@@ -576,3 +583,575 @@ def test_mason_system_prompt_frames_sre_and_reliability() -> None:
     assert "sre" in low or "reliability" in low
     assert "infrastructure" in low or "platform" in low
     assert "delegate" in low
+
+
+@pytest.mark.asyncio
+async def test_the_fan_out_is_bounded_by_the_delegation_budget() -> None:
+    """cabal#158 — the primus path never reaches the router's guardrail chain.
+
+    `_dispatch_subordinate` calls `handle_task` directly, so a delegation
+    budget wired only into `build_router_input_guardrails` bounds
+    router-mediated delegation and nothing else. That left fan-out legs
+    bounded by the sameness counter alone -- the counter #146 exists precisely
+    because rewording defeats it.
+
+    DISTINCT plan text per dispatch, so the doom-loop guard cannot be what
+    stops this: if it passed with the budget removed, the test would be
+    measuring the wrong guard.
+    """
+    budget = DelegationBudgetGuardrail(limit=2)
+    primus_client, _ = _client(["plan one", "sum", "plan two", "sum", "plan three", "sum"])
+    sub_client, _ = _client(["impl"] * 3)
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_budget=budget,
+    )
+
+    seen = []
+    for n in range(3):
+        task = Task(
+            **{
+                "id": f"t-budget-{n}",
+                "contextId": "one-conversation",
+                "status": TaskStatus(
+                    state="submitted",
+                    message=Message(role="user", parts=[TextPart(text=f"do {n}")]),
+                ),
+            }
+        )
+        result = await mason.handle_task(task)
+        seen.append(" ".join(
+            p.text for p in result.status.message.parts if isinstance(p, TextPart)
+        ) if result.status.message else "")
+
+    assert any("budget" in t.lower() for t in seen), (
+        f"three fan-outs under a budget of 2 were not bounded: {seen}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_primus_shares_the_budget_instance_it_is_given() -> None:
+    """THE PROPERTY THAT MAKES THIS WORTH DOING, and the one a second instance
+    would quietly break.
+
+    The budget is per-conversation, keyed on context_id. Two instances would
+    give one conversation two separate allowances -- an agent mixing router
+    hops with fan-out legs would get double the budget while LOOKING bounded,
+    which is worse than the gap it replaces.
+    """
+    budget = DelegationBudgetGuardrail(limit=50)
+    primus_client, _ = _client(["a plan", "a summary"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_budget=budget,
+    )
+    task = Task(
+        **{
+            "id": "t-share",
+            "contextId": "shared-conversation",
+            "status": TaskStatus(
+                state="submitted",
+                message=Message(role="user", parts=[TextPart(text="go")]),
+            ),
+        }
+    )
+    await mason.handle_task(task)
+    assert budget._counts, (
+        "the fan-out leg never touched the caller's counter, so the primus is "
+        "not using the instance it was handed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_second_guard_at_the_boundary_still_reaches_its_own_limit() -> None:
+    """cabal#158 pre-pass r2 — WHY THE GUARD ORDER IS IMMATERIAL, structurally.
+
+    The comment at this boundary used to justify its order by saying the doom
+    threshold trips long before the budget limit. That is a fact about the
+    shipped defaults AT THE TIME, not about anything the code enforces: the two
+    limits have independent validators and no cross-field check.
+
+    So this runs the configuration the old justification forbids —
+    threshold=30, budget=2, with doom checked FIRST — and pins the property that
+    actually holds: neither guard starves the other before the outcome is
+    decided, so the second-listed one still reaches its own trip point. The
+    refusal must name the budget, which has not yet blocked anything, rather
+    than the doom guard, which never trips at all here.
+
+    IDENTICAL plan text every dispatch, deliberately: rephrased legs miss the
+    sameness counter by construction, so distinct text would make the doom guard
+    unable to compete and the test would prove nothing about order.
+    """
+    doom = DoomLoopGuardrail(threshold=30)
+    budget = DelegationBudgetGuardrail(limit=2)
+    primus_client, _ = _client(["same plan", "sum"] * 3)
+    sub_client, _ = _client(["impl"] * 3)
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=doom,
+        delegation_budget=budget,
+    )
+
+    seen = []
+    for n in range(3):
+        task = Task(
+            **{
+                "id": f"t-order-{n}",
+                "contextId": "one-conversation",
+                "status": TaskStatus(
+                    state="submitted",
+                    message=Message(role="user", parts=[TextPart(text="do the thing")]),
+                ),
+            }
+        )
+        result = await mason.handle_task(task)
+        seen.append(
+            " ".join(
+                p.text for p in result.status.message.parts if isinstance(p, TextPart)
+            )
+            if result.status.message
+            else ""
+        )
+
+    refusals = [t for t in seen if "budget" in t.lower()]
+    assert refusals, (
+        f"the budget was listed second and never reached its limit of 2: {seen}"
+    )
+    # THE DOOM GUARD WAS CONSULTED AND SIMPLY DID NOT TRIP, which is the half
+    # of "neither starves the other" that the line above cannot show. Reading
+    # its counter rather than its message: an earlier version of this assertion
+    # looked for "loop" in the refusal text, and DoomLoopGuardrail's message
+    # says "identical delegations ... pausing; change approach" -- no such
+    # substring, so it could not have failed whatever the guard did.
+    #
+    # NON-EMPTY, NOT A COUNT (#158 r2 Important 1). The replacement for that
+    # inert assertion read `max(counted) == 3`, which is only ever true of the
+    # FIRST-listed guard -- so it pinned the guard order inside the test whose
+    # thesis is that the order is immaterial, and swapping the tuple turned the
+    # suite red with a message that read as a defect report for a non-defect.
+    # "Consulted at all" is the order-independent form of the same property,
+    # and it keeps its teeth: under a loop that checks only the first guard,
+    # either this is empty or `refusals` above is.
+    counted = [c for per_key in doom._state.values() for c, _ in per_key.values()]
+    assert counted, (
+        "the doom guard was never consulted, so the budget's refusal says "
+        "nothing about whether the two share the boundary"
+    )
+    assert not any("identical delegations" in t for t in seen), (
+        f"a doom threshold of 30 refused inside three dispatches: {seen}"
+    )
+
+
+async def test_the_fan_out_stamps_and_accumulates_depth() -> None:
+    """cabal#144 — depth is a property of the CHAIN, not of one primus's view.
+
+    Inherited-plus-one rather than recomputed, so a depth that ARRIVES from
+    outside keeps counting instead of resetting to 1.
+
+    THE ARITHMETIC IS WHAT THIS PINS, and only that. An earlier docstring here
+    went on to say the alternative was "a cycle through a remote peer resets to
+    1 on every return and the bound never fires" — describing a round trip this
+    tree cannot perform (#144 r2). The value stamped below never leaves the
+    process: its task goes straight to `subord.handle_task`, the router never
+    sees it, and a federated hop forwards metadata without incrementing. So
+    inheritance only ever matters for a depth an EXTERNAL client produced, which
+    is what daedalus#40 exists to send.
+
+    Recomputing would still be wrong, and that is worth a test — it is the
+    difference between believing an arriving chain and overwriting it.
+    """
+    from cabal.core.guardrails_builtin import DEPTH_KEY
+
+    seen: list[int] = []
+
+    class _Recording:
+        async def check(self, target, ctx):
+            from cabal.core.guardrails import Verdict
+
+            seen.append(target.metadata.get(DEPTH_KEY))
+            return Verdict.pass_()
+
+    mason = MasonPrimusPersona(
+        _client(["a plan", "sum"])[0],
+        subordinates={"implementer": _subordinate(_client(["impl"])[0])},
+        doom_loop=_Recording(),
+    )
+    # A task already three hops deep: its legs must be stamped four, not one.
+    task = _task_with_ctx("go")
+    task.metadata[DEPTH_KEY] = 3
+    await mason.handle_task(task)
+    assert seen == [4], f"expected the leg stamped at parent+1, got {seen}"
+
+
+def test_a_fan_out_wider_than_the_ceiling_is_refused_at_construction() -> None:
+    """cabal#156 — breadth is its own axis, and it is a CONFIG error.
+
+    #144 bounds how DEEP a chain runs; #146 bounds how MANY delegations a
+    conversation makes in total. Neither bounds how many children one agent
+    opens AT ONCE — forty concurrent legs sit inside a depth bound of 8 and
+    inside a total budget of 40, by spending the whole budget in one burst.
+    Concurrency costs connections and tokens simultaneously rather than over
+    time, which is the liveness starvation that killed the container.
+
+    REFUSED AT CONSTRUCTION, and r1 is why. `leg_roles` is derived from
+    `subordinates`, which is assigned once and never mutated, so the comparison
+    is invariant for the life of the instance — it cannot depend on the task.
+    Checking it only at dispatch meant a deployment declaring nine legs
+    constructed fine and then failed EVERY dispatch forever, each one after
+    paying for a full plan call. It now fails at boot, for free.
+    """
+    subs = {f"impl{n}": _subordinate(_client(["out"])[0]) for n in range(5)}
+    with pytest.raises(ValueError, match="above the ceiling of 2"):
+        MasonPrimusPersona(
+            _client(["a plan"])[0], subordinates=subs, doom_loop=None, max_legs=2
+        )
+
+
+
+
+@pytest.mark.asyncio
+async def test_the_dispatch_check_remains_as_a_backstop() -> None:
+    """The runtime check is unreachable through __init__ by design, so this
+    reaches it the only way anything could: by mutating `subordinates` after
+    construction — which is exactly the future change the backstop guards.
+
+    Kept rather than deleted because "never mutated" is a property of today's
+    code, not a guarantee, and the constructor check is the one that would go
+    stale if it ever stopped being true.
+    """
+    leg_calls = []
+    subs = {}
+    for n in range(2):
+        client, calls = _client(["out"])
+        leg_calls.append(calls)
+        subs[f"impl{n}"] = _subordinate(client)
+    mason = MasonPrimusPersona(
+        _client(["a plan"])[0], subordinates=subs, doom_loop=None, max_legs=2
+    )
+    for n in range(2, 5):
+        client, calls = _client(["out"])
+        leg_calls.append(calls)
+        mason.subordinates[f"impl{n}"] = _subordinate(client)
+
+    result = await mason.handle_task(_task_with_ctx("build"))
+    text = " ".join(
+        p.text for p in result.status.message.parts if isinstance(p, TextPart)
+    ) if result.status.message else ""
+
+    assert "configured with 5" in text
+    assert "ceiling of 2" in text
+    assert "no plan can avoid it" in text
+    # REFUSED BEFORE THE GATHER, not after (#156 r1 Important 2). The refusal
+    # text is byte-identical whether or not legs were dispatched first, so
+    # moving the check below _dispatch_legs left the whole suite green. The
+    # legs are what the assertion has to look at.
+    assert all(calls == [] for calls in leg_calls), (
+        f"legs were dispatched before the breadth check refused: "
+        f"{[len(c) for c in leg_calls]}"
+    )
+
+
+
+
+@pytest.mark.asyncio
+async def test_a_policy_cannot_raise_the_breadth_ceiling() -> None:
+    """CLAMPED, NOT HONOURED, mirroring #146's limit at the CEILING. A
+    policy-only bound fails open exactly when the policy is missing, and a
+    deployment must not be able to raise its own ceiling."""
+    subs = {"impl": _subordinate(_client(["out"])[0])}
+    mason = MasonPrimusPersona(
+        _client(["plan"])[0], subordinates=subs, doom_loop=None, max_legs=10_000
+    )
+    assert mason._max_legs == MAX_LEGS_PER_FANOUT
+
+
+
+
+@pytest.mark.parametrize("bad", [0, -5])
+def test_a_sub_one_breadth_is_clamped_up_rather_than_refused(bad: int) -> None:
+    """WHERE THIS STOPS MIRRORING #146's LIMIT, pinned because nothing did.
+
+    The #156 pre-pass found the PR claiming the two clamps mirror each other
+    *exactly*. At the ceiling they do -- both silently clamp down. At the floor
+    they diverge: `DelegationBudgetGuardrail(limit=0)` raises a documented
+    `ValueError`, while `max_legs=0` is quietly substituted with 1.
+
+    The divergence is left standing rather than fixed, and this test is the
+    reason it can be: substituting 1 is FAIL-CLOSED. A budget of 0 would be a
+    bound nothing can satisfy, so refusing to boot is the honest answer there;
+    a fan-out of 1 is a legal, working, maximally-narrow fan-out. Making it
+    raise would turn a config typo into a daemon that will not start, for no
+    safety gained.
+
+    What was actually wrong was the word "exactly", and that is now the PR's
+    problem rather than the code's. If this behaviour is ever changed to raise,
+    this test is where the argument above has to be answered.
+    """
+    subs = {"impl": _subordinate(_client(["out"])[0])}
+    mason = MasonPrimusPersona(
+        _client(["plan"])[0], subordinates=subs, doom_loop=None, max_legs=bad
+    )
+    assert mason._max_legs == 1
+
+    with pytest.raises(ValueError, match="limit must be >= 1"):
+        DelegationBudgetGuardrail(limit=bad)
+
+
+
+
+@pytest.mark.asyncio
+async def test_the_plan_hop_is_told_the_budget() -> None:
+    """cabal#156 r1 Important 1 — THE AGENT THAT SPENDS IT IS THE PRIMUS.
+
+    The note was folded into `LLMPersona.build_messages` alone, on the belief
+    that that is where every persona's system content is composed. A primus
+    overrides `handle_task` and never calls it: instrumented across a real
+    Mason dispatch, the note landed on the LEG and on neither the plan nor the
+    aggregate call. A `Subordinate` is a leaf that cannot delegate, so the
+    number reached the one agent that cannot spend it and was withheld from
+    the one deciding how wide to fan out.
+
+    A TEST ON A BARE `LLMPersona` CANNOT SEE THIS, which is why the first one
+    did not: that is the single shape where `build_messages` is on the path.
+    The guard's precondition selected the case that passes.
+
+    Drives the real guard and a real primus, and asserts on the PLAN call
+    specifically rather than on "some call saw it".
+    """
+    from cabal.core.guardrails_builtin import DelegationBudgetGuardrail
+
+    primus_client, primus_calls = _client(["a plan", "a summary"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+    )
+    from cabal.core.guardrails import GuardrailContext
+
+    task = _task_with_ctx("build")
+    await DelegationBudgetGuardrail(limit=20).check(
+        task, GuardrailContext(persona_name="caller", task_id=task.id, phase="router")
+    )
+
+    await mason.handle_task(task)
+
+    plan_system = primus_calls[0]["messages"][0]["content"]
+    assert "1 of 20 used" in plan_system, (
+        "the hop that decides how wide to fan out was not told its budget"
+    )
+    aggregate_system = primus_calls[-1]["messages"][0]["content"]
+    assert "of 20 used" not in aggregate_system, (
+        "the aggregate hop spends nothing; telling it the budget is noise"
+    )
+
+
+
+
+@pytest.mark.asyncio
+async def test_the_legs_are_not_told_a_budget_they_cannot_spend() -> None:
+    """cabal#156 r2 Nit — THE NOTE IS FOR SPENDERS.
+
+    `_aggregate` was excluded from the note on the stated rule that it joins
+    outputs and spends nothing, so telling it the budget is noise in a prompt
+    that is already long. A leg is a leaf by the same measure — a `Subordinate`
+    has no `tool_proxy` and cannot delegate — but it inherited the stamp
+    through `**parent_task.metadata` and folded it in via `build_messages`.
+
+    That is the same noise the one aggregate call was spared, multiplied by the
+    fan-out width, and the note's own text ("plan the ones you have left") asks
+    a leaf to do something it cannot. Not wrong, but not the rule the diff
+    states — and a rule applied to one of two identical cases is the kind of
+    thing that reads as an oversight later.
+
+    Asserts the plan hop KEEPS it in the same run, so a fix that strips the key
+    everywhere cannot pass.
+    """
+    from cabal.core.guardrails import GuardrailContext
+    from cabal.core.guardrails_builtin import DelegationBudgetGuardrail
+
+    primus_client, primus_calls = _client(["a plan", "a summary"])
+    sub_client, sub_calls = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+    )
+    task = _task_with_ctx("build")
+    await DelegationBudgetGuardrail(limit=20).check(
+        task, GuardrailContext(persona_name="caller", task_id=task.id, phase="router")
+    )
+
+    await mason.handle_task(task)
+
+    leg_system = sub_calls[0]["messages"][0]["content"]
+    assert "of 20 used" not in leg_system, (
+        "a leg that cannot delegate was handed a delegation budget to plan"
+    )
+    plan_system = primus_calls[0]["messages"][0]["content"]
+    assert "1 of 20 used" in plan_system, "the fix stripped the key from the spender too"
+
+
+# --- cabal#171: the counter and the check must MEET ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_depth_the_guard_sees_is_the_depth_the_fanout_stamped() -> None:
+    """THE ASSERTION THAT WOULD HAVE CAUGHT THE PRESENT STATE (cabal#171).
+
+    `next_delegation_depth` stamped a depth on every fan-out leg and nothing
+    read it at a decision point: `DelegationDepthGuardrail` ran only inside
+    `build_router_input_guardrails`, and a leg goes straight to
+    `subord.handle_task` without touching the router. The increment was
+    WRITE-ONLY, so cabal's own delegation could not accumulate depth at all.
+
+    Every prior test looked at ONE of those two numbers. This one pins that
+    they are the same number, by capturing what the guard was actually handed.
+    """
+    seen: list[int] = []
+
+    class _Spy(DelegationDepthGuardrail):
+        async def check(self, target, ctx):  # type: ignore[override]
+            seen.append(int(target.metadata.get(DEPTH_KEY, -1)))
+            return await super().check(target, ctx)
+
+    primus_client, _ = _client(["plan", "sum"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_depth=_Spy(max_depth=8),
+    )
+
+    parent = _task()
+    parent.metadata = {DEPTH_KEY: 3}
+    await mason.handle_task(parent)
+
+    assert seen, "the depth guard was never consulted at the subordinate boundary"
+    assert seen == [next_delegation_depth(parent)], (
+        f"the guard saw {seen}, the fan-out stamped "
+        f"{next_delegation_depth(parent)} — the counter and the check "
+        "are looking at different numbers"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_fanout_at_the_depth_limit_is_refused() -> None:
+    """And the number being the same must actually STOP something.
+
+    The test above would pass on a guard that is consulted and ignored, so this
+    one pins the refusal. A parent arriving at the limit means its legs would
+    be one deeper, which is what the guard must catch.
+    """
+    primus_client, _ = _client(["plan", "sum"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_depth=DelegationDepthGuardrail(max_depth=2),
+    )
+
+    parent = _task()
+    parent.metadata = {DEPTH_KEY: 2}
+    response = await mason.handle_task(parent)
+
+    # A refused leg fails the fan-out, the same shape a doom-loop block takes.
+    assert response.status.state == "failed", (
+        "a fan-out whose legs exceed the depth limit was not refused"
+    )
+
+
+@pytest.mark.asyncio
+async def test_depth_none_leaves_the_fanout_exactly_as_before() -> None:
+    """An operator who disabled depth must see no change (`delegation_depth`
+    is None then, and the boundary must not invent a guard)."""
+    primus_client, _ = _client(["plan", "sum"])
+    sub_client, _ = _client(["impl"])
+    mason = MasonPrimusPersona(
+        primus_client,
+        subordinates={"implementer": _subordinate(sub_client)},
+        doom_loop=None,
+        delegation_depth=None,
+    )
+    parent = _task()
+    parent.metadata = {DEPTH_KEY: 99}  # far past any limit
+    response = await mason.handle_task(parent)
+    assert response.status.state == "completed"
+
+
+def test_the_fanout_checks_guards_in_the_SAME_ORDER_as_the_router() -> None:
+    """Neither order was pinned, and they had already drifted (cabal#177).
+
+    `run_guardrails` evaluates the router's list top-to-bottom with
+    first-refusal-wins, so list order IS evaluation order, and the router says
+    the ordering is deliberate: *"ORDER MATTERS ONLY FOR THE MESSAGE, not for
+    safety: the first BLOCK short-circuits, so a tight repeat is reported as a
+    doom loop and a paraphrase storm as an exhausted budget."*
+
+    A fan-out loop in a different order does not make anything unsafe — both
+    paths still refuse — but it makes them refuse a leg that is BOTH a tight
+    repeat and past its depth limit with two different reasons, decided by
+    which path dispatched it. That is the kind of disagreement that is invisible
+    until someone is reading two logs side by side and cannot explain them.
+
+    SOURCE-LEVEL on both sides, because the thing worth asserting is that the
+    two shipped files agree — not that a reproduction of them does.
+    """
+    import re
+    from pathlib import Path
+
+    import cabal.agents.primus as primus_mod
+    import cabal.core.app as app_mod
+
+    router_src = Path(app_mod.__file__).read_text()
+    primus_src = Path(primus_mod.__file__).read_text()
+
+    names = ("DoomLoopGuardrail", "DelegationDepthGuardrail", "DelegationBudgetGuardrail")
+
+    # THE ORACLE IS THE FUNCTION BODY, NOT THE FILE (#177 r1 Important 2).
+    # An earlier version took `router_src.index(f"{n}(")` over the whole of
+    # app.py, so ANY earlier mention set the order. The reviewer broke it by
+    # adding two lines to `build_router_input_guardrails`'s DOCSTRING, with the
+    # fan-out mutated to depth-first: the shipped orders genuinely disagreed and
+    # this test went GREEN. The same edit turns it RED with the code correct.
+    # A test that reports green while the property it names is false is the same
+    # failure class as a counter nothing reads -- which is what this PR exists
+    # to close -- so the oracle has to be the statements, not the prose above
+    # them.
+    start = router_src.index("def build_router_input_guardrails")
+    end = router_src.index("\ndef ", start + 1)
+    body = router_src[start:end].split('"""', 2)[2]  # code only, no docstring
+    router_order = [
+        n for _, n in sorted((body.index(f"{n}("), n) for n in names if f"{n}(" in body)
+    ]
+    assert len(router_order) == len(names), (
+        f"expected all of {names} in build_router_input_guardrails, got {router_order}"
+    )
+
+    # The fan-out tuple, read as it is written.
+    tup = re.search(r"for guard in \(\s*([^)]+?)\s*\):", primus_src, re.S)
+    assert tup, "the fan-out guard loop is not where this test expects it"
+    attr_to_class = {
+        "self._doom_loop": "DoomLoopGuardrail",
+        "self._delegation_depth": "DelegationDepthGuardrail",
+        "self._delegation_budget": "DelegationBudgetGuardrail",
+    }
+    fanout_order = [
+        attr_to_class[a.strip().rstrip(",")]
+        for a in tup.group(1).split("\n")
+        if a.strip().rstrip(",") in attr_to_class
+    ]
+
+    assert fanout_order == router_order, (
+        f"the fan-out checks {fanout_order} but the router checks {router_order}; "
+        "the same leg would be refused with two different reasons depending on "
+        "which path dispatched it"
+    )

@@ -12,6 +12,7 @@ each persona its own model from identity.toml.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -27,16 +28,23 @@ from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import AbortCoordinator, TaskAborted
 from cabal.core.checkpoint import Checkpoint, CheckpointStore, NoOpCheckpointStore
 from cabal.core.guardrails import Guardrail, GuardrailContext, VerdictType, run_guardrails
+from cabal.core.guardrails_builtin import BUDGET_KEY
 from cabal.core.hooks.registry import HookName
 from cabal.core.llm.litellm_client import (
     CabalLLMError,
     LiteLLMClient,
     LLMInvalidRequestError,
     LLMRateLimitedError,
+    LLMTruncatedError,
     LLMUnavailableError,
+    classify_truncation,
 )
 from cabal.core.memory.session_tracker import NoOpSessionTracker, SessionTracker
 from cabal.core.memory.store import MemoryStore, NoOpMemoryStore
+
+#: The exact shape DelegationBudgetGuardrail stamps. Anything else under that
+#: key is a caller's text and is not rendered (cabal#156 r3).
+_BUDGET_NOTE_SHAPE = re.compile(r"\d{1,9} of \d{1,9} used", re.ASCII)
 
 # Hard cap on the tool-result summary stored in the activity log's tool_result
 # row. The full result still flows to the LLM as the tool message; only the
@@ -101,7 +109,10 @@ class LLMPersona:
     # NOT on resume — so a non-idempotent rewrite can't compound across resumes;
     # the guarded messages are what gets checkpointed. Input-phase covers the
     # first LLM call only; tool-loop turns are #52's scope. astream_task does
-    # NOT apply guardrails (streaming path deferred).
+    # NOT apply guardrails (streaming path deferred). It DOES check
+    # finish_reason as of cabal#136 — the client surfaces the stream's terminal
+    # reason through an on_finish callback, since the reason rides the final
+    # chunk and astream yields plain strings.
     input_guardrails: list[Guardrail] = field(default_factory=list)
     output_guardrails: list[Guardrail] = field(default_factory=list)
     # cabal#52 — tool-boundary guardrails. Empty defaults = zero behavior change.
@@ -135,18 +146,107 @@ class LLMPersona:
             lines.append(f"- ({h.type}, {h.confidence}) {h.content}{tag_note}")
         return "\n".join(lines)
 
+    def _delegation_budget_note(self, task: Task) -> str:
+        """The delegation budget as a line the model reads, or empty string.
+
+        cabal#156 pre-pass, WRONG 7. `DelegationBudgetGuardrail` stamps
+        `cabal_delegation_budget` onto the task it checks, and the stamp reached
+        the wire -- present in the JSON `Task.metadata` of the response -- and
+        stopped there. Nothing folded it into a prompt, so "an agent that knows
+        it has three delegations left can plan" was true only of an external
+        client that parsed raw metadata itself.
+
+        HERE RATHER THAN IN THE GUARD, because the guard must stay await-free
+        and knows nothing about prompts. Same shape as `_recall_for_task` above
+        it: absent input, empty string, no line.
+
+        NOT THE ONLY PLACE SYSTEM CONTENT IS COMPOSED, which this docstring
+        claimed and which was the load-bearing half of the claim (#156 r1
+        Important 1). `PrimusPersona` overrides `handle_task` and never calls
+        `build_messages`; its plan and aggregate stages build their own. So
+        `PrimusPersona._plan` calls this too -- and the primus is the only
+        class in the tree that fans out, which makes it the one caller the
+        feature was written for. A test constructing a bare `LLMPersona`
+        cannot see that, because that is the single shape where
+        `build_messages` is on the path.
+        """
+        used = task.metadata.get(BUDGET_KEY)
+        # SHAPE-CHECKED, BECAUSE THE CALLER WRITES THIS DICT (#156 r3
+        # Important 1). Task.metadata arrives verbatim from params.metadata on
+        # the inbound A2A path, and the only thing that overwrites a caller's
+        # value is DelegationBudgetGuardrail stamping over it -- which is a
+        # documented opt-out. With `delegation_budget = false` a caller's
+        # string reached a persona's SYSTEM content unmodified, which is a
+        # user-role to system-role escalation and the first caller-content
+        # path into a prompt this tree has had. It is not only the primus:
+        # build_messages is on every persona's path.
+        #
+        # Accepting only "<int> of <int> used" NARROWS the channel; it does not
+        # close it, and an earlier version of this comment claimed it did
+        # (#156 r4). A number is something an attacker can say: wherever the
+        # guard does not reach its stamp -- `delegation_budget = false`, or an
+        # un-keyable dispatch that returns PASS early -- a shape-valid value
+        # from the caller still renders, so they can misstate a budget figure.
+        # What they can no longer do is put arbitrary text in system role,
+        # which is the escalation that mattered. `re.ASCII` at least keeps
+        # `\d` from accepting Unicode decimals like "٣ of ٥ used".
+        if not isinstance(used, str) or not _BUDGET_NOTE_SHAPE.fullmatch(used):
+            return ""
+        return (
+            f"\n\nDelegation budget: {used}. Every delegation counts regardless "
+            "of wording. Plan the ones you have left rather than spending them "
+            "one at a time and discovering the limit."
+        )
+
     def build_messages(self, task: Task) -> list[dict[str, Any]]:
         """Translate Task history + current message into chat messages.
 
         Default: [system+memories, ...history (user/agent alternating), current].
         """
-        system_content = self.system_prompt + self._recall_for_task(task)
+        system_content = (
+            self.system_prompt
+            + self._delegation_budget_note(task)
+            + self._recall_for_task(task)
+        )
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
         for hist in task.history:
             messages.append(_message_to_chat(hist))
         if task.status.message is not None:
             messages.append(_message_to_chat(task.status.message))
         return messages
+
+    def check_truncation(self, response: Any, text: str) -> bool:
+        """Whether *response* was cut off, raising when it was cut off fatally.
+
+        A thin adapter: it pulls `finish_reason` and the executable-tool-call
+        shape out of a NON-STREAMING response and hands them to
+        `classify_truncation`, which is shared with the streaming path so the
+        two cannot drift apart (cabal#136). The rule itself, and why each arm
+        exists, is documented there.
+        """
+        try:
+            choice = response["choices"][0]
+            finish_reason = choice.get("finish_reason")
+            # INSIDE THE GUARD. _extract_tool_calls is not internally total —
+            # its own try covers the choices/message access, so a `function`
+            # object with no `name`, or a non-dict entry, still raises. Lifting
+            # this into the classify_truncation() argument list put it OUTSIDE
+            # this except, and a bare KeyError then escaped handle_task, which
+            # catches only LLMTruncatedError — leaving the session never ended.
+            # THE SAME PREDICATE THE TOOL LOOP USES, not a looser one beside
+            # it: the blessing means "cabal can act on this".
+            has_executable_tool_calls = bool(_extract_tool_calls(response))
+        except (KeyError, IndexError, TypeError, AttributeError):
+            # A malformed response shape. parse_response returns "" for these
+            # rather than rejecting them, so nothing downstream owns the error
+            # — raising here would surface a confusing one from the wrong layer.
+            return False
+        return classify_truncation(
+            agent=self.name,
+            finish_reason=finish_reason,
+            text=text,
+            has_executable_tool_calls=has_executable_tool_calls,
+        )
 
     def parse_response(self, response: Any) -> str:
         """Extract assistant text from the LiteLLM response.
@@ -198,11 +298,11 @@ class LLMPersona:
         """Run ``guardrails`` for ``phase`` against ``target``.
 
         Returns ``(possibly-rewritten target, None)`` on PASS/REWRITE.
-        Returns ``(original target, blocked_task)`` on BLOCK — the caller
-        must return ``blocked_task`` immediately.
+        Returns ``(original target, blocked_task)`` on ANY REFUSAL — BLOCK or
+        TERMINATE — and the caller must return ``blocked_task`` immediately.
 
         The caller is responsible for ending the session (session_tracker.end)
-        and dropping the checkpoint (checkpoint_store.drop) on BLOCK, to
+        and dropping the checkpoint (checkpoint_store.drop) on a refusal, to
         mirror the existing error-handling pattern in _run_dispatch.
         """
         if not guardrails:
@@ -213,12 +313,28 @@ class LLMPersona:
             phase=phase,
         )
         verdict = await run_guardrails(guardrails, target, ctx)
-        if verdict.type == VerdictType.BLOCK:
+        # ANY NON-PASS IS A REFUSAL, rather than an enumeration of the verdicts
+        # that exist today (#152 r1 Important 2). This read `== BLOCK`, so a
+        # TERMINATE fell through and was treated as a PASS -- the dispatch
+        # proceeded and the LLM ran. Since run_guardrails ALSO short-circuits on
+        # TERMINATE, a terminating guard was strictly WEAKER here than the same
+        # guard returning BLOCK, which inverts the verdict's whole point.
+        #
+        # SAFE AS A CATCH-ALL because run_guardrails only ever returns BLOCK,
+        # TERMINATE, or PASS: a REWRITE is threaded internally and comes back as
+        # PASS carrying `rewritten`, so the branch below still sees it.
+        if verdict.type is not VerdictType.PASS:
             blocked = annotate(
                 task,
                 CabalReason(
                     code=CODE_POLICY_VIOLATION,
-                    message=f"guardrail blocked ({phase}): {verdict.reason}",
+                    # The VERDICT in the message, not a fixed "blocked": a log
+                    # line trying to tell you which verdict fired should not
+                    # say the same word for both (#152 r2).
+                    message=(
+                        f"guardrail {verdict.type.value} ({phase}): "
+                        f"{verdict.reason}"
+                    ),
                 ),
             )
             return target, blocked
@@ -249,7 +365,9 @@ class LLMPersona:
         tools only).
 
         Returns ``(possibly-rewritten target, None)`` on PASS/REWRITE.
-        Returns ``(original target, block_reason)`` on BLOCK.
+        Returns ``(original target, refusal_reason)`` on BLOCK or TERMINATE.
+        A TERMINATE refuses the CALL here rather than the Task — see
+        ``Verdict.terminate``, which says so rather than promising otherwise.
         """
         if not guardrails:
             return target, None
@@ -261,7 +379,16 @@ class LLMPersona:
             tool_arguments=tool_arguments,
         )
         verdict = await run_guardrails(guardrails, target, ctx)
-        if verdict.type == VerdictType.BLOCK:
+        # ANY NON-PASS IS A REFUSAL -- see _apply_guardrails above for why the
+        # enumeration was a fail-open (#152 r1 Important 2).
+        #
+        # A TERMINATE STILL ONLY BLOCKS THE CALL HERE, not the Task. This is
+        # pi's per-call policy boundary: BLOCK already means "refuse this tool
+        # call and let the dispatch continue", and escalating a terminal verdict
+        # into a whole-Task failure from inside the tool loop would be a larger
+        # change than closing the fail-open. Refusing the call is the
+        # fail-closed reading, and it is what the caller is built to handle.
+        if verdict.type is not VerdictType.PASS:
             return target, verdict.reason
         if verdict.rewritten is not None:
             return verdict.rewritten, None
@@ -538,6 +665,15 @@ class LLMPersona:
                     )
 
         text = self.parse_response(response)
+        try:
+            truncated = self.check_truncation(response, text)
+        except LLMTruncatedError as exc:
+            self.session_tracker.end(session_id=session_id, summary=f"[failed] {exc}")
+            await self.checkpoint_store.drop(task.id)
+            return annotate(
+                task,
+                CabalReason(code=CODE_BUDGET_EXHAUSTED, message=str(exc)),
+            )
 
         # cabal#39 — output guardrail check before committing the result.
         text, blocked = await self._apply_guardrails(
@@ -551,7 +687,17 @@ class LLMPersona:
             await self.checkpoint_store.drop(task.id)
             return blocked
 
-        self.session_tracker.end(session_id=session_id, summary=text)
+        self.session_tracker.end(
+            session_id=session_id,
+            summary=f"[truncated] {text}" if truncated else text,
+        )
+        # Machine-readable, not only a summary string: a truncated-but-kept LEG
+        # output otherwise completed with nothing a primus could see, and the
+        # aggregator then summarised half an answer with no signal in the task.
+        if truncated:
+            task = task.model_copy(
+                update={"metadata": {**task.metadata, "cabal_truncated": self.name}}
+            )
         self._commit_qa_to_memory(task, text)
         # Successful completion — drop the checkpoint so resume doesn't
         # try to replay a finished Task.
@@ -616,6 +762,9 @@ class LLMPersona:
         session_id = self.session_tracker.start(external_id=task.id, agent_identity=self.name)
         messages = self.build_messages(task)
         full_text = ""
+        # A LOCAL, not a field: one handler serves concurrent dispatches, so an
+        # instance attribute would hold whatever the last stream wrote.
+        terminal_reason: list[str | None] = [None]
         try:
             async for delta in self.llm_client.astream(
                 model=self.model,
@@ -625,6 +774,7 @@ class LLMPersona:
                 trace_id=task.metadata.get("cabal_trace_id"),
                 span_id=task.metadata.get("cabal_span_id"),
                 max_tokens=self.max_tokens,
+                on_finish=lambda reason: terminal_reason.__setitem__(0, reason),
                 **self.extra_kwargs,
             ):
                 full_text += delta
@@ -632,7 +782,28 @@ class LLMPersona:
         except Exception as exc:
             self.session_tracker.end(session_id=session_id, summary=f"[stream-failed] {exc}")
             raise
-        self.session_tracker.end(session_id=session_id, summary=full_text)
+
+        # cabal#136 — the stream is over, so the same rule the non-streaming
+        # path uses can finally be applied. A stream cut off at the ceiling
+        # previously ended INDISTINGUISHABLY from a complete one, which is
+        # worse than the non-streaming case: the operator has already watched
+        # text arrive, so the absence of an error reads as a finished answer.
+        try:
+            truncated = classify_truncation(
+                agent=self.name,
+                finish_reason=terminal_reason[0],
+                text=full_text,
+                # A stream that produced tool calls is not something this path
+                # can act on — astream_task runs no tool loop.
+                has_executable_tool_calls=False,
+            )
+        except LLMTruncatedError as exc:
+            self.session_tracker.end(session_id=session_id, summary=f"[failed] {exc}")
+            raise
+        self.session_tracker.end(
+            session_id=session_id,
+            summary=f"[truncated] {full_text}" if truncated else full_text,
+        )
         self._commit_qa_to_memory(task, full_text)
 
 

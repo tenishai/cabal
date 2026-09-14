@@ -13,7 +13,11 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c4f0a2b18e77"
-down_revision: str | None = "a1b2c3d4e5f6"
+# Re-parented onto c2f4a8b61d07 (add_delegation_budgets) when this branch came
+# forward to main. Both revisions were written against a1b2c3d4e5f6 in parallel,
+# which would leave alembic with two heads; the chain is linear this way and the
+# two migrations are independent, so the order between them carries no meaning.
+down_revision: str | None = "c2f4a8b61d07"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

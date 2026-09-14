@@ -279,7 +279,7 @@ Linked feedback memory: `feedback-decision-authority`.
 
 ## 2026-08-22 — dispatch pairs: the switchboard checks who may call whom
 
-### D-017: dispatch_pairs is a flat allow-list, room-owned, empty means open
+### D-018: dispatch_pairs is a flat allow-list, room-owned, empty means open
 
 - **Question**: agent-to-agent dispatch (a caller whose JWT `sub` is
   `agent:<name>` re-minting toward a target via `POST /a2a/tasks`, see

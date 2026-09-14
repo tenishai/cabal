@@ -31,12 +31,27 @@ RUN python3 -m venv /venv \
  && /venv/bin/pip install --no-cache-dir /build/techne \
  && mkdir -p src/cabal && touch src/cabal/__init__.py \
  && /venv/bin/pip install --no-cache-dir . \
- && rm -rf src
+ && rm -rf src build
 
+# MIGRATIONS ARRIVE VIA THE PACKAGE, NOT VIA A COPY (cabal#79). They live at
+# src/cabal/migrations and ship as package-data, so `COPY src ./src` carries
+# them and the `pip install` below puts them in /venv alongside the code. The
+# two lines that used to copy `migrations/` and `alembic.ini` from the repo
+# root are gone because neither path exists any more -- and a COPY with an
+# absent source fails the build outright rather than skipping.
 COPY src ./src
-COPY migrations ./migrations
-COPY alembic.ini ./
-RUN /venv/bin/pip install --no-cache-dir --no-deps .
+# rm -rf build: the dep-caching install above leaves setuptools artifacts
+# built from the stub package; the stub __init__.py is newer by mtime than
+# the real COPY'd source, so a stale build/ dir ships an empty cabal
+# __init__ (no __version__) and the daemon dies at import.
+#
+# NOTE the two COPY lines that used to sit above this (`migrations`,
+# `alembic.ini`) are gone -- #79 moved migrations under src/cabal/ and ships
+# them as package-data, so `COPY src ./src` carries them and this install puts
+# them in /venv. Keeping them here would fail the build outright, the source
+# paths no longer existing.
+RUN rm -rf build && /venv/bin/pip install --no-cache-dir --no-deps . \
+ && /venv/bin/python -c "import cabal; assert cabal.__version__"
 
 # ----- Runtime stage --------------------------------------------------------
 FROM python:3.12-slim AS runtime
@@ -45,9 +60,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     CABAL_DB_URL="sqlite+aiosqlite:////data/cabal.db" \
     PATH="/venv/bin:$PATH" \
-    VIRTUAL_ENV="/venv" \
-    CABAL_ALEMBIC_INI="/app/alembic.ini" \
-    CABAL_ALEMBIC_MIGRATIONS="/app/migrations"
+    VIRTUAL_ENV="/venv"
+# NO CABAL_ALEMBIC_* OVERRIDES, and dropping them is load-bearing rather than
+# tidy (#79 review, Critical). `_migrations_dir()` consults the override FIRST
+# and returns it unconditionally, so leaving CABAL_ALEMBIC_MIGRATIONS pointed
+# at /app/migrations would keep the container on a path the package no longer
+# fills -- it would never reach the importlib.resources resolution at all, and
+# would die at `upgrade head` with "Path doesn't exist". The override exists
+# for a deployment that genuinely needs to relocate them; this one does not.
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
@@ -59,8 +79,6 @@ RUN groupadd --gid 10001 cabal && \
     useradd --uid 10001 --gid cabal --home-dir /home/cabal --create-home cabal
 
 COPY --from=build /venv /venv
-COPY --from=build /build/migrations /app/migrations
-COPY --from=build /build/alembic.ini /app/alembic.ini
 
 WORKDIR /app
 

@@ -71,6 +71,8 @@ async def list_agents(
                 "status": r.status,
                 "safety_tier": r.safety_tier,
                 "endpoint": r.endpoint,
+                "kind": r.kind,
+                "work": r.work,
                 "kid": r.agent_card_kid,
                 "last_heartbeat": r.last_heartbeat.isoformat() if r.last_heartbeat else None,
                 "drain_started_at": r.drain_started_at.isoformat() if r.drain_started_at else None,
@@ -78,6 +80,85 @@ async def list_agents(
             for r in rows
         ]
     }
+
+
+class SessionRegisterRequest(BaseModel):
+    """cabal#142 — a live agent session announcing itself as present.
+
+    `work` is free-form so the shape can settle in use; the CLI renders
+    `repo`, `branch` and `task` when present and ignores the rest.
+    """
+
+    name: str
+    work: dict[str, Any] | None = None
+
+
+class SessionHeartbeatRequest(BaseModel):
+    work: dict[str, Any] | None = None
+
+
+@router.post("/sessions/register")
+async def register_session(
+    body: SessionRegisterRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Register a live session as presence-only (cabal#142).
+
+    Idempotent by name: re-registering an already-active session heartbeats it
+    instead of failing. A session that reconnects after a crash must not have to
+    know whether its previous row survived.
+    """
+    _require_operator_claims(request, extract_bearer(authorization))
+    async with open_session(request.app.state.sessionmaker) as session:
+        existing = await bulletin_store.get_active(session, body.name)
+        if existing is not None:
+            await bulletin_store.heartbeat(
+                session, body.name, existing.generation, work=body.work
+            )
+            row = await bulletin_store.get_active(session, body.name)
+        else:
+            row = await bulletin_store.register_session(
+                session, name=body.name, work=body.work
+            )
+    assert row is not None
+    return {"name": row.name, "generation": row.generation, "kind": row.kind}
+
+
+@router.post("/sessions/{name}/heartbeat")
+async def heartbeat_session(
+    name: str,
+    body: SessionHeartbeatRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _require_operator_claims(request, extract_bearer(authorization))
+    async with open_session(request.app.state.sessionmaker) as session:
+        row = await bulletin_store.get_active(session, name)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"no active session {name!r}")
+        await bulletin_store.heartbeat(session, name, row.generation, work=body.work)
+    return {"name": name, "ok": True}
+
+
+@router.post("/sessions/{name}/end")
+async def end_session(
+    name: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """De-register on clean shutdown.
+
+    Returns ok for an unknown name rather than 404: this is called from a Stop
+    hook, and a hook that errors on an already-gone session turns ordinary
+    teardown into a visible failure.
+    """
+    _require_operator_claims(request, extract_bearer(authorization))
+    async with open_session(request.app.state.sessionmaker) as session:
+        row = await bulletin_store.get_active(session, name)
+        if row is not None:
+            await bulletin_store.mark_retired(session, name, row.generation)
+    return {"name": name, "ok": True}
 
 
 class PrimusRotateRequest(BaseModel):
