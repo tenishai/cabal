@@ -53,11 +53,15 @@ def test_dispatch_pairs_migration_is_additive(tmp_path: Path, monkeypatch) -> No
     db_url = f"sqlite:///{db_file}"
     monkeypatch.setenv("CABAL_DB_URL", db_url)
 
-    cfg = Config(str(REPO_ROOT / "alembic.ini"))
-    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg = Config()
+    cfg.set_main_option("script_location", str(_migrations_dir()))
 
-    # The revision immediately before dispatch_pairs was introduced.
-    command.upgrade(cfg, "a1b2c3d4e5f6")
+    # The revision immediately before dispatch_pairs. It was a1b2c3d4e5f6 on
+    # this branch; coming forward to main re-parented dispatch_pairs onto
+    # c2f4a8b61d07 to keep alembic single-headed, so the prior revision moved
+    # with it. Seeding further back would still pass but would stop testing
+    # the thing this case is named for.
+    command.upgrade(cfg, "c2f4a8b61d07")
 
     engine = create_engine(db_url)
     with engine.begin() as conn:
