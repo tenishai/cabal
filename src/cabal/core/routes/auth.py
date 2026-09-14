@@ -9,14 +9,13 @@ specific error code so the client can distinguish unknown/expired/used.
 from __future__ import annotations
 
 import os
-
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from cabal.core.auth.bootstrap_codes import BootstrapCodeError, consume
-from cabal.core.auth.jwt import JWTError, OPERATOR_SUB_PREFIX, extract_bearer, mint, verify
+from cabal.core.auth.jwt import OPERATOR_SUB_PREFIX, JWTError, extract_bearer, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.db import open_session
 
