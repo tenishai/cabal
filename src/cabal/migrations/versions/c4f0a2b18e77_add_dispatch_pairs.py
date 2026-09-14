@@ -14,9 +14,10 @@ from alembic import op
 
 revision: str = "c4f0a2b18e77"
 # Re-parented onto c2f4a8b61d07 (add_delegation_budgets) when this branch came
-# forward to main. Both revisions were written against a1b2c3d4e5f6 in parallel,
-# which would leave alembic with two heads; the chain is linear this way and the
-# two migrations are independent, so the order between them carries no meaning.
+# forward to main. This revision was written against a1b2c3d4e5f6 on 2026-08-22;
+# main has since grown b7c1d9e04a22 and then c2f4a8b61d07 on top of that same
+# parent, so merging unchanged would leave alembic with two heads. Re-parenting
+# linearises it. The two tables do not overlap, so the order carries no meaning.
 down_revision: str | None = "c2f4a8b61d07"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

@@ -10,12 +10,13 @@ Caller-token semantics:
       per-target tokens.
     - If the inbound bearer is already aimed at the target (aud matches),
       we forward it as-is to the dispatch router.
-    - If the inbound bearer's sub is "agent:<name>" (not yet aimed at the
-      target), the endpoint consults the room-synced `dispatch_pairs`
-      table (Task C3): an allowed (caller, target) pair re-mints the same
-      way an operator token does; a missing pair is a 403 naming both
-      sides. An empty table means every such request is allowed --
-      enforcement only begins once the room syncs its first set.
+    - If the inbound bearer carries "colleague" scope (not yet aimed at
+      the target), the endpoint consults the room-synced `dispatch_pairs`
+      table: an allowed (caller, target) pair re-mints the same way an
+      operator token does; a missing pair is a 403 naming both sides. An
+      empty table means every such request is allowed -- enforcement only
+      begins once the room syncs its first set. The gate is SCOPE, not
+      the shape of the sub: any caller string is looked up in the table.
 
 Phase 1 surface — A2A v1.0 JSON-RPC envelope lands in Phase 2 with
 streaming + tasks/get + resubscribe.

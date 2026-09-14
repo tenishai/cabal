@@ -146,10 +146,19 @@ async def test_operator_caller_never_gated(app: FastAPI, client: AsyncClient) ->
 
 
 @pytest.mark.asyncio
-async def test_non_agent_service_sub_unaffected_by_pairs(app: FastAPI, client: AsyncClient) -> None:
-    """A non-agent sub (e.g. a persona service token) never consults
-    dispatch_pairs; it keeps the pre-existing aud-mismatch 403, whether the
-    table is empty or populated."""
+async def test_token_without_colleague_scope_never_reaches_pairs(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """A token lacking operator/colleague scope is refused one gate earlier.
+
+    Named for the SCOPE, not the sub shape: this test used to be called
+    test_non_agent_service_sub_unaffected_by_pairs, which attributed the
+    refusal to the sub not being "agent:"-shaped. That was true before
+    cabal#124 and is not now -- see
+    test_empty_table_is_open_for_any_sub_shape, where the same
+    "persona:archivist" sub carrying colleague scope reaches the table and
+    passes it. What keeps THIS token out is the scope gate.
+    """
     from cabal.core import dispatch_pairs
 
     # Even with an EMPTY table -- which is open for EVERY caller shape,
