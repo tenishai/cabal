@@ -294,3 +294,114 @@ Linked feedback memory: `feedback-decision-authority`.
   the repo branched on the old 401 (CLI and TUI use blanket 4xx
   handling); the dispatch gate already said 403 for its mismatched
   cases.
+
+## 2026-08-22 — dispatch pairs: the switchboard checks who may call whom
+
+### D-018: dispatch_pairs is a flat allow-list, room-owned, empty means open
+
+- **Question**: agent-to-agent dispatch (a caller whose JWT `sub` is
+  `agent:<name>` re-minting toward a target via `POST /a2a/tasks`, see
+  D-010) had no policy layer at all beyond "does a signing key exist for
+  this token". Once more than a couple of agents can reach each other,
+  something has to decide which pairs are allowed. Where does that
+  decision live, and what does cabal store?
+- **Options**:
+  - A. Cabal computes the policy itself (roles, capability tags, graph
+    rules) and exposes an admin UI for it.
+  - B. Cabal stores nothing; the caller re-mint path stays wide open for
+    any `agent:` sub and policy is enforced upstream, before the request
+    ever reaches cabal.
+  - C. Cabal stores a flat, opaque `(caller, target)` allow-list it does
+    not interpret, synced wholesale by an external owner, and enforces
+    it at every re-mint chokepoint it owns. (This entry originally said
+    "the one". There are two — see TWO DOORS below.)
+- **Choice**: C
+- **Reasoning**: Cabal has no model of "teams", "trust levels", or
+  anything else that would let it *compute* an allow-list — that
+  knowledge lives in the room (kobo) that actually assembles and
+  supervises agents. Option A would duplicate that model badly inside
+  cabal and get it wrong. Option B leaves the one place that can
+  actually enforce anything (the re-mint chokepoints every agent-to-agent
+  dispatch passes through) doing nothing, which only works as long as
+  nobody malicious or buggy ever gets a JWT. Option C keeps cabal dumb
+  on purpose: it stores exactly the pairs it's told, replaces the whole
+  set atomically on every sync (`PUT /admin/dispatch-pairs`, operator
+  scope), and answers exactly one question at dispatch time — "is
+  (caller, target) in the set" — without ever knowing *why* a pair
+  exists.
+- **Empty table means open, by design**: a table with zero rows is not
+  an error state or "misconfigured" — it's the default, and it means
+  every `agent:` caller may reach every target. This is what makes the
+  feature deploy-safe: the migration ships and rolls out with an empty
+  table, dispatch behavior is unchanged, and enforcement only begins the
+  first time the room performs its first sync (even syncing an empty set
+  explicitly is different from never having synced — see caveat below).
+  The alternative (empty-means-closed, or a separate "enforcement
+  enabled" flag) would make the migration itself a breaking change: every
+  agent-to-agent dispatch in flight at deploy time would start failing
+  the instant the table exists, with no coordinated cutover possible.
+- **Atomic replace, not incremental add/remove**: `PUT` deletes every
+  existing pair and inserts the new set inside a single transaction
+  (`dispatch_pairs.replace_all`, one `open_session` block). This is not
+  just tidiness — because empty means open, a non-atomic replace (delete
+  everything, *then* insert, as two visible steps) would create a real
+  window where the table is briefly empty and every dispatch is
+  momentarily open again. Proven in `tests/test_dispatch_pairs.py` by
+  literally interleaving a paused writer with a reader on a separate
+  connection.
+- **Caveat carried over from D-015's lesson**: the room is expected to
+  push its full current policy on every sync, not deltas. Cabal does not
+  track "has anyone ever synced" as a separate bit from "the table has
+  rows" — an operator (or the room, mid-incident) manually clearing the
+  table with an empty `PUT` re-opens dispatch exactly like a fresh
+  install would. That's intentional (matches "empty means open"
+  uniformly) but worth knowing before reaching for it as a kill switch.
+- **Amended when #124 landed**: this entry was written while
+  `feat/colleague-scope` was still open, and said the pairs check keys
+  purely on the `sub` prefix, independent of any JWT scope claim. That is
+  no longer true. With #124 merged, `_resolve_dispatch_token` applies TWO
+  gates in order: `{operator, colleague}` scope decides whether a
+  credential may ask for a re-mint at all, and only then does the pairs
+  table decide which caller->target pairs are permitted. An `agent:`-sub
+  token carrying neither scope is refused at the first gate and never
+  reaches `dispatch_pairs.is_allowed`. The pairs decision itself — flat,
+  room-owned, empty-means-open — is unchanged; what changed is that it is
+  now the second of two checks rather than the only one.
+- **Revocation lag**: revoking a pair does not revoke a token already in
+  a caller's hand. `_resolve_dispatch_token`'s fast path — a token whose
+  `aud` already matches the target — returns that token as-is without
+  ever consulting `dispatch_pairs` (see the top of the function). So a
+  caller that re-minted a per-target token *before* the room removed its
+  pair keeps dispatching against that target for the rest of the token's
+  TTL (`DEFAULT_TTL_SECONDS` in `core/auth/jwt.py`, five minutes by
+  default), even though a fresh re-mint attempt would now be refused.
+  This is a property of re-mint tokens generally, not something this
+  feature could close without re-checking pairs on every single request
+  (which would defeat the point of re-minting at all). The room's UI
+  should say so wherever it shows a pair as "revoked" — the effective cut
+  over can lag up to one token TTL behind the sync.
+- **Empty-resync blast radius**: because empty means open, a `PUT` with
+  `pairs: []` does not "lock everything down" — it does the opposite,
+  reopening dispatch for every `agent:` caller against every target, same
+  as a table that was never synced. Shrinking a large policy down to
+  `[]` (a bug in the room's diffing logic, a bad merge, an accidental
+  full clear) is indistinguishable to cabal from a deliberate "open
+  everything back up" instruction — cabal stores what it's told and
+  nothing more. The room-side client that owns this sync is expected to
+  guard against sending `[]` unintentionally (e.g. treat a sync that
+  would shrink the set to zero as suspicious and require confirmation)
+  and to log loudly whenever it does send one, since cabal itself has no
+  way to tell "the room meant to reopen everything" apart from "the
+  room's policy computation returned nothing by mistake".
+- **Lands in**: `core/models.py::DispatchPair`,
+  `core/dispatch_pairs.py`, `core/routes/tasks.py::_resolve_dispatch_token`,
+  `core/routes/a2a_jsonrpc.py::_resolve_dispatch_token`,
+  `core/routes/admin.py::get_dispatch_pairs / put_dispatch_pairs`,
+  migration `c4f0a2b18e77`.
+- **TWO DOORS, NOT ONE**: `_resolve_dispatch_token` exists twice — in
+  `routes/tasks.py` (REST, `POST /a2a/tasks`) and in
+  `routes/a2a_jsonrpc.py` (JSON-RPC, `POST /agents/{name}` and
+  `/agents/{name}/stream`). The JSON-RPC twin shipped without the pairs
+  check and the policy was bypassable by dialling the other endpoint; both
+  now call `is_allowed`. Anything changing this policy must change both,
+  and this list is where to check that.
