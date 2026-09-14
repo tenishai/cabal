@@ -420,8 +420,17 @@ async def list_conversations(
     limit: int = 50,
     state: str | None = None,
     target: str | None = None,
+    caller: str | None = None,
 ) -> dict[str, Any]:
-    """Most-recent first, filterable. Snippets only (no full result_json)."""
+    """Most-recent first, filterable. Snippets only (no full result_json).
+
+    `target` and `caller` are the two halves of participant scoping: the
+    conversations an agent answered vs. the ones it started (`caller` is
+    matched verbatim against `caller_agent`, e.g. `agent:ward`). A consumer
+    wanting one agent's whole history queries both, instead of paging the
+    room-wide window and filtering client-side -- which silently
+    under-fetches behind the default `limit`.
+    """
     _require_operator_claims(request, extract_bearer(authorization))
     limit = max(1, min(limit, 200))
     async with open_session(request.app.state.sessionmaker) as session:
@@ -430,6 +439,8 @@ async def list_conversations(
             stmt = stmt.where(Conversation.state == state)
         if target is not None:
             stmt = stmt.where(Conversation.target_agent == target)
+        if caller is not None:
+            stmt = stmt.where(Conversation.caller_agent == caller)
         stmt = stmt.limit(limit)
         rows = (await session.execute(stmt)).scalars().all()
 
