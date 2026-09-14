@@ -2,8 +2,10 @@
 
 kobo (the room) owns the policy of which agent may dispatch to which
 target; cabal just stores flat `(caller, target)` pairs and enforces
-them at the re-mint step in `POST /a2a/tasks` (see
-`routes/tasks.py::_resolve_dispatch_token`).
+them at BOTH re-mint steps -- `POST /a2a/tasks`
+(`routes/tasks.py::_resolve_dispatch_token`) and the JSON-RPC door,
+`POST /agents/{name}` and `/agents/{name}/stream`
+(`routes/a2a_jsonrpc.py::_resolve_dispatch_token`).
 
 An EMPTY table means OPEN: before the room has ever synced a set of
 pairs, every agent-to-agent dispatch is allowed. Enforcement begins the
@@ -11,11 +13,15 @@ instant the first (possibly empty-again) sync lands via
 `PUT /admin/dispatch-pairs` (CABAL-DECISIONS.md D-018).
 
 Covers:
-  1. Enforcement matrix on POST /a2a/tasks: pair allowed, pair missing
-     (403), empty table (open), operator caller (never gated), and a
-     non-agent service sub (unaffected, pre-existing 403 behavior).
-  2. GET/PUT /admin/dispatch-pairs: auth required, atomic replace proven
-     by an interleaved read, shape validation (422), and the sanity cap.
+    1. Enforcement matrix on POST /a2a/tasks: pair allowed, pair missing
+       (403), empty table (open), operator caller (never gated), and a
+       token lacking operator/colleague scope (refused by the scope gate
+       before the pairs table is ever consulted).
+    2. GET/PUT /admin/dispatch-pairs: auth required, atomic replace proven
+       by an interleaved read, shape validation (422), and the sanity cap.
+    3. The JSON-RPC door gives the same answer as the REST one for the
+       same token, and empty-means-open holds for every caller shape.
+
 """
 
 from __future__ import annotations
@@ -146,14 +152,16 @@ async def test_non_agent_service_sub_unaffected_by_pairs(app: FastAPI, client: A
     table is empty or populated."""
     from cabal.core import dispatch_pairs
 
-    # Even with an EMPTY table (which is "open" for agent: subs), a
-    # non-agent sub aimed at the wrong audience must still be rejected.
+    # Even with an EMPTY table -- which is open for EVERY caller shape,
+    # not just agent: subs -- a token carrying neither operator nor
+    # colleague scope is refused by the scope gate, one step earlier.
     token = await _mint_token(app, sub="persona:archivist", aud="archivist", scope=["dispatch"])
     resp = await _dispatch(client, token, task_id="t-service-1")
     assert resp.status_code == 403
 
-    # And with a populated table that would otherwise gate agent: subs,
-    # the non-agent sub's rejection reason is unchanged (not a pairs 403).
+    # And with a populated table that would otherwise gate a colleague,
+    # this token's rejection reason is unchanged: still the scope gate,
+    # never a pairs 403.
     async with open_session(app.state.sessionmaker) as session:
         await dispatch_pairs.replace_all(session, [("agent:sizing-agent", TARGET)])
     resp = await _dispatch(client, token, task_id="t-service-2")
