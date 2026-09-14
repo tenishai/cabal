@@ -38,18 +38,41 @@ _AUD_OPERATOR = "cabal-core"
 _AUD_LIMINAL = "liminal"
 
 
-def _require_operator_claims(request: Request, raw_token: str) -> dict[str, Any]:
+def _require_scope(
+    request: Request,
+    raw_token: str,
+    *,
+    audiences: set[str],
+    any_of: set[str],
+) -> dict[str, Any]:
+    """Shared guard: verify signature, restrict `aud` to `audiences`, and
+    require at least one scope in `any_of` on the `cabal_scope` claim.
+
+    Every scope-gated route (operator-only, secrets-fetch, colleague
+    directory read) is a thin wrapper around this one check, so audience
+    and scope enforcement lives in exactly one place.
+    """
     try:
         claims = verify(
             raw_token,
             key_set=request.app.state.jwks_provider(),
-            expected_audience=_AUD_OPERATOR,
+            expected_audience=None,  # multiple audiences allowed; checked below
         )
     except JWTError as exc:
         raise HTTPException(401, detail=str(exc)) from exc
-    if "operator" not in (claims.get("cabal_scope") or []):
-        raise HTTPException(403, detail="operator scope required")
+
+    if claims.get("aud") not in audiences:
+        raise HTTPException(403, detail="invalid_audience")
+
+    scope = set(claims.get("cabal_scope") or [])
+    if not (any_of & scope):
+        wanted = " or ".join(sorted(any_of))
+        raise HTTPException(403, detail=f"requires {wanted} scope")
     return claims
+
+
+def _require_operator_claims(request: Request, raw_token: str) -> dict[str, Any]:
+    return _require_scope(request, raw_token, audiences={_AUD_OPERATOR}, any_of={"operator"})
 
 
 @router.get("/agents")
@@ -902,26 +925,12 @@ def _require_secrets_fetch(request: Request, raw_token: str) -> dict[str, Any]:
       - "liminal"    — liminal service token (secrets-fetch scope only)
     A token minted for any other audience is rejected regardless of scope.
     """
-    try:
-        claims = verify(
-            raw_token,
-            key_set=request.app.state.jwks_provider(),
-            expected_audience=None,  # we check manually below (two valid audiences)
-        )
-    except JWTError as exc:
-        raise HTTPException(401, detail=str(exc)) from exc
-
-    aud = claims.get("aud")
-    if aud not in {_AUD_OPERATOR, _AUD_LIMINAL}:
-        raise HTTPException(401, detail="invalid_audience")
-
-    scope = claims.get("cabal_scope") or []
-    if "operator" not in scope and "secrets-fetch" not in scope:
-        raise HTTPException(
-            403,
-            detail="requires operator OR secrets-fetch scope",
-        )
-    return claims
+    return _require_scope(
+        request,
+        raw_token,
+        audiences={_AUD_OPERATOR, _AUD_LIMINAL},
+        any_of={"operator", "secrets-fetch"},
+    )
 
 
 # ---- service token mint (Phase II) ------------------------------------
