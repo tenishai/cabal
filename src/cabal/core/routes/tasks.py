@@ -4,10 +4,10 @@ POST /a2a/tasks — accept a Task, hand it to the dispatch router, return
 the response Task.
 
 Caller-token semantics:
-    - If the inbound bearer is an OPERATOR token (scope contains
-      "operator", aud="cabal-core"), the endpoint mints a fresh per-target
-      JWT internally and uses it for the dispatch. Operators don't have to
-      pre-mint per-target tokens.
+    - If the inbound bearer carries "operator" or "colleague" scope
+      (aud="cabal-core"), the endpoint mints a fresh per-target JWT
+      internally and uses it for the dispatch. Neither has to pre-mint
+      per-target tokens.
     - If the inbound bearer is already aimed at the target (aud matches),
       we forward it as-is to the dispatch router.
     - If the inbound bearer's sub is "agent:<name>" (not yet aimed at the
@@ -61,8 +61,12 @@ async def _resolve_dispatch_token(
     """Decide which token to hand the dispatch router.
 
     Returns the same token if it's already aimed at `target`; else, if the
-    inbound token is an operator token, or an "agent:<name>" token the
-    room's dispatch_pairs allow (Task C3), mints a fresh per-target JWT.
+    inbound token carries "operator" or "colleague" scope, mints a fresh
+    per-target JWT (sub passed through unchanged, so a colleague's
+    "agent:<name>" sub lands in the re-minted token too). A colleague is
+    additionally subject to the room's dispatch_pairs policy: scope says
+    who may ask for a re-mint at all, the pairs table says who may call
+    whom.
     Raises HTTPException on any auth failure.
     """
     jwks_provider = request.app.state.jwks_provider
@@ -100,16 +104,30 @@ async def _resolve_dispatch_token(
 
         scope = claims.get("cabal_scope") or []
         sub = claims.get("sub") or ""
+
+        # TWO LAYERS, and they answer different questions. Scope (cabal#124)
+        # decides whether this credential may ask for a re-mint at all;
+        # dispatch_pairs (cabal#127) decides which caller->target pairs the
+        # room permits. An operator clears both by definition and never
+        # reaches the pairs check.
+        if not ({"operator", "colleague"} & set(scope)):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"token aud={claims.get('aud')!r} cannot dispatch to {target!r} "
+                    "(requires operator or colleague scope)"
+                ),
+            )
+
         if "operator" not in scope:
-            # Room-owned policy (Task C3): a caller whose sub is
-            # "agent:<name>" is asking to be re-minted toward a NEW
-            # target. Whether that's allowed is decided by the flat
-            # dispatch_pairs table the room syncs via
-            # PUT /admin/dispatch-pairs -- an empty table means every
-            # such request is open (enforcement starts at the first
-            # sync). Operators never reach this branch (checked above).
-            # Any other sub (a persona/service token, not an agent) gets
-            # the same plain rejection it always has.
+            # Room-owned policy: a caller whose sub is "agent:<name>" is
+            # asking to be re-minted toward a NEW target. Whether that is
+            # allowed is decided by the flat dispatch_pairs table the room
+            # syncs via PUT /admin/dispatch-pairs -- an empty table means
+            # every such request is open (enforcement starts at the first
+            # sync). A colleague-scoped token whose sub is NOT "agent:<name>"
+            # carries no caller identity the pairs table can key on, so it
+            # gets the same plain rejection it always has.
             if sub.startswith("agent:"):
                 if not await dispatch_pairs.is_allowed(session, caller=sub, target=target):
                     raise HTTPException(
@@ -125,8 +143,8 @@ async def _resolve_dispatch_token(
                     detail=f"token aud={claims.get('aud')!r} cannot dispatch to {target!r}",
                 )
 
-        # Operator or an allowed colleague → re-mint as a per-target token
-        # aimed at `audience`. Only now do we need the signing key, so
+        # Operator, or a colleague the room allows -> re-mint as a per-target
+        # token aimed at `audience`. Only now do we need the signing key, so
         # load it lazily within this session.
         stored = await load_active_signing_key(session, master_key=master_key)
 
