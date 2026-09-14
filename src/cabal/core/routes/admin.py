@@ -20,6 +20,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import desc, select
+from sqlalchemy.exc import IntegrityError
 
 from cabal.core.a2a.card import sign_card
 from cabal.core.a2a.types import AgentCapabilities, AgentCard, Skill, Task
@@ -998,3 +999,92 @@ async def mint_service_token(
         "expires_at": expires_at,
         "kid": stored.kid,
     }
+
+
+# ---- dispatch pairs: the switchboard checks who may call whom (Task C3) --
+
+
+class DispatchPairsRequest(BaseModel):
+    """`pairs` is a flat list of [caller, target] pairs, e.g.
+    `[["agent:sizing-agent", "pricing-agent"], ...]`. Each pair must be
+    exactly two strings -- anything else is a 422."""
+
+    pairs: list[tuple[str, str]]
+
+
+@router.get("/dispatch-pairs")
+async def get_dispatch_pairs(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Inspect the room-synced caller->target allow pairs. Operator scope.
+
+    An empty list means the switchboard is currently open: every
+    agent-to-agent dispatch is allowed until the room syncs a set here.
+    """
+    from cabal.core import dispatch_pairs
+
+    _require_operator_claims(request, extract_bearer(authorization))
+    async with open_session(request.app.state.sessionmaker) as session:
+        pairs = await dispatch_pairs.list_all(session)
+    return {"pairs": [[caller, target] for caller, target in pairs]}
+
+
+@router.put("/dispatch-pairs")
+async def put_dispatch_pairs(
+    req: DispatchPairsRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Replace the whole caller->target allow set, atomically. Operator scope.
+
+    kobo (the room) owns this policy end to end -- it decides which agent
+    may dispatch to which, and pushes the full set here on every change.
+    Cabal just stores the flat pairs and enforces them at dispatch
+    re-mint time (`routes/tasks.py` and `routes/a2a_jsonrpc.py`). The replace is delete-all-then-
+    insert inside a single transaction, so a reader never observes the
+    table briefly empty (which would read as "open") between the two
+    steps -- see `dispatch_pairs.replace_all`.
+
+    An empty `pairs` list is a valid body, and per "empty means open"
+    (CABAL-DECISIONS.md D-018) it reopens dispatch entirely -- with zero
+    rows in the table, every caller may reach every target again, exactly
+    like a fresh install. Once any non-empty set has been synced, an
+    agent with no listed pair for a target is refused; syncing `[]`
+    undoes that. This is a wide blast radius for one PUT body; callers
+    should guard against sending it by accident.
+
+    A duplicate (caller, target) pair in the body is not an error -- it's
+    the same statement made twice, so it's de-duplicated (order-
+    preserving) before insert; the response `count` reflects the
+    de-duplicated total. Belt-and-braces: if a constraint violation still
+    reaches the database anyway, it comes back as 422 with a readable
+    body instead of an unhandled 500.
+
+    Response is `{"count": N}` -- the caller already has its own copy of
+    the list it sent; GET /admin/dispatch-pairs remains the surface for
+    inspecting what is actually stored.
+    """
+    from cabal.core import dispatch_pairs
+
+    _require_operator_claims(request, extract_bearer(authorization))
+    if len(req.pairs) > dispatch_pairs.MAX_PAIRS:
+        raise HTTPException(
+            422,
+            detail=(
+                f"refusing {len(req.pairs)} pairs; cap is {dispatch_pairs.MAX_PAIRS}"
+            ),
+        )
+    async with open_session(request.app.state.sessionmaker) as session:
+        try:
+            stored = await dispatch_pairs.replace_all(session, req.pairs)
+        except IntegrityError as exc:
+            raise HTTPException(
+                422,
+                detail=(
+                    "could not store dispatch pairs: a (caller, target) pair "
+                    "still collided on the primary key after de-duplication; "
+                    "check the pairs list for a caller/target mismatch and retry"
+                ),
+            ) from exc
+    return {"count": len(stored)}
