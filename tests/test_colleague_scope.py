@@ -367,3 +367,65 @@ async def test_colleague_cannot_mint_service_token(app: FastAPI, client: AsyncCl
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 403
+
+
+# ---- 5. review findings: presence rows, and REST/JSON-RPC parity ---------
+
+
+@pytest.mark.asyncio
+async def test_directory_excludes_session_presence_rows(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """cabal#142 presence rows must not reach a colleague.
+
+    `register_session` writes live Claude Code sessions into the same table
+    with status="active", so a status-only filter hands a colleague the
+    operator's machine-local session names. A session runs no inbound
+    listener and holds no signed card — it is not dispatchable, and not a
+    colleague's business.
+    """
+    async with open_session(app.state.sessionmaker) as session:
+        await bulletin_store.register_session(
+            session, name="someones-laptop-claude-1", work={"doing": "unrelated"}
+        )
+
+    token = await _colleague_token(app)
+    r = await client.get("/directory", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    names = [a.get("name") for a in (body.get("agents") or body)]
+    assert "someones-laptop-claude-1" not in names, names
+    assert "echo" in names, "the real roster must still be served"
+
+
+@pytest.mark.asyncio
+async def test_colleague_can_dispatch_over_jsonrpc(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """JSON-RPC is the A2A surface an external agent actually dials.
+
+    A colleague token accepted on POST /a2a/tasks and refused on
+    POST /agents/{name} is the same credential getting two answers from one
+    switchboard; the gates are meant to be twins.
+    """
+    token = await _colleague_token(app, sub="agent:room-service")
+    envelope = {
+        "jsonrpc": "2.0",
+        "id": "colleague-rpc-1",
+        "method": "message/send",
+        "params": {
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": "hi over rpc"}],
+            }
+        },
+    }
+    r = await client.post(
+        "/agents/echo", json=envelope, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status_code == 200, r.text
+    # The JSON-RPC envelope always carries an `error` key; success is
+    # error=None with a result, not the key's absence.
+    body = r.json()
+    assert body["error"] is None, body
+    assert body["result"]["status"]["state"] == "completed", body

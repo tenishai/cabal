@@ -153,6 +153,11 @@ Linked feedback memory: `feedback-decision-authority`.
   operators feel it. Non-operator tokens with mismatched aud still get a
   hard 403 — only operators are special.
 - **Lands in**: `routes/tasks._resolve_dispatch_token`.
+- **Amended (colleague-scope work)**: "only operators are special" no longer
+  holds. `colleague` is now a second re-minting scope on the same function, and
+  on its JSON-RPC twin `a2a_jsonrpc._resolve_dispatch_token`. The decision
+  itself — re-mint internally rather than force a pre-mint round-trip — stands;
+  only the list of scopes it applies to grew.
 
 ### D-011: Circuit breaker placement (client wrapper, not LiteLLM proxy)
 
@@ -277,7 +282,7 @@ Linked feedback memory: `feedback-decision-authority`.
   `CABAL_SECRET_rook_*` / `CABAL_SECRET_jackdaw_*` to `CABAL_SECRET_mason_*`
   / `CABAL_SECRET_wright_*`. Raised by Prudence on PR #113.
 
-## D-016: authenticated-but-wrong-audience is 403, uniformly
+### D-017: authenticated-but-wrong-audience is 403, uniformly
 
 - **Context**: consolidating the admin guards into `_require_scope`
   (colleague-scope work) surfaced an untested edge: a validly signed

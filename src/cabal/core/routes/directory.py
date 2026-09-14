@@ -42,6 +42,12 @@ async def list_directory(
 
     agents = []
     for row in rows:
+        # cabal#142 presence rows share this table and carry status="active",
+        # so filtering on status alone hands a colleague the operator's live
+        # Claude Code session names. A session is not dispatchable and is not
+        # a colleague's business; skip it before the status check.
+        if row.kind == "session":
+            continue
         if row.status != "active":
             continue
         card = (row.agent_card_json or {}).get("card", row.agent_card_json or {})
