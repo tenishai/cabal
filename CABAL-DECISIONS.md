@@ -313,14 +313,15 @@ Linked feedback memory: `feedback-decision-authority`.
     ever reaches cabal.
   - C. Cabal stores a flat, opaque `(caller, target)` allow-list it does
     not interpret, synced wholesale by an external owner, and enforces
-    it at the one re-mint chokepoint it already owns.
+    it at every re-mint chokepoint it owns. (This entry originally said
+    "the one". There are two — see TWO DOORS below.)
 - **Choice**: C
 - **Reasoning**: Cabal has no model of "teams", "trust levels", or
   anything else that would let it *compute* an allow-list — that
   knowledge lives in the room (kobo) that actually assembles and
   supervises agents. Option A would duplicate that model badly inside
   cabal and get it wrong. Option B leaves the one place that can
-  actually enforce anything (the re-mint chokepoint every agent-to-agent
+  actually enforce anything (the re-mint chokepoints every agent-to-agent
   dispatch passes through) doing nothing, which only works as long as
   nobody malicious or buggy ever gets a JWT. Option C keeps cabal dumb
   on purpose: it stores exactly the pairs it's told, replaces the whole
@@ -394,5 +395,13 @@ Linked feedback memory: `feedback-decision-authority`.
   room's policy computation returned nothing by mistake".
 - **Lands in**: `core/models.py::DispatchPair`,
   `core/dispatch_pairs.py`, `core/routes/tasks.py::_resolve_dispatch_token`,
+  `core/routes/a2a_jsonrpc.py::_resolve_dispatch_token`,
   `core/routes/admin.py::get_dispatch_pairs / put_dispatch_pairs`,
   migration `c4f0a2b18e77`.
+- **TWO DOORS, NOT ONE**: `_resolve_dispatch_token` exists twice — in
+  `routes/tasks.py` (REST, `POST /a2a/tasks`) and in
+  `routes/a2a_jsonrpc.py` (JSON-RPC, `POST /agents/{name}` and
+  `/agents/{name}/stream`). The JSON-RPC twin shipped without the pairs
+  check and the policy was bypassable by dialling the other endpoint; both
+  now call `is_allowed`. Anything changing this policy must change both,
+  and this list is where to check that.

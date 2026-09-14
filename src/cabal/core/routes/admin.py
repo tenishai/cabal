@@ -1041,7 +1041,7 @@ async def put_dispatch_pairs(
     kobo (the room) owns this policy end to end -- it decides which agent
     may dispatch to which, and pushes the full set here on every change.
     Cabal just stores the flat pairs and enforces them at dispatch
-    re-mint time (`routes/tasks.py`). The replace is delete-all-then-
+    re-mint time (`routes/tasks.py` and `routes/a2a_jsonrpc.py`). The replace is delete-all-then-
     insert inside a single transaction, so a reader never observes the
     table briefly empty (which would read as "open") between the two
     steps -- see `dispatch_pairs.replace_all`.

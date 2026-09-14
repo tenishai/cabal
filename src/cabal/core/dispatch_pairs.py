@@ -1,8 +1,10 @@
 """Flat caller -> target dispatch-allow pairs.
 
 kobo (the room) owns the policy of which agent may dispatch to which
-target. Cabal stores the pairs dumbly and enforces them at the re-mint
-step in `routes/tasks.py::_resolve_dispatch_token`.
+target. Cabal stores the pairs dumbly and enforces them at BOTH re-mint
+steps -- `routes/tasks.py::_resolve_dispatch_token` (REST) and
+`routes/a2a_jsonrpc.py::_resolve_dispatch_token` (JSON-RPC). A policy
+enforced on one of two doors is not enforced.
 
 EMPTY TABLE MEANS OPEN (CABAL-DECISIONS.md D-018): before the room has
 ever synced a set of pairs, every agent-to-agent dispatch is allowed.
