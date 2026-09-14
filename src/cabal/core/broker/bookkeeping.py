@@ -93,6 +93,11 @@ class Bookkeeper:
                 "generation": target.generation,
                 "caller": caller_agent,
                 "trace_id": task.metadata.get("cabal_trace_id"),
+                # The task's own metadata rides every published event so
+                # consumers (a room's SSE stream) can scope frames without a
+                # second lookup: kobo drops thread-marked frames from viewers
+                # who are not the thread's initiator.
+                "metadata": task.metadata,
             },
         )
 
@@ -120,7 +125,7 @@ class Bookkeeper:
         self._publish(
             "dispatch_success",
             task.id,
-            {"state": response.status.state},
+            {"state": response.status.state, "metadata": task.metadata},
         )
 
     async def on_dispatch_failure(self, task: Task, error: Exception) -> None:
@@ -145,5 +150,5 @@ class Bookkeeper:
         self._publish(
             "dispatch_failure",
             task.id,
-            {"error_type": type(error).__name__, "error": str(error)},
+            {"error_type": type(error).__name__, "error": str(error), "metadata": task.metadata},
         )
