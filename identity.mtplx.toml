@@ -32,6 +32,8 @@
 # reads row four as an answer that ignored "two sentences max".)
 #
 # api_base carries /v1 because the model strings use the openai/ provider.
+# Point it at your own OpenAI-compatible endpoint — the host below is a
+# placeholder, not a reachable address.
 #
 # TWO THINGS MUST BE IN THE ENVIRONMENT. The key, and the database:
 #
@@ -56,7 +58,7 @@ port = 7400
 data_dir = "data"
 
 [litellm]
-api_base = "http://192.168.10.202:8000/v1"
+api_base = "http://mtplx-host.example:8000/v1"
 api_key_env = "MTPLX_API_KEY"
 
 # THE ONE SETTING THAT MATTERS FOR THIS MODEL. Thinking-on does not only
