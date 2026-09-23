@@ -348,8 +348,9 @@ Still unverified, in the order they gate work:
 
 ## 9. Standing blockers, not caused by this proposal
 
-- `cabal/.env` has a committed, unrotated `CABAL_MASTER_KEY` **in git history**,
-  so deletion alone is insufficient. Matters more if cabal's role expands.
+- `cabal/.env` had a committed `CABAL_MASTER_KEY`. It was rotated and untracked
+  on 2026-09-23 (#196), but it remains **in git history**, so deletion alone was
+  insufficient. Matters more if cabal's role expands.
 - techne CI pairs `on: pull_request` with a self-hosted runner = RCE on flip.
 
 ## 10. What is NOT decided
