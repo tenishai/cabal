@@ -254,7 +254,7 @@ cbl persona reconfigure archivist --model opus --budget 50/day
 cbl persona absorb archivist
 ```
 
-A federated *client* cabal (shaz) simply adds a `federated` bulletin entry pointing
+A federated *client* cabal (bob) simply adds a `federated` bulletin entry pointing
 at the endpoint; its agents then dispatch normally. Its Cabal Core must publish
 `/jwks.json` reachably so the sovereign service can verify its agents.
 
