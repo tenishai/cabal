@@ -5,7 +5,7 @@ for the per-decision rationale log.
 
 ## Headline
 
-- **GitHub**: https://github.com/dimartin/cabal — 26 commits, all on `main`.
+- **GitHub**: https://github.com/tenishai/cabal — 26 commits, all on `main`.
 - **Tests**: 177 passing, ~10s wall clock.
 - **End-to-end operator UX works**:
   - `cbl daemon up` boots the platform (logs bootstrap code)

@@ -2,7 +2,7 @@
 
 **Status**: Draft.
 **Author**: Claude (Opus 4.7) + Richard, paired session 2026-06-13/14.
-**Tracking issues**: [cabal#11](https://github.com/dimartin/cabal/issues/11) (AbortGraph), [cabal#12](https://github.com/dimartin/cabal/issues/12) (PR-A: A2A streaming types).
+**Tracking issues**: [cabal#11](https://github.com/tenishai/cabal/issues/11) (AbortGraph), [cabal#12](https://github.com/tenishai/cabal/issues/12) (PR-A: A2A streaming types).
 **Inspiration**: `incidentfox/incidentfox` (2026-06-13), `HolmesGPT/holmesgpt` (2026-06-14), `k8sgpt-ai/k8sgpt` (2026-06-14), `tensorzero/tensorzero` (2026-06-14). All architectural patterns logged in `architectural-patterns.md`.
 **Prerequisite**: `techne/docs/proposals/outbox-sinks.md` — the durable, schema-validated outbox-sink substrate the new PR-E consumes. PR-E here is now a cabal-only consumer; the substrate work lives upstream in techne.
 
@@ -57,7 +57,7 @@ The platform is much further along than the conversation context usually suggest
 
 Five additions, in dependency order:
 
-1. **A2A spec streaming types** — `TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`, `MessageSendConfiguration`. Pure-additive type changes to `cabal/core/a2a/types.py`. Tracked at [cabal#12](https://github.com/dimartin/cabal/issues/12).
+1. **A2A spec streaming types** — `TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`, `MessageSendConfiguration`. Pure-additive type changes to `cabal/core/a2a/types.py`. Tracked at [cabal#12](https://github.com/tenishai/cabal/issues/12).
 2. **`message/stream` + `tasks/resubscribe` endpoints** — A2A-spec-compliant streaming, distinct from cabal's existing non-spec `POST /agents/{name}/stream`. Cursor-based resubscribe (Last-Event-ID). The existing stream stays as-is for `cbl chat`; the spec stream is what external A2A clients (other operators' platforms, the TUI) will use.
 3. **Multi-instance personas** — today one `rook-primus`. Net-new: `rook-primus`, `rook-secundus`, `rook-tertius` etc., all sharing the same persona type but with independent conversations + checkpoints + AgentCards.
 4. **Sub-agent role library extension** — today only `implementer` + `reviewer` (Rook's subordinates). Net-new: `investigator`, `researcher`, `verifier`, `planner`, `documenter` as registered Subordinate roles any primus can spawn for a specific task.
@@ -379,8 +379,8 @@ When does the engine get AbortGraph for transitive cancellation? Today `tasks/ca
 - "Bandit-in-the-gateway" — TensorZero
 
 ### Cloned sources
-- `/Users/dimartin/working/incidentfox`
-- `/Users/dimartin/working/holmesgpt`
+- incidentfox — https://github.com/incidentfox/incidentfox
+- HolmesGPT — https://github.com/HolmesGPT/holmesgpt
 
 ### Companion proposals
 - `techne/docs/proposals/outbox-sinks.md` — PR-E prerequisite. Substrate for typed, schema-validated, durable sink delivery in techne.

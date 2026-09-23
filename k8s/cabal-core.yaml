@@ -29,7 +29,7 @@ spec:
       containers:
         # ---- Cabal Core daemon ----
         - name: cabal-core
-          image: ghcr.io/dimartin/cabal:latest   # built from this repo's Dockerfile
+          image: ghcr.io/tenishai/cabal:latest   # built from this repo's Dockerfile
           imagePullPolicy: IfNotPresent
           args:
             - "cbl"
