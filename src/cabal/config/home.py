@@ -81,8 +81,8 @@ def state_root(*, cwd: Path | None = None, announce: bool = True) -> Path:
                 "cabal.state.using_cwd",
                 path=str(here),
                 note=(
-                    f"using cabal state in the working directory ({IDENTITY_FILENAME} "
-                    f"and/or {DATA_DIRNAME}/cabal.db). New installs keep it in {cabal_home()}. "
+                    f"using cabal state in the working directory ({IDENTITY_FILENAME}, "
+                    f"{DATA_DIRNAME}/cabal.db and/or {DATA_DIRNAME}/.master_key). New installs keep it in {cabal_home()}. "
                     f"To move it: stop cabal, then move BOTH {IDENTITY_FILENAME} and "
                     f"{DATA_DIRNAME}/ into {cabal_home()} ({HOME_ENV} sets that "
                     "directory). Moving only one splits your state (#211)."

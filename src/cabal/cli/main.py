@@ -97,7 +97,7 @@ def reset_auth_cmd(
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
     db_url: str = typer.Option(
-        "", "--db-url", help="Override the database URL (default: CABAL_DB_URL)."
+        "", "--db-url", help="Override the database URL (default: CABAL_DB_URL, else data/cabal.db under the state root)."
     ),
 ) -> None:
     """Recover from a lost or changed CABAL_MASTER_KEY (cabal#92).
