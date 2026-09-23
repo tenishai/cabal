@@ -123,18 +123,24 @@ Logs: `make logs`. Tear down: `make down`.
 is `compose/identity.dev.toml` — tracked, so a fresh clone already has it. Set
 `CABAL_IDENTITY_FILE` to point somewhere else.
 
-The **production** stack is different and is invoked directly, never through
-`make`:
+The **production** stack (`docker-compose.yml`) adds a LiteLLM proxy and a
+Litestream sidecar replicating the SQLite DB. It is invoked directly, never
+through `make`, and **it is not a two-line quickstart** — it needs three things
+the dev stack does not:
 
-```bash
-cp identity.toml.example identity.toml   # REQUIRED — docker-compose.yml bind-mounts
-                                         # ./identity.toml, which is gitignored. Without
-                                         # this, Docker creates an empty DIRECTORY at
-                                         # that path and cabal-core fails reading it.
-docker compose -f docker-compose.yml up
-```
+1. `cp identity.toml.example identity.toml`. The compose file bind-mounts
+   `./identity.toml`, which is gitignored; without it Docker creates an empty
+   *directory* at that path and cabal-core fails reading it.
+2. `LITELLM_MASTER_KEY` in `.env`. Declared `:?`, so compose refuses to start
+   anything without it.
+3. `LIMINAL_CABAL_TOKEN` in `.env`, also `:?`. This one is circular: the token
+   is minted by `cbl token mint-service --scope secrets-fetch`, which needs
+   cabal-core already running. The dev stack solves it with `make bootstrap`;
+   the production stack has no equivalent yet, so bring cabal-core up first,
+   mint the token, then start the full stack.
 
-It adds a LiteLLM proxy and a Litestream sidecar replicating the SQLite DB.
+`docker compose -f docker-compose.yml config` exits non-zero until 2 and 3 are
+set — run it first to check rather than discovering it during `up`.
 
 > `CABAL_MASTER_KEY` encrypts the `signing_keys` and `secrets` tables.
 > `Makefile:6` generates a fresh one — but only when `.env` is absent, and `.env`
