@@ -70,14 +70,14 @@ jobs:
       - name: Checkout techne
         uses: actions/checkout@v4
         with:
-          repository: dimartin/techne
+          repository: tenishai/techne
           token: ${{ secrets.GH_PAT_REPOS }}
           path: techne
 
       - name: Checkout liminal
         uses: actions/checkout@v4
         with:
-          repository: dimartin/liminal
+          repository: tenishai/liminal
           token: ${{ secrets.GH_PAT_REPOS }}
           path: liminal
 
@@ -120,7 +120,7 @@ jobs:
       - name: Checkout techne
         uses: actions/checkout@v4
         with:
-          repository: dimartin/techne
+          repository: tenishai/techne
           token: ${{ secrets.GH_PAT_REPOS }}
           path: techne
 

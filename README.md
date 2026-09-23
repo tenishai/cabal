@@ -39,7 +39,12 @@ src/cabal/
     routes/       admin, a2a, tasks, well-known, auth, healthz
     observability/ Trace exporter + Langfuse adapter
   cli/            cbl entrypoint
-  personas/       LLMPersona, MasonPrimusPersona, EchoPersona
+  tui/            cabal entrypoint — the Textual terminal UI
+  agents/         LLMPersona, EchoAgent, and personas/ (MasonPrimusPersona)
+  archivist/      Shared-memory sync: gitmemory, dedup, promote, store
+  librarian/      Document indexing + adapters
+  handlers/       liminal-facing MCP handlers: archivist, code, documents, patterns
+  codex/          Code-graph blame and repo resolution
   config/         identity.toml loader
   migrations/     Alembic revisions (ship as package data; cabal#79)
 tests/            pytest suite
@@ -107,16 +112,53 @@ pytest -q
 ## Quickstart (Docker Compose)
 
 ```bash
-make up
+make up                  # dev stack; nothing to prepare, see the note below
 make bootstrap           # mints operator + liminal service token, restarts liminal
 make demo                # 6-step smoke test: healthz → mint → init → tools/list → set → get
 ```
 
 Logs: `make logs`. Tear down: `make down`.
 
-The dev stack (`docker-compose.dev.yml`) includes cabal + liminal only. The
-production stack (`docker-compose.yml`) adds a LiteLLM proxy and Litestream
-sidecar replicating the SQLite DB.
+`make up` runs the **dev** stack (`docker-compose.dev.yml`), whose identity file
+is `compose/identity.dev.toml` — tracked, so a fresh clone already has it. Set
+`CABAL_IDENTITY_FILE` to point somewhere else.
+
+The **production** stack (`docker-compose.yml`) adds a LiteLLM proxy and a
+Litestream sidecar replicating the SQLite DB. It is invoked directly, never
+through `make`, and **it is not a two-line quickstart** — it needs three things
+the dev stack does not:
+
+1. `cp identity.toml.example identity.toml`. The compose file bind-mounts
+   `./identity.toml`, which is gitignored; without it Docker creates an empty
+   *directory* at that path and cabal-core fails reading it.
+2. `LITELLM_MASTER_KEY` in `.env`. Declared `:?`, so compose refuses to start
+   anything without it.
+3. `LIMINAL_CABAL_TOKEN` in `.env`, also `:?`. This one is circular: the token
+   is minted by cabal-core, and compose checks every `:?` variable in the file
+   before starting any service, including when you start only cabal-core. The
+   dev stack avoids it (the token is optional there, and `make bootstrap` fills
+   it in). For production, start from a placeholder:
+
+   ```bash
+   echo 'LIMINAL_CABAL_TOKEN=placeholder' >> .env
+   docker compose -f docker-compose.yml up -d cabal-core
+   docker compose -f docker-compose.yml logs cabal-core | grep bootstrap_code
+   cbl login --code <CODE>                         # the code from that log line
+   cbl token mint-service --scope secrets-fetch    # prints the token
+   # replace the placeholder in .env with the printed token, then:
+   docker compose -f docker-compose.yml up -d
+   ```
+
+`docker compose -f docker-compose.yml config` exits non-zero until 2 and 3 are
+set — run it first to check rather than discovering it during `up`.
+
+> `CABAL_MASTER_KEY` encrypts the `signing_keys` and `secrets` tables.
+> `Makefile:6` generates a fresh one — but only when `.env` is absent, and `.env`
+> is currently **tracked in git**, so a fresh clone gets the committed key and the
+> rule never fires. Rotating that key and untracking the file is #196; until it
+> lands, generate your own with
+> `python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`
+> and replace the value before running anything you care about.
 
 ## Configuration (identity.toml)
 
@@ -266,4 +308,18 @@ handlers register locally.
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](LICENSE).
+Copyright (C) 2026 tenishai
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License along
+with this program. If not, see <https://www.gnu.org/licenses/>.
+
+Full text: [LICENSE](LICENSE).
