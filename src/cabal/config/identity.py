@@ -11,6 +11,7 @@ warn at load time.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any, Literal
@@ -516,6 +517,13 @@ def load_identity(path: str | Path) -> IdentityConfig:
     return IdentityConfig.model_validate(raw)
 
 
+#: Overrides `cabal.data_dir`. The image sets it to the volume (`/data`), the same
+#: way it sets CABAL_DB_URL, because the identity file a container mounts is the
+#: operator's copy of a template that says `data_dir = "data"` — which resolves to
+#: `/app/data`, the container's writable layer, and is lost on recreate (#214).
+DATA_DIR_ENV = "CABAL_DATA_DIR"
+
+
 def resolve_data_dir(identity: IdentityConfig | None, config_path: str | Path) -> Path:
     """Absolute agent data-root for cabal-owned, provisioned resources.
 
@@ -530,10 +538,17 @@ def resolve_data_dir(identity: IdentityConfig | None, config_path: str | Path) -
     that file is read from — so data still lands beside the identity file. The
     app's own default is a full path from ``cabal.config.home`` (#211).
 
-    Pure + dependency-free (no liminal/techne import) so it resolves the same
-    whether or not liminal is wired — cabal works standalone.
+    ``$CABAL_DATA_DIR``, when set, wins over the identity file and anchors the
+    same way (#214).
+
+    Dependency-free (no liminal/techne import) so it resolves the same whether
+    or not liminal is wired — cabal works standalone.
     """
-    raw = (identity.cabal.data_dir if identity is not None else CabalConfig().data_dir) or "data"
+    raw = (
+        os.environ.get(DATA_DIR_ENV)
+        or (identity.cabal.data_dir if identity is not None else CabalConfig().data_dir)
+        or "data"
+    )
     d = Path(raw).expanduser()
     if d.is_absolute():
         return d

@@ -6,6 +6,10 @@
 
 [cabal]
 operator_id = "dev"
+# On the volume, not in the container's writable layer (#214). The image also
+# sets CABAL_DATA_DIR=/data, which wins over this; it is here so the file says
+# where the state lives.
+data_dir = "/data"
 
 [liminal]
 url = "http://liminal:9100"
