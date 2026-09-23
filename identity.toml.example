@@ -164,14 +164,31 @@ safety_tier = "moderate"
 # `commit_to_memory = true` under [personas.archivist] above.
 # commit_to_memory = true
 # extra_kwargs — provider/model knobs Cabal has no field of its own for, passed
-# straight through to the LLM call. Example: switching OFF a local reasoning
-# model's thinking, without which it can spend its whole token budget
-# deliberating and return empty content.
+# straight through to the LLM call.
 # extra_kwargs = { chat_template_kwargs = { enable_thinking = false } }
-# A fully worked non-Ollama example lives in identity.mtplx.toml, including the
-# CABAL_DB_URL requirement that applies to ANY second identity: cabal.data_dir
-# does not set the sqlite path, so a second identity run without it writes into
-# the first one's database.
+#
+# THAT LINE IS THE ONE THAT MATTERS FOR A LOCAL REASONING MODEL, and the
+# failure it prevents does not look like a failure. With thinking ON, a Qwen-
+# class model returns its own chain of thought AS THE ANSWER and stops
+# mid-deliberation — not an error, not empty, just wrong. Measured against a
+# local OpenAI-compatible endpoint, same persona, same prompt:
+#
+#   thinking on    5142 tok   80s   18220 chars of the model deciding whether
+#                                   it is allowed to multiply 17x23
+#   thinking on    2248 tok   34s   a real but slow answer
+#   ---- enable_thinking = false from here ----
+#   thinking off     45 tok    3s   a real answer
+#   thinking off     24 tok    2s   a real answer
+#
+# Check your model's own flag name; this one is honoured only as
+# chat_template_kwargs.enable_thinking.
+#
+# A SECOND IDENTITY NEEDS CABAL_DB_URL, and this catches people out:
+# `cabal.data_dir` below does NOT set the sqlite path. The engine reads
+# CABAL_DB_URL or falls back to a CWD-relative default, so a second identity
+# run without it writes into the FIRST one's database.
+#
+#   export CABAL_DB_URL=sqlite+aiosqlite:///data-second/cabal.db
 #
 # Keys Cabal binds itself are REFUSED at startup, naming the key: model,
 # messages, agent, trace_id, span_id, task_id, max_tokens, api_base, api_key,

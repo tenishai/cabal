@@ -370,9 +370,9 @@ def test_every_primus_subclass_forwards_the_budget_it_is_given() -> None:
     Deleting `delegation_budget=delegation_budget` from wright.py left the
     whole suite green — signature still advertising the parameter, factory
     still passing it, mypy and ruff clean, CI green, and `wright-primus`'s
-    fan-out unguarded. It matters more for Wright than Mason because
-    identity.mtplx.toml configures wright as the deployed primus: the one
-    persona actually running was the one whose forwarding nothing held.
+    fan-out unguarded. It mattered more for Wright than Mason because the
+    deployed identity configured wright as the primus: the one persona
+    actually running was the one whose forwarding nothing held.
 
     WALKS THE REGISTRY rather than naming Wright, so a subclass added later is
     covered the day it appears. A subclass that does not ACCEPT the kwarg
