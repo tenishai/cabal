@@ -40,9 +40,10 @@ def test_resolve_data_dir_defaults_when_no_identity(tmp_path: Path) -> None:
 def test_resolve_data_dir_bare_filename_anchors_at_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The app default config_path is the bare filename "identity.toml"; its
-    # parent resolves to the CWD, which is where that file is actually read
-    # from — so data still co-locates with the identity file (Prudence, PR #22).
+    # A bare filename ("identity.toml", e.g. passed via --config) has the CWD as
+    # its parent, which is where that file is actually read from — so data still
+    # co-locates with the identity file (Prudence, PR #22). The app no longer
+    # defaults to a bare filename; see cabal.config.home (#211).
     monkeypatch.chdir(tmp_path)
     (tmp_path / "identity.toml").write_text('[cabal]\ndata_dir = "data"\n')
     cfg = load_identity("identity.toml")  # bare filename, like the app default

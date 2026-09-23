@@ -30,6 +30,7 @@ from sqlalchemy import select
 
 from cabal import __version__
 from cabal.agents.echo import EchoAgent
+from cabal.config.home import resolve_identity_path
 from cabal.config.identity import (
     GuardrailsConfig,
     IdentityConfig,
@@ -55,7 +56,7 @@ from cabal.core.budget_store import (
     SqliteDelegationBudgetStore,
 )
 from cabal.core.bulletin import store as bulletin_store
-from cabal.core.db import DEFAULT_DB_URL, make_engine, make_sessionmaker, open_session
+from cabal.core.db import effective_db_url, make_engine, make_sessionmaker, open_session
 from cabal.core.db_pragmas import install_sqlite_pragmas
 from cabal.core.dispatch_timeout import (
     DISPATCH_CONNECT_TIMEOUT_S,  # noqa: F401  re-exported; imported from app by tests
@@ -128,7 +129,7 @@ def _ensure_sqlite_parent_dir(db_url: str) -> None:
     """Create the parent directory of a SQLite file DB before it is opened.
 
     SQLite creates the database file but not intermediate directories, so the
-    default ``sqlite+aiosqlite:///data/cabal.db`` dies with "unable to open
+    default database (``<state_root>/data/cabal.db``) dies with "unable to open
     database file" on a fresh bare-metal boot. Docker masks this via the
     volume mount, so the path went unexercised. No-op for in-memory or
     non-SQLite URLs, and never blocks startup on a URL it can't parse. #77.
@@ -339,7 +340,7 @@ MASTER_KEY_MISMATCH_MSG = (
 def create_app(
     *,
     agent: str = "all",
-    config_path: str = "identity.toml",
+    config_path: str | None = None,
     db_url: str | None = None,
     allow_dev_master_key: bool = False,
     run_migrations: bool = True,
@@ -383,7 +384,7 @@ def create_app(
             # message instead of a traceback (cabal#92).
             log.error(
                 "cabal.master_key_mismatch",
-                db_url=db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL,
+                db_url=effective_db_url(db_url),
                 key_source=describe_master_key_source(),
                 msg=MASTER_KEY_MISMATCH_MSG,
             )
@@ -393,7 +394,7 @@ def create_app(
                 raise
             log.error(
                 "cabal.encrypted_row_damaged",
-                db_url=db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL,
+                db_url=effective_db_url(db_url),
                 msg=(
                     "The stored signing key is not well-formed ciphertext, so "
                     "no master key will decrypt it. Restore the database from a "
@@ -423,7 +424,7 @@ def create_app(
         # Ensure the SQLite file's directory exists before anything opens it —
         # otherwise a fresh bare-metal boot dies with "unable to open database
         # file". Resolve the same effective URL make_engine will use. #77
-        _ensure_sqlite_parent_dir(db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL)
+        _ensure_sqlite_parent_dir(effective_db_url(db_url))
 
         engine = make_engine(db_url)
         install_sqlite_pragmas(engine)
@@ -449,11 +450,9 @@ def create_app(
 
         if run_migrations:
             # Resolve the same effective URL as _ensure_sqlite_parent_dir /
-            # make_engine (single default: DEFAULT_DB_URL), then convert the
+            # make_engine (single default: effective_db_url), then convert the
             # async driver to sync for alembic.
-            sync_url = (
-                db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL
-            ).replace("sqlite+aiosqlite://", "sqlite://", 1)
+            sync_url = effective_db_url(db_url).replace("sqlite+aiosqlite://", "sqlite://", 1)
             # Log migration/DB-init failures loudly before re-raising. On a
             # bare-metal boot uvicorn can exit on a startup exception without
             # the traceback reaching the terminal, so the operator sees a
@@ -475,8 +474,13 @@ def create_app(
 
         # Sync personas declared in identity.toml (if the file exists).
         identity: IdentityConfig | None = None
-        config_path_obj = Path(config_path)
+        # None means "nobody chose" — resolve_identity_path decides between the
+        # working directory and ~/.cabal (#211). An explicit value, including the
+        # container's /app/identity.toml, is used exactly as given.
+        config_path_obj = resolve_identity_path(config_path)
         _app.state.identity_path = config_path_obj
+        _app.state.config_path = str(config_path_obj)
+        log.info("cabal.identity_path", path=str(config_path_obj), db_url=effective_db_url(db_url))
         if config_path_obj.exists():
             identity = load_identity(config_path_obj)
             async with open_session(sessionmaker) as session:

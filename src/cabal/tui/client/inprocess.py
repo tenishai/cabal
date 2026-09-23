@@ -34,7 +34,7 @@ class InProcessBrokerClient:
     def __init__(
         self,
         default_persona: str = "archivist",
-        config_path: str = "identity.toml",
+        config_path: str | None = None,
         db_url: str | None = None,
         acompletion_fn: Any | None = None,
         operator_token: str | None = None,

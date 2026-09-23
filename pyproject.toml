@@ -105,6 +105,13 @@ cabal = ["migrations/env.py", "migrations/script.py.mako", "migrations/versions/
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# WITHOUT THIS, `pytest` IN A WORKTREE TESTS THE CANONICAL CHECKOUT. `import
+# cabal` resolves through whatever is installed — normally an editable install
+# pointing at the main clone — so a branch's changes are invisible and the run
+# is green about code you are not looking at. A new MODULE fails loudly
+# (ModuleNotFoundError), which is how this was found; an edited one passes
+# silently, which is worse. Same defect as liminal#85.
+pythonpath = ["src"]
 markers = [
     "integration: spins up a live daemon / external service; excluded from the unit CI job (which runs `-m 'not integration'`) and covered by the integration job. Runs locally by default.",
 ]
