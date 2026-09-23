@@ -30,6 +30,7 @@ from sqlalchemy import select
 
 from cabal import __version__
 from cabal.agents.echo import EchoAgent
+from cabal.config.home import resolve_identity_path
 from cabal.config.identity import (
     GuardrailsConfig,
     IdentityConfig,
@@ -339,7 +340,7 @@ MASTER_KEY_MISMATCH_MSG = (
 def create_app(
     *,
     agent: str = "all",
-    config_path: str = "identity.toml",
+    config_path: str | None = None,
     db_url: str | None = None,
     allow_dev_master_key: bool = False,
     run_migrations: bool = True,
@@ -475,7 +476,10 @@ def create_app(
 
         # Sync personas declared in identity.toml (if the file exists).
         identity: IdentityConfig | None = None
-        config_path_obj = Path(config_path)
+        # None means "nobody chose" — resolve_identity_path decides between the
+        # working directory and ~/.cabal (#211). An explicit value, including the
+        # container's /app/identity.toml, is used exactly as given.
+        config_path_obj = resolve_identity_path(config_path)
         _app.state.identity_path = config_path_obj
         if config_path_obj.exists():
             identity = load_identity(config_path_obj)

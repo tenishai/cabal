@@ -50,14 +50,21 @@ def daemon_up(
     ),
     host: str = typer.Option("127.0.0.1", help="Bind host."),
     port: int = typer.Option(7400, help="Bind port."),
-    config: str = typer.Option("identity.toml", help="Path to identity.toml."),
+    config: str = typer.Option(
+        "",
+        help=(
+            "Path to identity.toml. Default: ./identity.toml if it exists, "
+            "else $CABAL_HOME/identity.toml (~/.cabal/identity.toml)."
+        ),
+    ),
 ) -> None:
     """Launch Cabal Core."""
     import uvicorn
 
+    from cabal.config.home import resolve_identity_path
     from cabal.core.app import create_app
 
-    fastapi_app = create_app(agent=agent, config_path=config)
+    fastapi_app = create_app(agent=agent, config_path=str(resolve_identity_path(config or None)))
     uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
 
 
