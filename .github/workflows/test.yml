@@ -1,8 +1,9 @@
 name: test
 
-# unit runs on every push/PR — no private deps, no secret required.
-# integration runs on workflow_dispatch and pushes to main — requires
-# GH_PAT_REPOS to clone the private techne and liminal sibling repos.
+# unit runs on every push to main and every same-repo PR (fork PRs run fork-pr,
+# its hosted twin) — no private deps, no secret required.
+# integration runs on workflow_dispatch only — requires GH_PAT_REPOS to clone
+# the private techne and liminal sibling repos.
 on:
   push:
     branches: [main]
@@ -43,6 +44,15 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: cabal/pyproject.toml
+      # The runner CONTAINER persists between jobs (same machine name across legs), so
+      # setup-python's interpreter in _work/_tool is shared: a bare `pip install` would
+      # let one job's packages satisfy the next job's imports (liminal#103 r1). A fresh
+      # venv per job, first on PATH, keeps each run to what it installed itself.
+      # setup-python stays (proven on this runner) rather than the image's interpreters.
+      - name: Fresh venv for this job
+        run: |
+          python -m venv --clear "$GITHUB_WORKSPACE/.venv-ci"
+          echo "$GITHUB_WORKSPACE/.venv-ci/bin" >> "$GITHUB_PATH"
 
       - name: Install (no siblings)
         working-directory: cabal
@@ -96,6 +106,15 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: cabal/pyproject.toml
+      # The runner CONTAINER persists between jobs (same machine name across legs), so
+      # setup-python's interpreter in _work/_tool is shared: a bare `pip install` would
+      # let one job's packages satisfy the next job's imports (liminal#103 r1). A fresh
+      # venv per job, first on PATH, keeps each run to what it installed itself.
+      # setup-python stays (proven on this runner) rather than the image's interpreters.
+      - name: Fresh venv for this job
+        run: |
+          python -m venv --clear "$GITHUB_WORKSPACE/.venv-ci"
+          echo "$GITHUB_WORKSPACE/.venv-ci/bin" >> "$GITHUB_PATH"
 
       - name: Install (with siblings)
         working-directory: cabal
