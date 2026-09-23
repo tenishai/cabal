@@ -112,21 +112,37 @@ pytest -q
 ## Quickstart (Docker Compose)
 
 ```bash
-cp identity.toml.example identity.toml   # REQUIRED: compose bind-mounts this file,
-                                         # and it is gitignored, so a fresh clone
-                                         # has only the .example. Without it Docker
-                                         # creates an empty DIRECTORY at that path
-                                         # and cabal-core fails trying to read it.
-make up                  # mints a fresh CABAL_MASTER_KEY into .env on first run
+make up                  # dev stack; nothing to prepare, see the note below
 make bootstrap           # mints operator + liminal service token, restarts liminal
 make demo                # 6-step smoke test: healthz → mint → init → tools/list → set → get
 ```
 
 Logs: `make logs`. Tear down: `make down`.
 
-The dev stack (`docker-compose.dev.yml`) includes cabal + liminal only. The
-production stack (`docker-compose.yml`) adds a LiteLLM proxy and Litestream
-sidecar replicating the SQLite DB.
+`make up` runs the **dev** stack (`docker-compose.dev.yml`), whose identity file
+is `compose/identity.dev.toml` — tracked, so a fresh clone already has it. Set
+`CABAL_IDENTITY_FILE` to point somewhere else.
+
+The **production** stack is different and is invoked directly, never through
+`make`:
+
+```bash
+cp identity.toml.example identity.toml   # REQUIRED — docker-compose.yml bind-mounts
+                                         # ./identity.toml, which is gitignored. Without
+                                         # this, Docker creates an empty DIRECTORY at
+                                         # that path and cabal-core fails reading it.
+docker compose -f docker-compose.yml up
+```
+
+It adds a LiteLLM proxy and a Litestream sidecar replicating the SQLite DB.
+
+> `CABAL_MASTER_KEY` encrypts the `signing_keys` and `secrets` tables.
+> `Makefile:6` generates a fresh one — but only when `.env` is absent, and `.env`
+> is currently **tracked in git**, so a fresh clone gets the committed key and the
+> rule never fires. Rotating that key and untracking the file is #196; until it
+> lands, generate your own with
+> `python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`
+> and replace the value before running anything you care about.
 
 ## Configuration (identity.toml)
 
