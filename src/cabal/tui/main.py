@@ -24,16 +24,19 @@ def main(
         help="Default persona to connect to.",
         show_default=True,
     ),
-    config: str = typer.Option(
-        "identity.toml",
+    config: str | None = typer.Option(
+        None,
         "--config",
-        help="Path to identity.toml configuration file.",
-        show_default=True,
+        help=(
+            "Path to identity.toml. Default: ./identity.toml when the working "
+            "directory holds cabal state (identity.toml, data/cabal.db or "
+            "data/.master_key), else $CABAL_HOME/identity.toml (~/.cabal)."
+        ),
     ),
     db_url: str | None = typer.Option(
         None,
         "--db-url",
-        help="SQLAlchemy database URL (overrides identity.toml default).",
+        help="SQLAlchemy database URL. Default: CABAL_DB_URL, else data/cabal.db under the state root.",
     ),
 ) -> None:
     """Launch the Cabal TUI.

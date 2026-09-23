@@ -185,8 +185,10 @@ safety_tier = "moderate"
 #
 # A SECOND IDENTITY NEEDS CABAL_DB_URL, and this catches people out:
 # `cabal.data_dir` below does NOT set the sqlite path. The engine reads
-# CABAL_DB_URL or falls back to a CWD-relative default, so a second identity
-# run without it writes into the FIRST one's database.
+# CABAL_DB_URL or falls back to one default per root (./data/cabal.db when the
+# working directory holds cabal state, else $CABAL_HOME/data/cabal.db), so a
+# second identity run from the same root without it writes into the FIRST one's
+# database.
 #
 #   export CABAL_DB_URL=sqlite+aiosqlite:///data-second/cabal.db
 #

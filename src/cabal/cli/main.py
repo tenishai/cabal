@@ -12,7 +12,6 @@ Phase 1 surface (per cabal-handoff.md §4):
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -50,14 +49,22 @@ def daemon_up(
     ),
     host: str = typer.Option("127.0.0.1", help="Bind host."),
     port: int = typer.Option(7400, help="Bind port."),
-    config: str = typer.Option("identity.toml", help="Path to identity.toml."),
+    config: str = typer.Option(
+        "",
+        help=(
+            "Path to identity.toml. Default: ./identity.toml when the working "
+            "directory holds cabal state (identity.toml, data/cabal.db or "
+            "data/.master_key), else $CABAL_HOME/identity.toml (~/.cabal)."
+        ),
+    ),
 ) -> None:
     """Launch Cabal Core."""
     import uvicorn
 
+    from cabal.config.home import resolve_identity_path
     from cabal.core.app import create_app
 
-    fastapi_app = create_app(agent=agent, config_path=config)
+    fastapi_app = create_app(agent=agent, config_path=str(resolve_identity_path(config)))
     uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
 
 
@@ -90,7 +97,7 @@ def reset_auth_cmd(
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
     db_url: str = typer.Option(
-        "", "--db-url", help="Override the database URL (default: CABAL_DB_URL)."
+        "", "--db-url", help="Override the database URL (default: CABAL_DB_URL, else data/cabal.db under the state root)."
     ),
 ) -> None:
     """Recover from a lost or changed CABAL_MASTER_KEY (cabal#92).
@@ -103,9 +110,9 @@ def reset_auth_cmd(
     here that cannot be regenerated.
     """
     from cabal.core.auth.reset import ResetError, reset_auth, sqlite_path_from_url
-    from cabal.core.db import DEFAULT_DB_URL
+    from cabal.core.db import effective_db_url
 
-    url = db_url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL
+    url = effective_db_url(db_url or None)
     try:
         path = sqlite_path_from_url(url)
     except ResetError as exc:

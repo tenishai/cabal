@@ -3,7 +3,8 @@
 The master key encrypts every secret in the `signing_keys` and `secrets`
 tables. In production the operator MUST set `CABAL_MASTER_KEY` (32-byte
 url-safe-base64). In dev, if the env is unset and a sentinel allow file is
-present, a master key is generated on disk at `data/.master_key` with 0600.
+present, a master key is generated on disk at `<state_root>/data/.master_key`
+(see cabal.config.home) with 0600.
 
 The dev fallback is loud — startup logs a warning so an operator who set
 it up accidentally can never miss the regression risk.
@@ -19,10 +20,9 @@ from pathlib import Path
 import structlog
 from cryptography.fernet import Fernet
 
-log = structlog.get_logger(__name__)
+from cabal.config.home import default_master_key_path
 
-#: Where the dev fallback key lives when no explicit path is given.
-_DEV_FALLBACK_PATH = "data/.master_key"
+log = structlog.get_logger(__name__)
 
 
 class MasterKeyError(RuntimeError):
@@ -84,12 +84,12 @@ def resolve_master_key(
     raw = env_map.get("CABAL_MASTER_KEY")
     if raw:
         # TWO SOURCES THAT DISAGREE IS THE TRAP THAT CREATES cabal#92 MODE A.
-        # The dev fallback writes data/.master_key while operators also export
+        # The dev fallback writes <state_root>/data/.master_key while operators also export
         # the env var; whichever ran first encrypted the rows, and the other
         # silently wins on the next boot. Warn — do not "fix" it by preferring
         # the file, because the env var is the documented production source and
         # switching precedence would brick the opposite population.
-        fallback = dev_fallback_path or Path(_DEV_FALLBACK_PATH)
+        fallback = dev_fallback_path or default_master_key_path(announce=False)
         if fallback.exists():
             try:
                 on_disk = fallback.read_text().strip()
@@ -115,7 +115,7 @@ def resolve_master_key(
             "or pass --dev to enable the on-disk fallback."
         )
 
-    path = dev_fallback_path or Path(_DEV_FALLBACK_PATH)
+    path = dev_fallback_path or default_master_key_path()
     if path.exists():
         return _validate_fernet_key(path.read_text().strip())
 
@@ -149,7 +149,7 @@ def describe_master_key_source(
     env_map = env if env is not None else dict(os.environ)
     if env_map.get("CABAL_MASTER_KEY"):
         return "the CABAL_MASTER_KEY environment variable"
-    path = dev_fallback_path or Path(_DEV_FALLBACK_PATH)
+    path = dev_fallback_path or default_master_key_path()
     return f"the dev fallback file {path}"
 
 
