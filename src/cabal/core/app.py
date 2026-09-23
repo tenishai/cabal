@@ -56,7 +56,13 @@ from cabal.core.budget_store import (
     SqliteDelegationBudgetStore,
 )
 from cabal.core.bulletin import store as bulletin_store
-from cabal.core.db import effective_db_url, make_engine, make_sessionmaker, open_session
+from cabal.core.db import (
+    effective_db_url,
+    make_engine,
+    make_sessionmaker,
+    open_session,
+    sync_db_url,
+)
 from cabal.core.db_pragmas import install_sqlite_pragmas
 from cabal.core.dispatch_timeout import (
     DISPATCH_CONNECT_TIMEOUT_S,  # noqa: F401  re-exported; imported from app by tests
@@ -452,7 +458,7 @@ def create_app(
             # Resolve the same effective URL as _ensure_sqlite_parent_dir /
             # make_engine (single default: effective_db_url), then convert the
             # async driver to sync for alembic.
-            sync_url = effective_db_url(db_url).replace("sqlite+aiosqlite://", "sqlite://", 1)
+            sync_url = sync_db_url(db_url)
             # Log migration/DB-init failures loudly before re-raising. On a
             # bare-metal boot uvicorn can exit on a startup exception without
             # the traceback reaching the terminal, so the operator sees a

@@ -200,3 +200,20 @@ async def test_a_fresh_install_writes_nothing_into_the_checkout(tmp_path, monkey
     assert list(checkout.iterdir()) == [], f"cabal wrote into the checkout: {list(checkout.rglob('*'))}"
     assert (home_dir / DATA_DIRNAME / "cabal.db").exists()
     assert (home_dir / DATA_DIRNAME / ".master_key").exists()
+
+
+def test_the_migration_url_follows_the_same_root(tmp_path, monkeypatch):
+    """#215: alembic's default must be the app's default, minus the async driver.
+    migrations/env.py cannot be imported without running migrations, so it
+    delegates to sync_db_url, which is tested here."""
+    from cabal.core.db import sync_db_url
+
+    monkeypatch.setenv(HOME_ENV, str(tmp_path / "home"))
+    monkeypatch.delenv("CABAL_DB_URL", raising=False)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+    assert sync_db_url() == f"sqlite:///{tmp_path / 'home' / DATA_DIRNAME / 'cabal.db'}"
+
+    monkeypatch.setenv("CABAL_DB_URL", "sqlite+aiosqlite:////data/cabal.db")
+    assert sync_db_url() == "sqlite:////data/cabal.db"

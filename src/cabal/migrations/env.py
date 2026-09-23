@@ -35,11 +35,9 @@ def _resolve_url() -> str:
     explicit = config.get_main_option("sqlalchemy.url")
     if explicit:
         return explicit
-    from cabal.config.home import default_db_url
+    from cabal.core.db import sync_db_url
 
-    url = os.environ.get("CABAL_DB_URL") or default_db_url(sync=True)
-    # Strip aiosqlite driver if present (Alembic is sync).
-    return url.replace("sqlite+aiosqlite://", "sqlite://", 1)
+    return sync_db_url()
 
 
 target_metadata = Base.metadata
