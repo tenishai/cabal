@@ -125,15 +125,18 @@ is `compose/identity.dev.toml` — tracked, so a fresh clone already has it. Set
 
 The **production** stack (`docker-compose.yml`) adds a LiteLLM proxy and a
 Litestream sidecar replicating the SQLite DB. It is invoked directly, never
-through `make`, and **it is not a two-line quickstart** — it needs three things
+through `make`, and **it is not a two-line quickstart** — it needs four things
 the dev stack does not:
 
 1. `cp identity.toml.example identity.toml`. The compose file bind-mounts
    `./identity.toml`, which is gitignored; without it Docker creates an empty
    *directory* at that path and cabal-core fails reading it.
-2. `LITELLM_MASTER_KEY` in `.env`. Declared `:?`, so compose refuses to start
+2. `CABAL_MASTER_KEY` in `.env`, also `:?`. `.env` is gitignored and only
+   `make` creates it, so a production checkout has to write it:
+   `echo "CABAL_MASTER_KEY=$(python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())")" >> .env`
+3. `LITELLM_MASTER_KEY` in `.env`. Declared `:?`, so compose refuses to start
    anything without it.
-3. `LIMINAL_CABAL_TOKEN` in `.env`, also `:?`. This one is circular: the token
+4. `LIMINAL_CABAL_TOKEN` in `.env`, also `:?`. This one is circular: the token
    is minted by cabal-core, and compose checks every `:?` variable in the file
    before starting any service, including when you start only cabal-core. The
    dev stack avoids it (the token is optional there, and `make bootstrap` fills
@@ -149,16 +152,15 @@ the dev stack does not:
    docker compose -f docker-compose.yml up -d
    ```
 
-`docker compose -f docker-compose.yml config` exits non-zero until 2 and 3 are
-set — run it first to check rather than discovering it during `up`.
+`docker compose -f docker-compose.yml config` exits non-zero until 2, 3 and 4
+are set — run it first to check rather than discovering it during `up`.
 
-> `CABAL_MASTER_KEY` encrypts the `signing_keys` and `secrets` tables.
-> `Makefile:6` generates a fresh one — but only when `.env` is absent, and `.env`
-> is currently **tracked in git**, so a fresh clone gets the committed key and the
-> rule never fires. Rotating that key and untracking the file is #196; until it
-> lands, generate your own with
-> `python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`
-> and replace the value before running anything you care about.
+> `CABAL_MASTER_KEY` encrypts the `signing_keys` and `secrets` tables. For the
+> dev stack, `make up` writes a fresh one into `.env` on first run (`Makefile:6`),
+> and `.env` is gitignored. Keep that key: change it and the stored rows can no
+> longer be decrypted (`.env.example` explains `cbl reset-auth`). A key that was
+> committed to this repo before 2026-09-23 is rotated and dead, but it is still in
+> git history (#196), so never reuse anything from an old `.env`.
 
 ## Configuration (identity.toml)
 
