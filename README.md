@@ -134,10 +134,20 @@ the dev stack does not:
 2. `LITELLM_MASTER_KEY` in `.env`. Declared `:?`, so compose refuses to start
    anything without it.
 3. `LIMINAL_CABAL_TOKEN` in `.env`, also `:?`. This one is circular: the token
-   is minted by `cbl token mint-service --scope secrets-fetch`, which needs
-   cabal-core already running. The dev stack solves it with `make bootstrap`;
-   the production stack has no equivalent yet, so bring cabal-core up first,
-   mint the token, then start the full stack.
+   is minted by cabal-core, and compose checks every `:?` variable in the file
+   before starting any service, including when you start only cabal-core. The
+   dev stack avoids it (the token is optional there, and `make bootstrap` fills
+   it in). For production, start from a placeholder:
+
+   ```bash
+   echo 'LIMINAL_CABAL_TOKEN=placeholder' >> .env
+   docker compose -f docker-compose.yml up -d cabal-core
+   docker compose -f docker-compose.yml logs cabal-core | grep bootstrap_code
+   cbl login --code <CODE>                         # the code from that log line
+   cbl token mint-service --scope secrets-fetch    # prints the token
+   # replace the placeholder in .env with the printed token, then:
+   docker compose -f docker-compose.yml up -d
+   ```
 
 `docker compose -f docker-compose.yml config` exits non-zero until 2 and 3 are
 set — run it first to check rather than discovering it during `up`.
