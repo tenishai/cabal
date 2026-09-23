@@ -209,7 +209,7 @@ Linked feedback memory: `feedback-decision-authority`.
 
 - **Question**: techne is not on PyPI. How should cabal depend on it?
 - **Choice**: Sibling-directory convention. Anyone running cabal locally is expected
-  to have `dimartin/techne` cloned as a sibling of `cabal` (`../techne`). Cabal's
+  to have `tenishai/techne` cloned as a sibling of `cabal` (`../techne`). Cabal's
   `pyproject.toml` does not list techne; the README's dev quickstart adds
   `pip install -e ../techne` as a separate step. The Dockerfile uses BuildKit
   additional contexts to install techne the same way during image builds.

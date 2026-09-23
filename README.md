@@ -39,7 +39,12 @@ src/cabal/
     routes/       admin, a2a, tasks, well-known, auth, healthz
     observability/ Trace exporter + Langfuse adapter
   cli/            cbl entrypoint
-  personas/       LLMPersona, MasonPrimusPersona, EchoPersona
+  tui/            cabal entrypoint — the Textual terminal UI
+  agents/         LLMPersona, EchoAgent, and personas/ (MasonPrimusPersona)
+  archivist/      Shared-memory sync: gitmemory, dedup, promote, store
+  librarian/      Document indexing + adapters
+  handlers/       liminal-facing MCP handlers: archivist, code, documents, patterns
+  codex/          Code-graph blame and repo resolution
   config/         identity.toml loader
   migrations/     Alembic revisions (ship as package data; cabal#79)
 tests/            pytest suite
@@ -107,7 +112,12 @@ pytest -q
 ## Quickstart (Docker Compose)
 
 ```bash
-make up
+cp identity.toml.example identity.toml   # REQUIRED: compose bind-mounts this file,
+                                         # and it is gitignored, so a fresh clone
+                                         # has only the .example. Without it Docker
+                                         # creates an empty DIRECTORY at that path
+                                         # and cabal-core fails trying to read it.
+make up                  # mints a fresh CABAL_MASTER_KEY into .env on first run
 make bootstrap           # mints operator + liminal service token, restarts liminal
 make demo                # 6-step smoke test: healthz → mint → init → tools/list → set → get
 ```
@@ -266,4 +276,18 @@ handlers register locally.
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](LICENSE).
+Copyright (C) 2026 tenishai
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License along
+with this program. If not, see <https://www.gnu.org/licenses/>.
+
+Full text: [LICENSE](LICENSE).
