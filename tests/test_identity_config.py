@@ -142,9 +142,11 @@ def test_a_relative_data_dir_env_anchors_like_the_identity_value(
 ) -> None:
     from cabal.config.identity import DATA_DIR_ENV
 
-    cfg_path = tmp_path / "identity.toml"
+    # In a subdirectory, because the autouse fixture chdirs to tmp_path: with the
+    # file there too, anchoring at the CWD would pass as well (Prudence, #217 r1).
+    cfg_path = tmp_path / "cfg" / "identity.toml"
     monkeypatch.setenv(DATA_DIR_ENV, "elsewhere")
-    assert resolve_data_dir(None, cfg_path) == tmp_path / "elsewhere"
+    assert resolve_data_dir(None, cfg_path) == tmp_path / "cfg" / "elsewhere"
 
 
 def test_an_unset_data_dir_env_leaves_the_identity_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
