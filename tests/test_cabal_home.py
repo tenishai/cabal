@@ -98,12 +98,44 @@ def test_falsy_explicit_values_mean_unset(explicit, tmp_path, monkeypatch):
     assert resolved == tmp_path / "home" / IDENTITY_FILENAME
 
 
-def test_a_data_directory_alone_is_an_existing_install(tmp_path, monkeypatch):
-    """A checkout that ran without identity.toml still has its database in ./data."""
+@pytest.mark.parametrize("marker", ["cabal.db", ".master_key"])
+def test_a_database_or_key_alone_is_an_existing_install(marker, tmp_path, monkeypatch):
+    """A checkout that ran without identity.toml still has its state in ./data."""
     monkeypatch.setenv(HOME_ENV, str(tmp_path / "home"))
     checkout = tmp_path / "checkout"
     (checkout / DATA_DIRNAME).mkdir(parents=True)
+    (checkout / DATA_DIRNAME / marker).write_bytes(b"")
     assert state_root(cwd=checkout) == checkout
+
+
+def test_someone_elses_data_directory_is_not_an_install(tmp_path, monkeypatch):
+    """Prudence r2 probe D: `data/` alone is a common name. Treating it as cabal
+    state put the dev master key inside another project's tree."""
+    monkeypatch.setenv(HOME_ENV, str(tmp_path / "home"))
+    project = tmp_path / "project"
+    (project / DATA_DIRNAME).mkdir(parents=True)
+    (project / DATA_DIRNAME / "notebook.csv").write_text("a,b\n")
+    assert state_root(cwd=project) == tmp_path / "home"
+    assert default_master_key_path(cwd=project) == tmp_path / "home" / DATA_DIRNAME / ".master_key"
+
+
+def test_the_key_disagreement_check_does_not_announce(tmp_path, monkeypatch):
+    """Prudence r2 nit: every container has /app/identity.toml in its cwd and sets
+    CABAL_MASTER_KEY, so the check that compares against the on-disk default ran
+    state_root() and logged move-your-state advice that does not apply there."""
+    from cryptography.fernet import Fernet
+
+    import cabal.config.home as home
+    from cabal.core.auth.master_key import resolve_master_key
+
+    monkeypatch.setattr(home, "_hinted", set())
+    logged = []
+    monkeypatch.setattr(home.log, "info", lambda event, **kw: logged.append(event))
+    (tmp_path / IDENTITY_FILENAME).write_text("[cabal]\n")
+    monkeypatch.chdir(tmp_path)
+
+    resolve_master_key(env={"CABAL_MASTER_KEY": Fernet.generate_key().decode()})
+    assert logged == []
 
 
 def test_every_default_shares_one_root(tmp_path, monkeypatch):

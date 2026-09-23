@@ -52,8 +52,9 @@ def daemon_up(
     config: str = typer.Option(
         "",
         help=(
-            "Path to identity.toml. Default: ./identity.toml if it exists, "
-            "else $CABAL_HOME/identity.toml (~/.cabal/identity.toml)."
+            "Path to identity.toml. Default: ./identity.toml when the working "
+            "directory holds cabal state (identity.toml, data/cabal.db or "
+            "data/.master_key), else $CABAL_HOME/identity.toml (~/.cabal)."
         ),
     ),
 ) -> None:

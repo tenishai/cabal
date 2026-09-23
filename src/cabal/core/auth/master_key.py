@@ -24,8 +24,6 @@ from cabal.config.home import default_master_key_path
 
 log = structlog.get_logger(__name__)
 
-#: Where the dev fallback key lives when no explicit path is given.
-
 
 class MasterKeyError(RuntimeError):
     """Raised when the master key is unavailable or unusable."""
@@ -91,7 +89,7 @@ def resolve_master_key(
         # silently wins on the next boot. Warn — do not "fix" it by preferring
         # the file, because the env var is the documented production source and
         # switching precedence would brick the opposite population.
-        fallback = dev_fallback_path or default_master_key_path()
+        fallback = dev_fallback_path or default_master_key_path(announce=False)
         if fallback.exists():
             try:
                 on_disk = fallback.read_text().strip()
