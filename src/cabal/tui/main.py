@@ -24,11 +24,13 @@ def main(
         help="Default persona to connect to.",
         show_default=True,
     ),
-    config: str = typer.Option(
-        "identity.toml",
+    config: str | None = typer.Option(
+        None,
         "--config",
-        help="Path to identity.toml configuration file.",
-        show_default=True,
+        help=(
+            "Path to identity.toml. Default: ./identity.toml when the working "
+            "directory holds cabal state, else ~/.cabal/identity.toml."
+        ),
     ),
     db_url: str | None = typer.Option(
         None,

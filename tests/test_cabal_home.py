@@ -14,10 +14,14 @@ from pathlib import Path
 import pytest
 
 from cabal.config.home import (
+    DATA_DIRNAME,
     HOME_ENV,
     IDENTITY_FILENAME,
     cabal_home,
+    default_db_url,
+    default_master_key_path,
     resolve_identity_path,
+    state_root,
 )
 
 
@@ -88,5 +92,79 @@ def test_falsy_explicit_values_mean_unset(explicit, tmp_path, monkeypatch):
     monkeypatch.setenv(HOME_ENV, str(tmp_path / "home"))
     empty = tmp_path / "empty"
     empty.mkdir()
-    resolved = resolve_identity_path(explicit or None, cwd=empty)
+    # Calls the function with the raw value, so the guard under test is the
+    # function's own — not a re-implementation of the CLI's (Prudence r1, #212).
+    resolved = resolve_identity_path(explicit, cwd=empty)
     assert resolved == tmp_path / "home" / IDENTITY_FILENAME
+
+
+def test_a_data_directory_alone_is_an_existing_install(tmp_path, monkeypatch):
+    """A checkout that ran without identity.toml still has its database in ./data."""
+    monkeypatch.setenv(HOME_ENV, str(tmp_path / "home"))
+    checkout = tmp_path / "checkout"
+    (checkout / DATA_DIRNAME).mkdir(parents=True)
+    assert state_root(cwd=checkout) == checkout
+
+
+def test_every_default_shares_one_root(tmp_path, monkeypatch):
+    """The split Prudence found in r1: identity moved, cabal.db and the key did not."""
+    monkeypatch.setenv(HOME_ENV, str(tmp_path / "home"))
+    for cwd, root in (
+        (tmp_path / "empty", tmp_path / "home"),
+        (tmp_path / "legacy", tmp_path / "legacy"),
+    ):
+        cwd.mkdir()
+        if cwd.name == "legacy":
+            (cwd / IDENTITY_FILENAME).write_text("[cabal]\n")
+        assert resolve_identity_path(None, cwd=cwd).parent == root
+        assert default_db_url(cwd=cwd) == f"sqlite+aiosqlite:///{root / DATA_DIRNAME / 'cabal.db'}"
+        assert default_db_url(cwd=cwd, sync=True).startswith("sqlite:///")
+        assert default_master_key_path(cwd=cwd) == root / DATA_DIRNAME / ".master_key"
+
+
+def test_the_upgrade_hint_names_everything_that_has_to_move(tmp_path, monkeypatch, capsys):
+    """r1 found the hint said "move it" (one file) and offered CABAL_HOME, which
+    has no effect while ./identity.toml exists. Moving only the identity file
+    moves data_dir with it and leaves the database behind."""
+    import cabal.config.home as home
+
+    monkeypatch.setenv(HOME_ENV, str(tmp_path / "home"))
+    monkeypatch.setattr(home, "_hinted", set())
+    logged = []
+    monkeypatch.setattr(home.log, "info", lambda event, **kw: logged.append((event, kw)))
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / IDENTITY_FILENAME).write_text("[cabal]\n")
+
+    state_root(cwd=checkout)
+    state_root(cwd=checkout)
+
+    assert len(logged) == 1, "the hint should appear once per directory, not per call"
+    note = logged[0][1]["note"]
+    assert IDENTITY_FILENAME in note and f"{DATA_DIRNAME}/" in note and "BOTH" in note
+
+
+async def test_a_fresh_install_writes_nothing_into_the_checkout(tmp_path, monkeypatch):
+    """End to end through the real lifespan: the probe Prudence ran by hand in r1.
+
+    Nothing configured — no CABAL_DB_URL, no CABAL_MASTER_KEY, no --config —
+    from an empty working directory. Every file cabal creates must land under
+    CABAL_HOME, and the working directory must stay empty.
+    """
+    from cabal.core.app import create_app
+
+    home_dir = tmp_path / "home"
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    monkeypatch.setenv(HOME_ENV, str(home_dir))
+    monkeypatch.delenv("CABAL_DB_URL", raising=False)
+    monkeypatch.delenv("CABAL_MASTER_KEY", raising=False)
+    monkeypatch.chdir(checkout)
+
+    app = create_app(agent="all", allow_dev_master_key=True, print_bootstrap_code=False)
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert list(checkout.iterdir()) == [], f"cabal wrote into the checkout: {list(checkout.rglob('*'))}"
+    assert (home_dir / DATA_DIRNAME / "cabal.db").exists()
+    assert (home_dir / DATA_DIRNAME / ".master_key").exists()

@@ -20,7 +20,14 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-DEFAULT_DB_URL = "sqlite+aiosqlite:///data/cabal.db"
+
+def effective_db_url(url: str | None = None) -> str:
+    """The URL cabal will open: explicit, else ``CABAL_DB_URL``, else
+    ``<state_root>/data/cabal.db`` (#211). One function so every caller —
+    the engine, migrations, the startup logs and ``cbl reset-auth`` — agrees."""
+    from cabal.config.home import default_db_url
+
+    return url or os.environ.get("CABAL_DB_URL") or default_db_url()
 
 
 def make_engine(url: str | None = None, *, echo: bool = False) -> AsyncEngine:
@@ -30,7 +37,7 @@ def make_engine(url: str | None = None, *, echo: bool = False) -> AsyncEngine:
     on every connect via `connect_args` + an event listener registered in
     `cabal.core.db_pragmas`.
     """
-    url = url or os.environ.get("CABAL_DB_URL") or DEFAULT_DB_URL
+    url = effective_db_url(url)
     return create_async_engine(
         url,
         echo=echo,

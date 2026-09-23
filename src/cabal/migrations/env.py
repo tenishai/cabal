@@ -1,6 +1,6 @@
 """Alembic env.
 
-Reads DB URL from `CABAL_DB_URL` env var (or `data/cabal.db` default), uses
+Reads DB URL from `CABAL_DB_URL` env var (or `<state_root>/data/cabal.db`, see cabal.config.home), uses
 the SQLAlchemy metadata from `cabal.core.models.Base`, and runs migrations in
 either offline (--sql) or online mode.
 
@@ -35,7 +35,9 @@ def _resolve_url() -> str:
     explicit = config.get_main_option("sqlalchemy.url")
     if explicit:
         return explicit
-    url = os.environ.get("CABAL_DB_URL", "sqlite:///data/cabal.db")
+    from cabal.config.home import default_db_url
+
+    url = os.environ.get("CABAL_DB_URL") or default_db_url(sync=True)
     # Strip aiosqlite driver if present (Alembic is sync).
     return url.replace("sqlite+aiosqlite://", "sqlite://", 1)
 

@@ -525,11 +525,10 @@ def resolve_data_dir(identity: IdentityConfig | None, config_path: str | Path) -
     root; an absolute `data_dir` is used as-is.
 
     `config_path` must name the identity *file*, not a directory — its parent
-    is taken as the anchor. When it's a bare filename (the app default,
-    "identity.toml"), the anchor is the resolved CWD — which is exactly where
-    that file is read from — so data still lands beside the identity file. With
-    a bare default this coincides with a CWD-relative root; pass a config path
-    with a directory to anchor elsewhere.
+    is taken as the anchor. When it's a bare filename (e.g. ``--config
+    identity.toml``), the anchor is the resolved CWD — which is exactly where
+    that file is read from — so data still lands beside the identity file. The
+    app's own default is a full path from ``cabal.config.home`` (#211).
 
     Pure + dependency-free (no liminal/techne import) so it resolves the same
     whether or not liminal is wired — cabal works standalone.
