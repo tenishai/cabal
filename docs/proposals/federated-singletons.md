@@ -5,8 +5,8 @@
 | **Status** | Proposal |
 | **Authors** | Richard DiMartino + Raven (AI) |
 | **Created** | 2026-07-02 |
-| **Extends** | `docs/cabal.md` (Singleton personas, Q10; Two deployment modes) |
-| **Relates to** | techne#507 (federated fleets), liminal (JWKS verify + scope), `docs/cabal.md` open question §735 (team-scale bootstrap creds) |
+| **Extends** | Singleton personas and the two deployment modes. NOTE: this line cited `docs/cabal.md`, which does not exist in this repo (#202). The surviving description of singleton personas is [architecture.md](../architecture.md); the deployment-mode discussion was never carried over. |
+| **Relates to** | techne#507 (federated fleets), liminal (JWKS verify + scope), the team-scale open question — originally `docs/cabal.md` §735, a document this repo does not have (#202) — (team-scale bootstrap creds) |
 
 ---
 
@@ -40,7 +40,7 @@ router). What's new is the **graduation boundary**, the **parent principal**, an
 
 ## Motivation
 
-`docs/cabal.md` locks singleton personas (Q10) as members of a single cabal. Even
+The original design locked singleton personas (Q10) as members of a single cabal — recorded in `docs/cabal.md`, which this repo does not have (#202). Even
 in "production / scale mode," where Archivist runs in its own container, it stays
 inside the operator's trust domain: Cabal Core signs its tokens, the `grants` table
 gates it, it is *the operator's* Archivist reachable over HTTP.
@@ -48,10 +48,10 @@ gates it, it is *the operator's* Archivist reachable over HTTP.
 Two things push past that:
 
 1. **The federation thesis (techne#507).** The differentiator is *sovereign,
-   federated fleets* — Richard, shaz, and Kyle each run their own cabal. Shared
-   memory across those fleets means an agent in shaz's cabal must be able to deposit
-   into / query Richard's Archivist. That is a **cross-owner trust boundary**, which
-   the v1 design explicitly defers (`docs/cabal.md` §735 and the Director note).
+   federated fleets* — several operators each run their own cabal. Shared
+   memory across those fleets means an agent in bob's cabal must be able to deposit
+   into / query another operator's Archivist. That is a **cross-owner trust boundary**, which
+   the v1 design explicitly defers (`docs/cabal.md` §735 and the Director note — neither survives here, see #202).
 
 2. **The operator's framing (2026-07-02).** *"If we spin out the Archivist, he
    becomes his own thing — I'd stop using the local persona if a remote one is
@@ -71,7 +71,7 @@ So the v1 singleton has an undescribed third life-stage beyond `member/local` an
 | **member / containerized** | the cabal | Cabal Core (HTTP) | A2A over HTTP | Cabal Core + `grants` |
 | **sovereign / graduated** | *its own* | *itself* (multi-issuer) | A2A over HTTP | its own policy table |
 
-The first two are already in `docs/cabal.md` ("Single Package, Two Deployment
+The first two were already in the original design ("Single Package, Two Deployment
 Modes"). This doc adds the third. Graduation is **demand-driven** — you only
 graduate when a third party genuinely needs the persona; a solo operator never has
 to.
@@ -122,30 +122,30 @@ LiteLLM brain. Its trust config has two parts:
 
 ```toml
 [[issuer]]
-id       = "richard-cabal"                       # parent
-jwks_uri = "https://cabal.richard.<tailnet>.ts.net/jwks.json"
+id       = "alice-cabal"                       # parent
+jwks_uri = "https://cabal.alice.<tailnet>.ts.net/jwks.json"
 parent   = true
 
 [[issuer]]
-id       = "shaz-cabal"
-jwks_uri = "https://cabal.shaz.<tailnet>.ts.net/jwks.json"
+id       = "bob-cabal"
+jwks_uri = "https://cabal.bob.<tailnet>.ts.net/jwks.json"
 
 [[issuer]]
-id       = "kyle-cabal"
-jwks_uri = "https://cabal.kyle.<tailnet>.ts.net/jwks.json"
+id       = "carol-cabal"
+jwks_uri = "https://cabal.carol.<tailnet>.ts.net/jwks.json"
 ```
 
 **(b) Policy table** — `(issuer, persona) → scope set`, the sovereign service's own
 authz, owned by no cabal:
 
 ```
-richard-cabal / *          → mem:query, mem:append, mem:synthesize, admin:*     (parent, seeded)
-shaz-cabal    / rook       → mem:query, mem:append
-kyle-cabal    / *          → mem:query
+alice-cabal / *          → mem:query, mem:append, mem:synthesize, admin:*     (parent, seeded)
+bob-cabal    / rook       → mem:query, mem:append
+carol-cabal    / *          → mem:query
 ```
 
-**Caller flow.** An agent in shaz's cabal dispatches to the sovereign Archivist
-presenting its **normal home-cabal JWT** (RS256, minted by shaz's Cabal Core, with
+**Caller flow.** An agent in bob's cabal dispatches to the sovereign Archivist
+presenting its **normal home-cabal JWT** (RS256, minted by bob's Cabal Core, with
 `aud` including the Archivist's service id — see below). The gate:
 
 1. Reads `iss`; looks it up in the issuer registry; fetches/caches that cabal's JWKS.
@@ -160,7 +160,7 @@ single-cabal.
 
 **Audience minting.** For a dispatch to a `federated` persona, the caller's Cabal
 Core mints the inter-agent JWT with `aud` including the sovereign service id — the
-same per-target token minting cabal already does (`docs/cabal.md` D-010). The
+same per-target token minting cabal already does ([CABAL-DECISIONS.md D-010](../../CABAL-DECISIONS.md)). The
 sovereign endpoint's service id is known from the `federated` bulletin entry.
 
 ### 4. The parent — guardian, not owner
@@ -200,7 +200,7 @@ distinct from any cabal's identity. This is what it signs its AgentCard and
 responses with, and what clients pin (`service_identity_jwks` in the `federated`
 entry). Its data — the techne `archivist.db` / federated-memory store — moves with
 it (or stays put; it was already its own store). The techne outbox `→archivist`
-adapter (`docs/cabal.md` "Agent-local memory") now targets the sovereign endpoint,
+adapter (the original design's "Agent-local memory" section, not carried into this repo — #202) now targets the sovereign endpoint,
 authenticating with the home-cabal JWT.
 
 ---
@@ -241,8 +241,8 @@ cbl persona graduate archivist \
 #   retires the local handler.
 
 # Parent manages the federation (runs against the sovereign service; parent JWT).
-cbl federation grant  archivist shaz-cabal --scope mem:query,mem:append
-cbl federation revoke archivist kyle-cabal
+cbl federation grant  archivist bob-cabal --scope mem:query,mem:append
+cbl federation revoke archivist carol-cabal
 cbl federation ls     archivist                 # who's allowed, what scope
 cbl federation audit  archivist --since 24h
 
@@ -254,27 +254,27 @@ cbl persona reconfigure archivist --model opus --budget 50/day
 cbl persona absorb archivist
 ```
 
-A federated *client* cabal (shaz) simply adds a `federated` bulletin entry pointing
+A federated *client* cabal (bob) simply adds a `federated` bulletin entry pointing
 at the endpoint; its agents then dispatch normally. Its Cabal Core must publish
 `/jwks.json` reachably so the sovereign service can verify its agents.
 
 ---
 
-## Worked example — shaz's rook deposits a finding into Richard's Archivist
+## Worked example — bob's rook deposits a finding into alice's Archivist
 
 ```
-1. Richard: cbl persona graduate archivist --endpoint https://archivist.rd.ts.net --as-parent
-2. Richard: cbl federation grant archivist shaz-cabal --scope mem:query,mem:append
-3. shaz adds a `federated` archivist entry (endpoint + service jwks) to his bulletin board.
-4. shaz-rook dispatches deposit_finding → shaz Cabal Core mints JWT
-   { iss: shaz-cabal, sub: rook-primus, aud: [archivist.rd], scope:[...], persona: rook }
-5. Sovereign Archivist gate: iss=shaz-cabal → fetch shaz JWKS → verify sig+aud+exp
-   → policy (shaz-cabal, rook) has mem:append → ALLOW → deposit into federated memory.
-6. Richard (parent) later: cbl federation audit archivist  → sees shaz-rook's deposit.
-7. If shaz misbehaves: Richard: cbl federation revoke archivist shaz-cabal  → done, no shaz involvement.
+1. alice: cbl persona graduate archivist --endpoint https://archivist.alice.example --as-parent
+2. alice: cbl federation grant archivist bob-cabal --scope mem:query,mem:append
+3. bob adds a `federated` archivist entry (endpoint + service jwks) to their bulletin board.
+4. bob-rook dispatches deposit_finding → bob Cabal Core mints JWT
+   { iss: bob-cabal, sub: rook-primus, aud: [archivist.alice], scope:[...], persona: rook }
+5. Sovereign Archivist gate: iss=bob-cabal → fetch bob JWKS → verify sig+aud+exp
+   → policy (bob-cabal, rook) has mem:append → ALLOW → deposit into federated memory.
+6. alice (parent) later: cbl federation audit archivist  → sees bob-rook's deposit.
+7. If bob misbehaves: alice: cbl federation revoke archivist bob-cabal  → done, no bob involvement.
 ```
 
-Richard's own rook uses the identical path (home JWT, scoped), plus the separate
+alice's own rook uses the identical path (home JWT, scoped), plus the separate
 `admin:*` channel for management.
 
 ---

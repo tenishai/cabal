@@ -1,7 +1,7 @@
 # Proposal: Claude Code as viewer, cabal as dispatch surface, pluggable persona executors
 
 > ## ⚠️ SUPERSEDED, same day, by
-> ## [`agents/operator-fleet-design.md`](../../../agents/operator-fleet-design.md)
+> ## `operator-fleet-design.md`, in the agents repo (not public; summary below)
 >
 > Two errors this draft makes, both corrected there:
 >
@@ -10,7 +10,7 @@
 >    accumulating memory. A static persona cannot hold the organic growth of a
 >    session, which is the entire point.
 > 2. **Wrong scope.** It scopes in multi-viewer (Zed/Neovim/mobile) and
->    multi-operator (Shaz/Kyle). Rich ruled both out — one viewer, one operator.
+>    multi-operator. Both were ruled out — one viewer, one operator.
 >
 > **Kept for**: §6 (Anthropic auth/licensing, verified) and §7 (ACP protocol
 > shape, cost asymmetry, adapter landscape). Both are cited from the successor
@@ -47,8 +47,8 @@ name, so it is not involved.
 
 ## 2. The reframe
 
-"Poe" is the operator's name for their agent, not a persona type. Shaz would have
-Ember; Kyle would have Kai. The slot is per-operator identity, filled
+"Poe" is one operator's name for their agent, not a persona type — a second
+operator names their own. The slot is per-operator identity, filled
 dynamically — a multiplex, not a fixed roster.
 
 The topology inverts from the obvious one:
@@ -123,7 +123,7 @@ grantable to the viewer/operator token and denied to persona tokens. limenal's
 `sub = f"operator:{operator_id}"` (`core/routes/auth.py:75`). **One operator per
 cabal instance.**
 
-Fine for one operator with many agents. Not sufficient for Richard/Shaz/Kyle
+Fine for one operator with many agents. Not sufficient for several operators
 each with their own named agent against a shared cabal. That is a real change to
 cabal's auth model, not a config tweak.
 
@@ -295,8 +295,8 @@ drive sequencing.
 2. **If cabal implements the ACP agent side, the viewer stops being singular.**
    Zed, Neovim and mobile join Claude Code as viewers, each authenticating as its
    own client. That is the §2 multiplex, delivered at the client layer, on
-   §7.3's small side. It does **not** remove the §4.2 `operator_id` work — Shaz
-   and Kyle still need distinct operator identities in cabal core — but it
+   §7.3's small side. It does **not** remove the §4.2 `operator_id` work —
+   separate operators still need distinct identities in cabal core — but it
    decouples "who is looking" from "who is authorized."
 
 ### 7.5 Adapter landscape — the fork follows the licensing line
