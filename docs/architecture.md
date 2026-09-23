@@ -1,6 +1,6 @@
 # Cabal — System Architecture
 
-One diagram, one read. For full design rationale see [docs/cabal.md](../../docs/cabal.md);
+One diagram, one read. For the decisions behind it see [CABAL-DECISIONS.md](../CABAL-DECISIONS.md);
 for the build log see [STATUS.md](../STATUS.md) and [CABAL-DECISIONS.md](../CABAL-DECISIONS.md).
 
 ```mermaid
@@ -154,4 +154,7 @@ per-virtual-key spend. Litestream pushes WAL frames to object storage.
 - Hot-reload (`POST /admin/reload/identity`) — operational surface, not data flow.
 - Streaming SSE (`message/stream`) — same broker path with token-by-token framing
   on top.
-- Detailed lifecycle hook taxonomy — see `docs/cabal.md` § Lifecycle Hooks.
+- Detailed lifecycle hook taxonomy — NOT WRITTEN DOWN. `HookName` at
+  `src/cabal/core/hooks/registry.py:37` is the authority; the call sites are the taxonomy.
+  (This line used to point at a `docs/cabal.md` that does not exist in this
+  repo — see #202.)

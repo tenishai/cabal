@@ -5,8 +5,8 @@
 | **Status** | Proposal |
 | **Authors** | Richard DiMartino + Raven (AI) |
 | **Created** | 2026-07-02 |
-| **Extends** | `docs/cabal.md` (Singleton personas, Q10; Two deployment modes) |
-| **Relates to** | techne#507 (federated fleets), liminal (JWKS verify + scope), `docs/cabal.md` open question §735 (team-scale bootstrap creds) |
+| **Extends** | Singleton personas and the two deployment modes. NOTE: this line cited `docs/cabal.md`, which does not exist in this repo (#202). The surviving description of singleton personas is [architecture.md](../architecture.md); the deployment-mode discussion was never carried over. |
+| **Relates to** | techne#507 (federated fleets), liminal (JWKS verify + scope), the team-scale open question — originally `docs/cabal.md` §735, a document this repo does not have (#202) — (team-scale bootstrap creds) |
 
 ---
 
@@ -40,7 +40,7 @@ router). What's new is the **graduation boundary**, the **parent principal**, an
 
 ## Motivation
 
-`docs/cabal.md` locks singleton personas (Q10) as members of a single cabal. Even
+The original design locked singleton personas (Q10) as members of a single cabal — recorded in `docs/cabal.md`, which this repo does not have (#202). Even
 in "production / scale mode," where Archivist runs in its own container, it stays
 inside the operator's trust domain: Cabal Core signs its tokens, the `grants` table
 gates it, it is *the operator's* Archivist reachable over HTTP.
@@ -51,7 +51,7 @@ Two things push past that:
    federated fleets* — Richard, shaz, and Kyle each run their own cabal. Shared
    memory across those fleets means an agent in shaz's cabal must be able to deposit
    into / query Richard's Archivist. That is a **cross-owner trust boundary**, which
-   the v1 design explicitly defers (`docs/cabal.md` §735 and the Director note).
+   the v1 design explicitly defers (`docs/cabal.md` §735 and the Director note — neither survives here, see #202).
 
 2. **The operator's framing (2026-07-02).** *"If we spin out the Archivist, he
    becomes his own thing — I'd stop using the local persona if a remote one is
@@ -71,7 +71,7 @@ So the v1 singleton has an undescribed third life-stage beyond `member/local` an
 | **member / containerized** | the cabal | Cabal Core (HTTP) | A2A over HTTP | Cabal Core + `grants` |
 | **sovereign / graduated** | *its own* | *itself* (multi-issuer) | A2A over HTTP | its own policy table |
 
-The first two are already in `docs/cabal.md` ("Single Package, Two Deployment
+The first two were already in the original design ("Single Package, Two Deployment
 Modes"). This doc adds the third. Graduation is **demand-driven** — you only
 graduate when a third party genuinely needs the persona; a solo operator never has
 to.
@@ -160,7 +160,7 @@ single-cabal.
 
 **Audience minting.** For a dispatch to a `federated` persona, the caller's Cabal
 Core mints the inter-agent JWT with `aud` including the sovereign service id — the
-same per-target token minting cabal already does (`docs/cabal.md` D-010). The
+same per-target token minting cabal already does ([CABAL-DECISIONS.md D-010](../../CABAL-DECISIONS.md)). The
 sovereign endpoint's service id is known from the `federated` bulletin entry.
 
 ### 4. The parent — guardian, not owner
@@ -200,7 +200,7 @@ distinct from any cabal's identity. This is what it signs its AgentCard and
 responses with, and what clients pin (`service_identity_jwks` in the `federated`
 entry). Its data — the techne `archivist.db` / federated-memory store — moves with
 it (or stays put; it was already its own store). The techne outbox `→archivist`
-adapter (`docs/cabal.md` "Agent-local memory") now targets the sovereign endpoint,
+adapter (the original design's "Agent-local memory" section, not carried into this repo — #202) now targets the sovereign endpoint,
 authenticating with the home-cabal JWT.
 
 ---
