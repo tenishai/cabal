@@ -100,7 +100,9 @@ The TUI is one client of the Operator Channel. It maintains a **layout** of pane
 The word "mailbox" is overloaded in this codebase — these are two distinct things:
 
 - **(a) Archivist mailbox** — the planned tag-sliced inbox where sub-agents deposit findings for the operator (`deposit_finding` / `mailbox_list` / `mark_read` / `mark_acted`). Specified in investigation-engine.md PR-E; **not yet built**. The Archivist `EntryType` today is fact/decision/operation/error/procedure/document — no mailbox kind exists.
-- **(b) rookery mailbox** — the live standalone inter-agent MCP messaging server (`rookery-mcp` on dev02; `rookery_send` / `rookery_inbox`). Ships now and is independent of the Archivist.
+- **(b) rookery mailbox** — a standalone inter-agent MCP messaging server run outside this repo (`rookery-mcp`; `rookery_send` / `rookery_inbox`), independent of the Archivist. Whether it is still
+  running is not something this repo can tell you — it appears in no config, bulletin
+  entry or code here, only in these proposals.
 
 The TUI's **Mailbox pane** means **(a)** — the Archivist mailbox. It has nothing to render until PR-E lands.
 
