@@ -123,3 +123,36 @@ def test_unknown_section_warns(tmp_path: Path) -> None:
 def test_missing_file_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         load_identity(tmp_path / "nope.toml")
+
+
+def test_data_dir_env_wins_over_the_identity_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#214: the image sets CABAL_DATA_DIR=/data so a container keeps its stores on
+    the volume even when the mounted identity file says `data_dir = "data"`."""
+    from cabal.config.identity import DATA_DIR_ENV
+
+    cfg_path = tmp_path / "identity.toml"
+    cfg_path.write_text('[cabal]\ndata_dir = "data"\n')
+    cfg = load_identity(cfg_path)
+    monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path / "volume"))
+    assert resolve_data_dir(cfg, cfg_path) == tmp_path / "volume"
+
+
+def test_a_relative_data_dir_env_anchors_like_the_identity_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cabal.config.identity import DATA_DIR_ENV
+
+    # In a subdirectory, because the autouse fixture chdirs to tmp_path: with the
+    # file there too, anchoring at the CWD would pass as well (Prudence, #217 r1).
+    cfg_path = tmp_path / "cfg" / "identity.toml"
+    monkeypatch.setenv(DATA_DIR_ENV, "elsewhere")
+    assert resolve_data_dir(None, cfg_path) == tmp_path / "cfg" / "elsewhere"
+
+
+def test_an_unset_data_dir_env_leaves_the_identity_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from cabal.config.identity import DATA_DIR_ENV
+
+    monkeypatch.delenv(DATA_DIR_ENV, raising=False)
+    cfg_path = tmp_path / "identity.toml"
+    cfg_path.write_text('[cabal]\ndata_dir = "mine"\n')
+    assert resolve_data_dir(load_identity(cfg_path), cfg_path) == tmp_path / "mine"
