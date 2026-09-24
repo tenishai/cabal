@@ -156,7 +156,7 @@ jobs:
         working-directory: cabal
         # --pull: never trust a runner's cached python:3.12-slim base layer —
         # a stale base ships weeks-old packages with published CVE fixes missing.
-        run: docker build --pull --build-context techne=../techne -t cabal:ci .
+        run: docker build --pull --build-arg APT_REFRESH="$(date +%F)" --build-context techne=../techne -t cabal:ci .
 
   # ---- fork-pr: the complement of unit's guard, on a hosted runner -----------
   fork-pr:

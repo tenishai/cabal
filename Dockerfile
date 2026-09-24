@@ -71,11 +71,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # for a deployment that genuinely needs to relocate them; this one does not.
 
 # The upgrade pass pulls base-image packages (libc6, zlib1g, libpcre2, ...)
-# up to current Debian security revisions even when the builder's cached
-# python:3.12-slim base layer is weeks stale — published CVE fixes
-# otherwise never reach the image no matter how often it is rebuilt. CI's
-# docker job additionally builds with --pull.
-RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
+# up to current Debian security revisions WHEN THIS LAYER REBUILDS. Docker
+# caches a RUN step by its parent layer and its text, not by what it downloads,
+# so a plain rebuild on a warm builder reuses the last upgrade and goes stale
+# exactly like the base layer. APT_REFRESH breaks that: pass a new value, e.g.
+# `--build-arg APT_REFRESH=$(date +%F)`, and the upgrade runs again.
+# CI's docker job passes the date and builds with --pull.
+ARG APT_REFRESH=unset
+RUN echo "apt refresh: ${APT_REFRESH}" && apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
         curl \
         ca-certificates \
         && rm -rf /var/lib/apt/lists/*
