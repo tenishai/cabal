@@ -2,8 +2,8 @@ name: test
 
 # unit runs on every push to main and every same-repo PR (fork PRs run fork-pr,
 # its hosted twin) — no private deps, no secret required.
-# integration runs on workflow_dispatch only — requires GH_PAT_REPOS to clone
-# the private techne and liminal sibling repos.
+# integration runs on workflow_dispatch only. It clones the techne and liminal
+# siblings without a token, so it works once they are public (agora#27).
 on:
   push:
     branches: [main]
@@ -70,8 +70,9 @@ jobs:
 
   # ---- integration: full suite with siblings --------------------------------
   integration:
-    # Manual dispatch only until GH_PAT_REPOS secret is added.
-    # Once that's available, can re-enable `|| github.ref == 'refs/heads/main'`.
+    # Manual dispatch only. The sibling checkouts carry no token: while techne
+    # and liminal are private this job cannot clone them, and once they are
+    # public it can. Then consider `|| github.ref == 'refs/heads/main'`.
     if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, linux, x64, cabal-ci]
     timeout-minutes: 20  # one small runner; a hung job starves it
@@ -90,14 +91,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: tenishai/techne
-          token: ${{ secrets.GH_PAT_REPOS }}
           path: techne
 
       - name: Checkout liminal
         uses: actions/checkout@v4
         with:
           repository: tenishai/liminal
-          token: ${{ secrets.GH_PAT_REPOS }}
           path: liminal
 
       - name: Set up Python ${{ matrix.python-version }}
@@ -133,9 +132,9 @@ jobs:
   # empty cabal package) lived only inside a built image, where no pytest
   # runs. The Dockerfile's own `import cabal; assert cabal.__version__`
   # build proof is the guard; this job is what makes it fire in CI.
-  # Same gating as integration: techne is a private sibling brought in via
-  # --build-context, so this needs GH_PAT_REPOS. Manual dispatch only until
-  # that secret is added; then re-enable `|| github.ref == 'refs/heads/main'`.
+  # Same gating as integration: techne is a sibling brought in via
+  # --build-context and cloned without a token, so this works once techne is
+  # public. Manual dispatch only until then.
   docker:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -149,7 +148,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: tenishai/techne
-          token: ${{ secrets.GH_PAT_REPOS }}
           path: techne
 
       - name: Build the image (build proof asserts cabal imports with a version)
