@@ -76,7 +76,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # so a plain rebuild on a warm builder reuses the last upgrade and goes stale
 # exactly like the base layer. APT_REFRESH breaks that: pass a new value, e.g.
 # `--build-arg APT_REFRESH=$(date +%F)`, and the upgrade runs again.
-# CI's docker job passes the date and builds with --pull.
+# `make build` / `make up` export the date (compose passes it and pulls the
+# base), and CI's docker job does the same. A bare `docker compose build`
+# without APT_REFRESH set reuses the cached layer.
 ARG APT_REFRESH=unset
 RUN echo "apt refresh: ${APT_REFRESH}" && apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
         curl \

@@ -1,4 +1,6 @@
 COMPOSE := docker compose -f docker-compose.dev.yml
+# Refresh the Dockerfile's apt upgrade layer once a day (see APT_REFRESH there).
+export APT_REFRESH ?= $(shell date +%F)
 
 .PHONY: up down build rebuild logs bootstrap demo test-docker test-unit test-integration clean
 

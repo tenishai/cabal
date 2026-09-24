@@ -15,6 +15,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APT_REFRESH: ${APT_REFRESH:-unset}   # make exports the date; see Dockerfile
+      pull: true
       additional_contexts:
         techne: ../techne
     container_name: cabal-dev
@@ -36,6 +39,9 @@ services:
     build:
       context: ../liminal
       dockerfile: Dockerfile
+      args:
+        APT_REFRESH: ${APT_REFRESH:-unset}   # make exports the date; see Dockerfile
+      pull: true
       additional_contexts:
         techne: ../techne
     container_name: liminal-dev
