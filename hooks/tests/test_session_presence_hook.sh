@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for hooks/cabal-session-presence.sh (cabal#142).
 # The stub `cbl` ASSERTS ITS ARGV rather than ignoring it — a stub that accepts
-# anything lets a mutant that calls the wrong subcommand pass (agents#91 r1).
+# anything lets a mutant that calls the wrong subcommand pass (tenishai/agents-archive#91 r1).
 set -uo pipefail
 
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/cabal-session-presence.sh"
