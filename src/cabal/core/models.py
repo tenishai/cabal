@@ -309,3 +309,23 @@ class BootstrapCode(Base):
     persona_name: Mapped[str | None] = mapped_column(String)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TokenRevocation(Base):
+    """Every token a subject holds, revoked at once: tokens for `sub` whose
+    `iat` is before `not_before` are refused by every verification site on
+    the dispatch path and by the scope gate (cabal, 2026-09-24). One row per
+    subject; a second revocation only moves the cutoff forward. Service
+    tokens are otherwise untracked (no per-token store, no jti), so this is
+    the one revocation story for a credential that has leaked or been
+    replaced: the room re-mints an agent's colleague pass on every re-wire
+    and takes the earlier ones back through here."""
+
+    __tablename__ = "token_revocations"
+
+    sub: Mapped[str] = mapped_column(String, primary_key=True)
+    not_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+

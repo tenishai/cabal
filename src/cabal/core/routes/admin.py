@@ -26,6 +26,7 @@ from cabal.core.a2a.card import sign_card
 from cabal.core.a2a.types import AgentCapabilities, AgentCard, Skill, Task
 from cabal.core.auth.jwt import JWTError, extract_bearer, verify
 from cabal.core.auth.keys import load_active_signing_key
+from cabal.core.auth.revocations import refusal
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 from cabal.core.models import Agent, Conversation, Event, Persona, TaskCheckpoint
@@ -80,6 +81,8 @@ def _require_scope(
         )
     except JWTError as exc:
         raise HTTPException(401, detail=str(exc)) from exc
+    if (why := refusal(getattr(request.app.state, "revocations", None), claims)) is not None:
+        raise HTTPException(401, detail=why)
 
     if claims.get("aud") not in audiences:
         raise HTTPException(403, detail="invalid_audience")
@@ -1030,6 +1033,37 @@ async def mint_service_token(
         "expires_at": expires_at,
         "kid": stored.kid,
     }
+
+
+class RevokeTokensRequest(BaseModel):
+    """`sub`: the subject whose tokens are revoked. `not_before`: the cutoff as
+    a unix time; tokens issued before it are refused. Default now."""
+
+    sub: str
+    not_before: int | None = None
+
+
+@router.post("/token/revoke")
+async def revoke_tokens(
+    req: RevokeTokensRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Operator-only: refuse every token `sub` was issued before `not_before`
+    (default: now). The room calls this before it re-mints an agent's
+    colleague pass, so the pass it replaces stops working, and when it
+    destroys an agent, so nothing the agent held keeps working. Service
+    tokens carry no per-token record, so the cutoff is per subject and only
+    ever moves forward."""
+    _require_operator_claims(request, extract_bearer(authorization))
+    if not req.sub.strip():
+        raise HTTPException(400, detail="sub must be non-empty")
+    revocations = getattr(request.app.state, "revocations", None)
+    if revocations is None:
+        raise HTTPException(500, detail="revocations are not loaded")
+    async with open_session(request.app.state.sessionmaker) as session:
+        cutoff = await revocations.revoke(session, req.sub.strip(), req.not_before)
+    return {"sub": req.sub.strip(), "not_before": cutoff}
 
 
 # ---- dispatch pairs: the switchboard checks who may call whom (Task C3) --

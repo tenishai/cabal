@@ -29,6 +29,7 @@ from cabal.core.a2a.codes import CODE_POLICY_VIOLATION, CabalReason, annotate
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.abort import KIND_DISPATCH, AbortCoordinator, TaskAborted
 from cabal.core.auth.jwt import JWTError, verify
+from cabal.core.auth.revocations import RevocationList, refusal
 from cabal.core.broker.bookkeeping import Bookkeeper
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.bulletin.store import AgentRow
@@ -133,10 +134,14 @@ class DispatchRouter:
         hook_registry: HookRegistry | None = None,
         abort_coordinator: AbortCoordinator | None = None,
         input_guardrails: list[Guardrail] | None = None,
+        revocations: RevocationList | None = None,
     ) -> None:
         self._sessionmaker = sessionmaker
         self._bookkeeper = bookkeeper
         self._jwks_provider = jwks_provider
+        # Subject-wide revocations; None means "none configured" (tests that
+        # build a router bare), never "skip the check" on a running daemon.
+        self._revocations = revocations
         self._http_client = http_client
         # cabal#11 — shared AbortGraph. Owned here so personas (via the
         # factory) and the admin surface all reference one graph.
@@ -613,6 +618,8 @@ class DispatchRouter:
             )
         except JWTError as exc:
             raise CallerJWTError(f"caller JWT rejected: {exc}") from exc
+        if (why := refusal(self._revocations, payload)) is not None:
+            raise CallerJWTError(f"caller JWT rejected: {why}")
 
         return DispatchContext(
             target=row,
