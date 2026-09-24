@@ -19,6 +19,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APT_REFRESH: ${APT_REFRESH:-unset}   # make exports the date; see Dockerfile
+      pull: true
       # Sibling-checkout techne is pulled into the build via BuildKit's
       # named contexts (Compose v2.16+ / Docker 23+). The path is resolved
       # from this compose file's directory, so `../techne` works as long as
@@ -48,6 +51,9 @@ services:
     build:
       context: ../liminal
       dockerfile: Dockerfile
+      args:
+        APT_REFRESH: ${APT_REFRESH:-unset}   # make exports the date; see Dockerfile
+      pull: true
       additional_contexts:
         techne: ../techne
     container_name: cabal-liminal
