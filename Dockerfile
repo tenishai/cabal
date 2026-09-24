@@ -59,6 +59,7 @@ FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     CABAL_DB_URL="sqlite+aiosqlite:////data/cabal.db" \
+    CABAL_DATA_DIR="/data" \
     PATH="/venv/bin:$PATH" \
     VIRTUAL_ENV="/venv"
 # NO CABAL_ALEMBIC_* OVERRIDES, and dropping them is load-bearing rather than
