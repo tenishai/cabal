@@ -30,6 +30,13 @@ def effective_db_url(url: str | None = None) -> str:
     return url or os.environ.get("CABAL_DB_URL") or default_db_url()
 
 
+def sync_db_url(url: str | None = None) -> str:
+    """`effective_db_url` with the async driver stripped, for alembic (which is
+    sync). Importable so the migration default is testable: `migrations/env.py`
+    runs migrations when imported, so its own lines cannot be (#215)."""
+    return effective_db_url(url).replace("sqlite+aiosqlite://", "sqlite://", 1)
+
+
 def make_engine(url: str | None = None, *, echo: bool = False) -> AsyncEngine:
     """Create an async engine for the given SQLite URL.
 
