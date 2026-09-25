@@ -133,20 +133,20 @@ async def liminal_token(
     since LANDED (`admin._require_scope`, cabal#124), so folding this route
     into it is now a live follow-up rather than a future one.
 
-    Two things to carry across if you do. There are THREE gates here, not
-    the two this sentence used to imply: a missing bearer dies in
-    `extract_bearer` before `verify()` runs, then audience, then scope.
-    And audience is enforced INSIDE `verify(expected_audience="cabal-core")`,
-    so a validly-signed token aimed elsewhere gets 401 here — while
-    `_require_scope` verifies with `expected_audience=None` and checks `aud`
-    by hand, giving 403 per CABAL-DECISIONS D-017. Folding without deciding
-    which status is right would change this route's contract silently.
+    One thing to carry across if you do: the gates run in this order. A
+    missing bearer dies in `extract_bearer`, then `verify()` (signature,
+    issuer, expiry), then revocation, then audience, then scope. The first
+    three are 401, the last two 403. Audience is checked by hand after an
+    audience-free `verify()`, the same way `_require_scope` does it, so a
+    validly signed token aimed elsewhere gets 403 per CABAL-DECISIONS
+    D-017 (#191). It used to ride inside `verify(expected_audience=...)`
+    and inherit the signature failure's 401.
     """
     try:
         claims = verify(
             extract_bearer(authorization),
             key_set=request.app.state.jwks_provider(),
-            expected_audience="cabal-core",
+            expected_audience=None,  # checked by hand below: 403, not 401 (D-017)
         )
     except JWTError as exc:
         raise HTTPException(
@@ -156,6 +156,11 @@ async def liminal_token(
     # would be after the cutoff, so nothing downstream could refuse it.
     if (why := refusal(getattr(request.app.state, "revocations", None), claims)) is not None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=why)
+    if claims.get("aud") != "cabal-core":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="invalid_audience",
+        )
     if "colleague" not in (claims.get("cabal_scope") or []):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
