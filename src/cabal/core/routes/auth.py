@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from cabal.core.auth.bootstrap_codes import BootstrapCodeError, consume
 from cabal.core.auth.jwt import OPERATOR_SUB_PREFIX, JWTError, extract_bearer, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
+from cabal.core.auth.revocations import refusal
 from cabal.core.db import open_session
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -151,6 +152,10 @@ async def liminal_token(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
         ) from exc
+    # A revoked pass must not buy a fresh gateway token: the new token's iat
+    # would be after the cutoff, so nothing downstream could refuse it.
+    if (why := refusal(getattr(request.app.state, "revocations", None), claims)) is not None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=why)
     if "colleague" not in (claims.get("cabal_scope") or []):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
