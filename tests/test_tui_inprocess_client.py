@@ -13,6 +13,7 @@ that send_message() streams the stub's echoed reply.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -210,6 +211,27 @@ async def test_invalid_operator_token_raises_broker_error(tmp_path: Path) -> Non
         operator_token="not.a.valid.jwt",
     ) as client:
         with pytest.raises(BrokerError, match="operator token invalid"):
+            async for _ in client.send_message("archivist", "hi"):
+                pass
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_operator_token_raises_broker_error(tmp_path: Path) -> None:
+    """The in-process client accepts a token too, so it honours subject
+    revocations (PR #221 review)."""
+    from cabal.core.auth.jwt import verify
+    from cabal.core.auth.revocations import RevocationList
+
+    identity_path = _write_identity(tmp_path)
+    async with InProcessBrokerClient(
+        config_path=str(identity_path),
+        acompletion_fn=stub_acompletion,
+        operator_token="placeholder",
+    ) as client:
+        client._operator_token = client._mint_operator_token()
+        sub = verify(client._operator_token, key_set=client._app.state.jwks_provider())["sub"]
+        client._app.state.revocations = RevocationList({sub: int(time.time()) + 3600})
+        with pytest.raises(BrokerError, match="revoked"):
             async for _ in client.send_message("archivist", "hi"):
                 pass
 

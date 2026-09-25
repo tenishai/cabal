@@ -17,6 +17,7 @@ from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.app import create_app
 from cabal.core.auth.jwt import OPERATOR_SUB_PREFIX, JWTError, mint, verify
 from cabal.core.auth.keys import StoredKey, load_active_signing_key
+from cabal.core.auth.revocations import refusal
 from cabal.core.broker.router import DispatchError
 from cabal.core.db import open_session
 from cabal.tui.client.base import BrokerError
@@ -118,6 +119,11 @@ class InProcessBrokerClient:
             )
         except JWTError as exc:
             raise BrokerError(f"operator token invalid: {exc}") from exc
+        # The operator's own in-process client, but still a site that accepts
+        # a token, so it honours subject revocations like the network doors.
+        why = refusal(getattr(self._app.state, "revocations", None), claims)
+        if why is not None:
+            raise BrokerError(f"operator token invalid: {why}")
 
         # Step 2: resolve dispatch token (mirror _resolve_dispatch_token).
         if claims.get("aud") == persona:

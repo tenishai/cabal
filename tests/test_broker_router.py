@@ -169,6 +169,39 @@ async def test_local_dispatch_rejects_invalid_jwt(
 
 
 @pytest.mark.asyncio
+async def test_local_dispatch_rejects_a_revoked_jwt(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """The router's own revocation check, reached directly: the HTTP doors
+    check first, so only a router-level call proves this one works (PR #221
+    review)."""
+    from cabal.core.auth.revocations import RevocationList
+
+    now = int(time.time())
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+        revocations=RevocationList({"mason-primus:1": now}),
+    )
+    router.register_local(FakeArchivist())
+
+    old = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist", now=now - 60)
+    with pytest.raises(DispatchError, match="revoked"):
+        await router.dispatch(
+            target_agent="archivist",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=old,
+        )
+    fresh = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist", now=now)
+    response = await router.dispatch(
+        target_agent="archivist", target_generation=None, task=_sample_task(), caller_jwt=fresh
+    )
+    assert response.status.state == "completed"
+
+
+@pytest.mark.asyncio
 async def test_local_dispatch_rejects_expired_jwt(
     sessionmaker, signing_key, jwks_provider, archivist_row
 ) -> None:
