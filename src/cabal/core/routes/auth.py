@@ -133,9 +133,10 @@ async def liminal_token(
     since LANDED (`admin._require_scope`, cabal#124), so folding this route
     into it is now a live follow-up rather than a future one.
 
-    One thing to carry across if you do: there are THREE gates here, not
-    two. A missing bearer dies in `extract_bearer` before `verify()` runs,
-    then audience, then scope. Audience is checked by hand after an
+    One thing to carry across if you do: the gates run in this order. A
+    missing bearer dies in `extract_bearer`, then `verify()` (signature,
+    issuer, expiry), then revocation, then audience, then scope. The first
+    three are 401, the last two 403. Audience is checked by hand after an
     audience-free `verify()`, the same way `_require_scope` does it, so a
     validly signed token aimed elsewhere gets 403 per CABAL-DECISIONS
     D-017 (#191). It used to ride inside `verify(expected_audience=...)`
