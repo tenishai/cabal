@@ -120,9 +120,12 @@ streams the WAL off-host for durability.
 
 **A2A v1.0 wire.** Every dispatch — operator-to-persona and persona-to-persona —
 is an A2A `message/send`. The router collapses local hops to direct Python calls
-when target and caller share a process; AgentCard JWS verification runs on every
-hop regardless, so the security model is uniform across solo and per-pod
-deployments.
+when target and caller share a process. The caller's bearer JWT is verified on
+every hop regardless (`router._prepare`), so the security model is uniform across
+solo and per-pod deployments. The router does **not** verify AgentCards when it
+dispatches: `_dispatch_remote` forwards the caller's JWT, and that JWT is the
+trust. `AgentCardVerifier` (`core/a2a/card.py`) exists and is tested, but nothing
+on the dispatch path calls it (#226).
 
 **Personas.** Project personas (mason, raven, …) own the work. Primus agents own
 plan/dispatch/aggregate; subordinates fan out under them. Singleton personas

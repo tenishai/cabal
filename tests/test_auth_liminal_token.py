@@ -106,24 +106,38 @@ async def test_persona_shaped_sub_falls_back_to_persona_claim(
 
 
 @pytest.mark.asyncio
+async def test_wrong_audience_is_refused_with_403(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """The audience gate, isolated (#191).
+
+    The token carries colleague scope and an agent identity, so it passes
+    every other check and fails ONLY on audience: delete the audience gate
+    and it buys a gateway token (200). 403 rather than 401 per
+    CABAL-DECISIONS D-017: the signature is valid, the realm is wrong.
+    """
+    stored = await _signing_key(app)
+    aimed_elsewhere = mint(
+        signing_key=stored, sub="agent:ledger", aud="liminal", scope=["colleague"]
+    )
+    resp = await client.post(
+        "/auth/liminal-token", headers={"Authorization": f"Bearer {aimed_elsewhere}"}
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == "invalid_audience"
+
+
+@pytest.mark.asyncio
 async def test_exchanged_token_cannot_be_re_exchanged(
     app: FastAPI, client: AsyncClient
 ) -> None:
     """The 15 minutes is a wall, not a refresh interval.
 
-    The route has three gates, not the two its own docstring lists
-    ("verify + aud + scope"), and the audience one was unpinned.
-
-    Of the refusal tests above, two mint `aud="cabal-core"` and are turned
-    away by the SCOPE check; the third sends no Authorization header at all
-    and dies in `extract_bearer` before `verify()` runs. So none of the
-    three reaches the audience check — delete `expected_audience="cabal-core"`
-    and the suite stays green while an exchanged token buys a fresh one
-    indefinitely.
-
-    This pins the audience gate on its own: a token already wearing
-    `aud="liminal"` is refused even though its scope would otherwise be
-    irrelevant.
+    An exchanged token fails TWO gates: it wears `aud="liminal"` and carries
+    `scope=["mcp"]`, not colleague. So this test cannot pin either gate on
+    its own; with the audience gate deleted it still gets 403 from the scope
+    gate (measured in #191). `test_wrong_audience_is_refused_with_403` is the
+    one that pins audience. This one pins the end-to-end property.
     """
     stored = await _signing_key(app)
     colleague = mint(
@@ -138,4 +152,4 @@ async def test_exchanged_token_cannot_be_re_exchanged(
     again = await client.post(
         "/auth/liminal-token", headers={"Authorization": f"Bearer {exchanged}"}
     )
-    assert again.status_code == 401, again.text
+    assert again.status_code == 403, again.text
