@@ -39,6 +39,7 @@ from cabal.core.a2a.jsonrpc import (
 from cabal.core.a2a.types import Task, TaskStatus
 from cabal.core.auth.jwt import JWTError, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
+from cabal.core.auth.revocations import refusal
 from cabal.core.broker.router import (
     AgentNotFoundError,
     CallerJWTError,
@@ -73,6 +74,8 @@ async def _resolve_dispatch_token(
         return None, make_error_response(
             id=None, code=ERROR_UNAUTHORIZED, message=str(exc)
         )
+    if (why := refusal(getattr(request.app.state, "revocations", None), claims)) is not None:
+        return None, make_error_response(id=None, code=ERROR_UNAUTHORIZED, message=why)
 
     if claims.get("aud") == target:
         return raw_token, None
@@ -472,6 +475,8 @@ async def _tasks_get(
         return make_error_response(
             id=rpc_req.id, code=ERROR_UNAUTHORIZED, message=str(exc)
         )
+    if (why := refusal(getattr(request.app.state, "revocations", None), claims)) is not None:
+        return make_error_response(id=rpc_req.id, code=ERROR_UNAUTHORIZED, message=why)
 
     caller_sub = claims.get("sub")
     is_operator = "operator" in (claims.get("cabal_scope") or [])

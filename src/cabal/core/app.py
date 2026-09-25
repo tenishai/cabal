@@ -572,10 +572,18 @@ def create_app(
                 # in-memory bound it had before cabal#174.
                 log.info("cabal.delegation_budget.hydrated", keys=await _hydrate())
 
+        # Subject-wide token revocations (2026-09-24): loaded once the
+        # migrations have run, shared by every verification site.
+        from cabal.core.auth.revocations import RevocationList
+
+        revocations = await RevocationList.load(sessionmaker)
+        _app.state.revocations = revocations
+
         dispatch_router = DispatchRouter(
             sessionmaker=sessionmaker,
             bookkeeper=bookkeeper,
             jwks_provider=jwks_provider,
+            revocations=revocations,
             http_client=http_client,
             hook_registry=hook_registry,
             # cabal#76 — default-on router guardrails so FEDERATED dispatch is

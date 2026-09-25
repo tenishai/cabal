@@ -31,6 +31,7 @@ from cabal.core import dispatch_pairs
 from cabal.core.a2a.types import Task
 from cabal.core.auth.jwt import JWTError, extract_bearer, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
+from cabal.core.auth.revocations import refusal
 from cabal.core.broker.router import (
     AgentNotFoundError,
     CallerJWTError,
@@ -75,6 +76,8 @@ async def _resolve_dispatch_token(
         claims = verify(raw_token, key_set=jwks_provider(), expected_audience=None)
     except JWTError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if (why := refusal(getattr(request.app.state, "revocations", None), claims)) is not None:
+        raise HTTPException(status_code=401, detail=why)
 
     # Determine the audience the dispatch token must carry. For a `federated`
     # target the token is forwarded to the sovereign peer, so its `aud` is the
