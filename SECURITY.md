@@ -47,7 +47,12 @@ cabal orchestrates agents and issues the tokens they use. In scope:
 - delegation: anything that lets an agent act as, or dispatch to, an agent it
   wasn't granted;
 - the A2A and task endpoints: anything that lets one caller read or change
-  another's tasks.
+  another's tasks;
+- the bootstrap routes: anything that yields a token from `/auth/bootstrap`
+  or `/auth/liminal-token` that the caller wasn't meant to get;
+- the secrets store: anything that exposes a stored secret or signing key,
+  which are encrypted under `CABAL_MASTER_KEY`, to a caller not meant to see
+  it.
 
 **Out of scope:** vulnerabilities in third-party dependencies (please report
 those upstream, and tell us if we ship an affected version), and problems that
