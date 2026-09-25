@@ -1,5 +1,14 @@
 # Cabal Overnight Build Status — 2026-06-10/11
 
+> **Historical record, not current behaviour.** This is the status report from the
+> 2026-06-10/11 overnight build and is kept as written. Where it disagrees with
+> [README.md](README.md), [SECURITY.md](SECURITY.md) or
+> [docs/architecture.md](docs/architecture.md), those win. Two known examples: the
+> secrets endpoint now reads a store encrypted under `CABAL_MASTER_KEY` first and
+> lets unencrypted `CABAL_SECRET_*` env vars override it (phase CC below describes
+> env vars only), and the dispatch router does not verify AgentCards (invariant 1
+> below describes the verifier, which has no caller on the dispatch path).
+
 Autonomous-mode summary for morning review. See [CABAL-DECISIONS.md](CABAL-DECISIONS.md)
 for the per-decision rationale log.
 
@@ -106,7 +115,7 @@ cbl primus rotate mason                     # ratchet mason to generation 2
 
 | Invariant | File | Tested? |
 |---|---|---|
-| 1. AgentCard signature verify + cache + kid invalidation | `core/a2a/card.py` | ✓ 5 tests |
+| 1. AgentCard signature verify + cache + kid invalidation | `core/a2a/card.py` (not called on the dispatch path; see banner) | ✓ 5 tests |
 | 2. Caller JWT mint+verify on every dispatch (in-process too) | `core/auth/jwt.py` + `core/broker/router.py::_prepare` | ✓ 3 tests across modes |
 | 3. Broker bookkeeping participation, both modes | `core/broker/bookkeeping.py` + `router._dispatch_*` | ✓ 2 dedicated tests + parity test |
 | 4. Trace context propagation via `task.metadata.cabal_trace_id` | `router._ensure_trace` | ✓ generation + preservation tests |

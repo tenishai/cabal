@@ -2,13 +2,15 @@
 
 §6.12 invariants enforced here:
 
-    1. AgentCard signature verification at registration time, cached.
+    1. AgentCard signature verification. NOT enforced: nothing in src/ calls
+       `AgentCardVerifier` (core/a2a/card.py), at registration or dispatch.
+       The caller's JWT (invariant 2) is the trust (#226).
     2. Caller JWT verification on EVERY dispatch, even in-process.
     3. Broker bookkeeping module on EVERY dispatch (audit + events).
     4. Trace context (cabal_trace_id, cabal_span_id) propagated via
        task.metadata, fresh-generated when absent.
 
-The router is the single place these invariants live; tests assert each
+The router is the single place invariants 2-4 live; tests assert each
 one independently and assert them identically across solo + scale modes.
 """
 

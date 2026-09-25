@@ -52,7 +52,8 @@ cabal orchestrates agents and issues the tokens they use. In scope:
   or `/auth/liminal-token` that the caller wasn't meant to get;
 - the secrets store: anything that exposes a stored secret or signing key,
   which are encrypted under `CABAL_MASTER_KEY`, to a caller not meant to see
-  it.
+  it. Secrets supplied as `CABAL_SECRET_*` environment variables override the
+  store and are not encrypted.
 
 **Out of scope:** vulnerabilities in third-party dependencies (please report
 those upstream, and tell us if we ship an affected version), and problems that
