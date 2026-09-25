@@ -26,6 +26,7 @@ from cabal.core.a2a.card import sign_card
 from cabal.core.a2a.types import AgentCapabilities, AgentCard, Skill, Task
 from cabal.core.auth.jwt import JWTError, extract_bearer, verify
 from cabal.core.auth.keys import load_active_signing_key
+from cabal.core.auth.revocations import refusal
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 from cabal.core.models import Agent, Conversation, Event, Persona, TaskCheckpoint
@@ -80,6 +81,8 @@ def _require_scope(
         )
     except JWTError as exc:
         raise HTTPException(401, detail=str(exc)) from exc
+    if (why := refusal(getattr(request.app.state, "revocations", None), claims)) is not None:
+        raise HTTPException(401, detail=why)
 
     if claims.get("aud") not in audiences:
         raise HTTPException(403, detail="invalid_audience")
@@ -992,9 +995,13 @@ async def mint_service_token(
     which the operator copies into liminal's `LIMINAL_CABAL_TOKEN` env so
     liminal can fetch credentials from `GET /admin/secrets/{persona}/{handler}`.
 
-    Service tokens are operator-rotated; we don't track them in a DB or
-    revocation list. Operator restarts the daemon with a new signing key
-    to invalidate everything signed under the old `kid`.
+    Service tokens carry no per-token record (no jti, no row). To take
+    back every token a subject holds, call `POST /admin/token/revoke`;
+    rotating the signing key still invalidates everything under the old
+    `kid`. If `sub` was revoked within the current second, this waits
+    (at most about a second) until a token minted now falls after the
+    cutoff, so a revoke-then-mint leaves the new token valid and the old
+    one refused. A subject revoked further into the future gets 409.
     """
     from datetime import datetime, timedelta
 
@@ -1009,6 +1016,16 @@ async def mint_service_token(
         stored = await load_active_signing_key(session, master_key=request.app.state.master_key)
     if stored is None:
         raise HTTPException(500, detail="no active signing key")
+
+    revocations = getattr(request.app.state, "revocations", None)
+    if revocations is not None and not await revocations.wait_until_clear(req.sub):
+        raise HTTPException(
+            409,
+            detail=(
+                f"{req.sub!r} is revoked until {revocations.cutoff(req.sub)}; "
+                "a token minted now would be refused"
+            ),
+        )
 
     from cabal.core.auth.jwt import mint as _mint
 
@@ -1030,6 +1047,46 @@ async def mint_service_token(
         "expires_at": expires_at,
         "kid": stored.kid,
     }
+
+
+class RevokeTokensRequest(BaseModel):
+    """`sub`: the subject whose tokens are revoked. `not_before`: the cutoff as
+    a unix time; tokens issued before it are refused. Default: the start of
+    the next second, so every token issued up to now is refused."""
+
+    sub: str
+    not_before: int | None = None
+
+
+@router.post("/token/revoke")
+async def revoke_tokens(
+    req: RevokeTokensRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Operator-only: refuse every token `sub` was issued before `not_before`
+    (default: the start of the next second, so every token issued up to and
+    including now is refused). The room calls this before it re-mints an
+    agent's colleague pass, so the pass it replaces stops working, and when
+    it destroys an agent, so its colleague pass stops working at every
+    cabal-core site, the `/auth/liminal-token` exchange included.
+
+    One limit: an `aud=liminal` token exchanged BEFORE the revoke is checked
+    by the gateway, not here, and lives out its fifteen-minute TTL.
+
+    `mint-service` waits out the revoked second before minting for `sub`,
+    so a pass minted after this call passes. Service tokens carry no
+    per-token record, so the cutoff is per subject and only ever moves
+    forward."""
+    _require_operator_claims(request, extract_bearer(authorization))
+    if not req.sub.strip():
+        raise HTTPException(400, detail="sub must be non-empty")
+    revocations = getattr(request.app.state, "revocations", None)
+    if revocations is None:
+        raise HTTPException(500, detail="revocations are not loaded")
+    async with open_session(request.app.state.sessionmaker) as session:
+        cutoff = await revocations.revoke(session, req.sub.strip(), req.not_before)
+    return {"sub": req.sub.strip(), "not_before": cutoff}
 
 
 # ---- dispatch pairs: the switchboard checks who may call whom (Task C3) --
