@@ -594,9 +594,18 @@ class DispatchRouter:
                 row = await bulletin_store.get(session, target_agent, target_generation)
             # A role="primus" persona registers as "<name>-primus", so the
             # natural `--persona rook` misses (cabal#95). Name the real agent
-            # in the miss instead of leaving the suffix to be guessed.
+            # in the miss instead of leaving the suffix to be guessed. Only
+            # for an unpinned lookup: the suggestion is an ACTIVE row, which
+            # says nothing about a pinned generation. It reveals nothing new
+            # either: this miss is answered before the caller JWT is checked
+            # against the target, so any caller that reaches the router can
+            # already probe "<name>-primus" by name.
             suggestion = None
-            if row is None and not target_agent.endswith("-primus"):
+            if (
+                row is None
+                and target_generation is None
+                and not target_agent.endswith("-primus")
+            ):
                 primus_name = f"{target_agent}-primus"
                 if await bulletin_store.get_active(session, primus_name) is not None:
                     suggestion = primus_name

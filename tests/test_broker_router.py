@@ -596,6 +596,16 @@ async def test_unknown_target_suggests_the_primus_name(
             caller_jwt=ghost,
         )
     assert "did you mean" not in str(exc_info.value)
+    # Nor for a pinned generation: the active '-primus' row says nothing
+    # about generation 7 of anything.
+    with pytest.raises(DispatchError) as exc_info:
+        await router.dispatch(
+            target_agent="rook",
+            target_generation=7,
+            task=_sample_task(),
+            caller_jwt=token,
+        )
+    assert "did you mean" not in str(exc_info.value)
 
 
 # ---- HTTP path (scale mode) -------------------------------------------
