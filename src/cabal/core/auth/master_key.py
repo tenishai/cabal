@@ -109,10 +109,14 @@ def resolve_master_key(
         return _validate_fernet_key(raw)
 
     if not allow_dev_fallback:
+        # NO "--dev" REMEDY IN THIS MESSAGE (cabal#91). It used to offer one,
+        # but no entry point exposes such a flag -- `cbl daemon up` and the
+        # `cabal` TUI both call create_app without allow_dev_master_key -- so
+        # the advice sent the operator looking for an option that does not
+        # exist. Setting the variable is the only remedy they can take.
         raise MasterKeyError(
             "CABAL_MASTER_KEY is unset. Set it in the environment "
-            "(generate with `python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"`) "
-            "or pass --dev to enable the on-disk fallback."
+            "(generate with `python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"`)."
         )
 
     path = dev_fallback_path or default_master_key_path()

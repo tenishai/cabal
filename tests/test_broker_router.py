@@ -552,6 +552,62 @@ async def test_unknown_target_raises(
         )
 
 
+@pytest.mark.asyncio
+async def test_unknown_target_suggests_the_primus_name(
+    sessionmaker, signing_key, jwks_provider
+) -> None:
+    """cabal#95: a primus registers as '<name>-primus', so the bare name
+    misses. The miss names the agent that does exist."""
+    async with sessionmaker() as s:
+        s.add(Persona(name="rook", config_json={}))
+        await s.flush()
+        await bulletin_store.register_agent(
+            s,
+            name="rook-primus",
+            persona_name="rook",
+            role="primus",
+            endpoint="http://rook:7400",
+            capabilities={"skills": []},
+            safety_tier="strict",
+            agent_card_json={"name": "rook-primus"},
+            agent_card_kid="kid-1",
+        )
+        await s.commit()
+    router = DispatchRouter(
+        sessionmaker=sessionmaker,
+        bookkeeper=Bookkeeper(sessionmaker),
+        jwks_provider=jwks_provider,
+    )
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="rook")
+    with pytest.raises(DispatchError, match="did you mean 'rook-primus'"):
+        await router.dispatch(
+            target_agent="rook",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=token,
+        )
+    # No suggestion when no '<name>-primus' exists either.
+    ghost = mint(signing_key=signing_key, sub="mason-primus:1", aud="ghost")
+    with pytest.raises(DispatchError) as exc_info:
+        await router.dispatch(
+            target_agent="ghost",
+            target_generation=None,
+            task=_sample_task(),
+            caller_jwt=ghost,
+        )
+    assert "did you mean" not in str(exc_info.value)
+    # Nor for a pinned generation: the active '-primus' row says nothing
+    # about generation 7 of anything.
+    with pytest.raises(DispatchError) as exc_info:
+        await router.dispatch(
+            target_agent="rook",
+            target_generation=7,
+            task=_sample_task(),
+            caller_jwt=token,
+        )
+    assert "did you mean" not in str(exc_info.value)
+
+
 # ---- HTTP path (scale mode) -------------------------------------------
 
 
