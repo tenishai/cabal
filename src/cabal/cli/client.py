@@ -10,17 +10,28 @@ from typing import Any
 
 import httpx
 
+from cabal.config.home import cabal_home
 from cabal.core.dispatch_timeout import cli_dispatch_timeout
 
 DEFAULT_BASE_URL = "http://127.0.0.1:7400"
-DEFAULT_TOKEN_PATH = Path.home() / ".cabal" / "token"
+#: An override for the token file; None means ``cabal_home()/token``. Tests
+#: monkeypatch it.
+DEFAULT_TOKEN_PATH: Path | None = None
 
 
 def _default_token_path() -> Path:
-    """Resolve DEFAULT_TOKEN_PATH at call time so tests can monkeypatch it."""
+    """The operator token file: ``$CABAL_HOME/token``, else ``~/.cabal/token``.
+
+    FOLLOWS CABAL_HOME LIKE THE REST OF CABAL'S STATE (cabal#216). It was
+    pinned to ``~/.cabal/token``, so two cabals under different homes shared
+    one operator token and ``cbl reset-auth`` cleared the wrong one. With
+    CABAL_HOME unset the path is unchanged. Resolved at call time, like
+    ``cabal_home()`` itself, so the env var and the override both take effect
+    without a re-import.
+    """
     import cabal.cli.client as _self
 
-    return _self.DEFAULT_TOKEN_PATH
+    return _self.DEFAULT_TOKEN_PATH or cabal_home() / "token"
 
 
 @dataclass

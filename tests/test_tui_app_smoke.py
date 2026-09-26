@@ -189,3 +189,74 @@ async def test_smoke_slash_exit_quits_app() -> None:
         assert "/exit" not in broker.sent, f"'/exit' was forwarded to the broker: {broker.sent!r}"
         # App.exit() flips the shutdown flag; the pilot context exits cleanly.
         assert pilot.app._exit is True, "App did not exit after '/exit'"
+
+
+class BootFailingBroker(RecordingBroker):
+    """A broker whose boot raises, as an unset CABAL_MASTER_KEY does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.exited = False
+
+    async def __aenter__(self) -> BootFailingBroker:
+        raise RuntimeError("CABAL_MASTER_KEY is unset.")
+
+    async def __aexit__(self, *exc: object) -> None:
+        self.exited = True
+
+
+async def test_a_boot_failure_exits_with_its_message_not_a_traceback(capsys) -> None:
+    """cabal#36: a failing broker boot exits the app with status 1 and the
+    error text, sends no greeting, and does not exit a broker it never
+    entered."""
+    broker = BootFailingBroker()
+    app = CabalTUI(broker=broker, persona="archivist")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+    assert app.return_code == 1
+    assert broker.sent == []
+    assert broker.exited is False
+    err = capsys.readouterr().err
+    assert "cabal failed to start: CABAL_MASTER_KEY is unset." in err, err
+    assert "Traceback" not in err, err
+
+
+def test_the_launcher_reports_a_missing_token_and_exits_1(monkeypatch) -> None:
+    """cabal#36: the no-token BrokerError is raised before the app exists, so
+    the launcher, not on_mount, has to turn it into a message."""
+    from typer.testing import CliRunner
+
+    import cabal.tui.client.inprocess as inprocess
+    from cabal.tui.client.base import BrokerError
+    from cabal.tui.main import app as tui_cli
+
+    def no_token(**_: object) -> None:
+        raise BrokerError("no operator token found; run `cbl login` first to authenticate")
+
+    monkeypatch.setattr(inprocess, "InProcessBrokerClient", no_token)
+    result = CliRunner().invoke(tui_cli, [])
+    assert result.exit_code == 1
+    assert "cabal failed to start: no operator token found" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_the_launcher_passes_on_the_apps_exit_code(monkeypatch) -> None:
+    """A boot failure inside the app sets return_code 1; the process exits 1."""
+    from typer.testing import CliRunner
+
+    import cabal.tui.app as tui_app
+    import cabal.tui.client.inprocess as inprocess
+    from cabal.tui.main import app as tui_cli
+
+    class FailedApp:
+        return_code = 1
+
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def run(self) -> None:
+            pass
+
+    monkeypatch.setattr(inprocess, "InProcessBrokerClient", lambda **_: object())
+    monkeypatch.setattr(tui_app, "CabalTUI", FailedApp)
+    assert CliRunner().invoke(tui_cli, []).exit_code == 1

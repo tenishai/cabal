@@ -48,8 +48,11 @@ def test_resolve_master_key_from_env(monkeypatch) -> None:
 
 def test_resolve_master_key_rejects_unset_in_prod(monkeypatch) -> None:
     monkeypatch.delenv("CABAL_MASTER_KEY", raising=False)
-    with pytest.raises(MasterKeyError, match="CABAL_MASTER_KEY is unset"):
+    with pytest.raises(MasterKeyError, match="CABAL_MASTER_KEY is unset") as exc_info:
         resolve_master_key(allow_dev_fallback=False)
+    # cabal#91: no entry point exposes a --dev flag, so the message must not
+    # offer one as a remedy.
+    assert "--dev" not in str(exc_info.value)
 
 
 def test_resolve_master_key_dev_fallback_generates_and_reuses(

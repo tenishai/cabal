@@ -4,7 +4,8 @@
 # What it does:
 #   1. Waits for cabal to be healthy.
 #   2. Extracts the bootstrap code from cabal container logs.
-#   3. Exchanges the code for an operator JWT (saved to ~/.cabal/token).
+#   3. Exchanges the code for an operator JWT (saved to $CABAL_HOME/token,
+#      default ~/.cabal/token -- the same file `cbl` reads).
 #   4. Mints a secrets-fetch service token and writes it to LIMINAL_CABAL_TOKEN in .env.
 #   5. Restarts liminal so it picks up the new token.
 #
@@ -62,10 +63,11 @@ OP_TOKEN=$(curl -sf -X POST "$CABAL_URL/auth/bootstrap" \
     -d "{\"code\": \"$CODE\"}" \
     | _json_field access_token)
 
-mkdir -p ~/.cabal
-echo "$OP_TOKEN" > ~/.cabal/token
-chmod 600 ~/.cabal/token
-echo "Operator token saved → ~/.cabal/token"
+TOKEN_FILE="${CABAL_HOME:-$HOME/.cabal}/token"
+mkdir -p "$(dirname "$TOKEN_FILE")"
+echo "$OP_TOKEN" > "$TOKEN_FILE"
+chmod 600 "$TOKEN_FILE"
+echo "Operator token saved → $TOKEN_FILE"
 
 echo "==> Minting secrets-fetch service token for liminal..."
 SVC_TOKEN=$(curl -sf -X POST "$CABAL_URL/admin/token/mint-service" \
