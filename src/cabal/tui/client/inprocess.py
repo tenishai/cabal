@@ -18,7 +18,7 @@ from cabal.core.app import create_app
 from cabal.core.auth.jwt import OPERATOR_SUB_PREFIX, JWTError, mint, verify
 from cabal.core.auth.keys import StoredKey, load_active_signing_key
 from cabal.core.auth.revocations import refusal
-from cabal.core.broker.router import DispatchError
+from cabal.core.broker.router import DispatchError, GuardrailBlocked
 from cabal.core.db import open_session
 from cabal.tui.client.base import BrokerError
 
@@ -90,10 +90,19 @@ class InProcessBrokerClient:
         self._router = self._app.state.dispatch_router
 
         # Pre-load signing key for _mint_operator_token and dispatch-token minting.
-        async with open_session(self._app.state.sessionmaker) as session:
-            self._signing_key = await load_active_signing_key(
-                session, master_key=self._app.state.master_key
-            )
+        try:
+            async with open_session(self._app.state.sessionmaker) as session:
+                self._signing_key = await load_active_signing_key(
+                    session, master_key=self._app.state.master_key
+                )
+        except BaseException:
+            # A failed __aenter__ gets no __aexit__ -- from `async with`, or
+            # from the TUI, which since cabal#36 exits only a broker it entered
+            # -- so shut the started app down here rather than leak it. A clean
+            # exit, not the exception: thrown into the lifespan it would be
+            # logged as a shutdown failure.
+            await self._lifespan_cm.__aexit__(None, None, None)
+            raise
 
         return self
 
@@ -173,6 +182,12 @@ class InProcessBrokerClient:
             ):
                 reply_chunks.append(delta)
                 yield delta
+        except GuardrailBlocked as exc:
+            # Ahead of the generic arm (cabal#157): a guard refusing the
+            # caller is not the broker failing, and retrying will not help.
+            raise BrokerError(
+                f"refused by guardrail (retrying will not help): {exc}"
+            ) from exc
         except DispatchError as exc:
             raise BrokerError(f"dispatch error: {exc}") from exc
 

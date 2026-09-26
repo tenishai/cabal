@@ -102,3 +102,46 @@ def test_cli_dispatch_without_token_errors(monkeypatch, tmp_path) -> None:
     result = runner.invoke(cli_app, ["dispatch", "echo", "hi"])
     assert result.exit_code == 1
     assert "no token" in result.output.lower()
+
+
+def test_cli_dispatch_context_threads_a_context_id(monkeypatch, tmp_path) -> None:
+    """cabal#161: `--context` is how a one-shot opts into a per-conversation
+    delegation budget; without it no contextId is sent."""
+    token_path = tmp_path / "token"
+    token_path.write_text("tok")
+    monkeypatch.setattr(api, "DEFAULT_TOKEN_PATH", token_path)
+    calls: list[dict] = []
+
+    def fake_dispatch(**kwargs):
+        calls.append(kwargs)
+        return {"status": {"state": "completed", "message": {"parts": []}}}
+
+    monkeypatch.setattr(api, "dispatch", fake_dispatch)
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["dispatch", "echo", "hi", "--context", "batch-1"])
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(cli_app, ["dispatch", "echo", "hi"])
+    assert result.exit_code == 0, result.output
+    assert [c["context_id"] for c in calls] == ["batch-1", None]
+
+
+def test_the_token_follows_cabal_home(monkeypatch, tmp_path) -> None:
+    """cabal#216: the token lives under CABAL_HOME like the rest of cabal's
+    state, and keeps its old ~/.cabal/token home when CABAL_HOME is unset."""
+    monkeypatch.setattr(api, "DEFAULT_TOKEN_PATH", None)
+    monkeypatch.setenv("CABAL_HOME", str(tmp_path / "home-a"))
+    assert api.TokenStore().path == tmp_path / "home-a" / "token"
+    monkeypatch.delenv("CABAL_HOME")
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    assert api.TokenStore().path == tmp_path / "user" / ".cabal" / "token"
+
+
+def test_login_reports_the_path_it_saved_to(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(api, "DEFAULT_TOKEN_PATH", None)
+    monkeypatch.setenv("CABAL_HOME", str(tmp_path / "home-b"))
+    monkeypatch.setattr(api, "bootstrap", lambda code: {"access_token": "tok"})
+    result = CliRunner().invoke(cli_app, ["login", "--code", "ABC123"])
+    assert result.exit_code == 0, result.output
+    saved = tmp_path / "home-b" / "token"
+    assert saved.read_text() == "tok"
+    assert str(saved) in result.output

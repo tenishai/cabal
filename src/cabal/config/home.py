@@ -99,7 +99,7 @@ def default_db_url(*, cwd: Path | None = None, sync: bool = False) -> str:
 
 
 def default_master_key_path(*, cwd: Path | None = None, announce: bool = True) -> Path:
-    """Where the dev (``--dev``) master key is read and written."""
+    """Where the dev-fallback master key (``allow_dev_master_key``) is read and written."""
     return state_root(cwd=cwd, announce=announce) / DATA_DIRNAME / ".master_key"
 
 

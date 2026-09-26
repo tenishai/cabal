@@ -120,7 +120,7 @@ def reset_auth_cmd(
         raise typer.Exit(code=1) from exc
 
     typer.echo(f"database:  {path}")
-    typer.echo("clears:    signing_keys, ~/.cabal/token")
+    typer.echo(f"clears:    signing_keys, {api.TokenStore().path}")
     if purge_secrets:
         typer.echo("ALSO clears: secrets — UNRECOVERABLE")
     else:
@@ -160,7 +160,7 @@ def login(
         help="6-character code printed in the daemon log on startup.",
     ),
 ) -> None:
-    """Trade a bootstrap code for an operator JWT (saved to ~/.cabal/token)."""
+    """Trade a bootstrap code for an operator JWT (saved to $CABAL_HOME/token, default ~/.cabal/token)."""
     try:
         body = api.bootstrap(code.strip().upper())
     except httpx.HTTPStatusError as exc:
@@ -174,11 +174,12 @@ def login(
         typer.echo(f"could not reach daemon at {api.base_url()}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
-    api.TokenStore().save(body["access_token"])
+    store = api.TokenStore()
+    store.save(body["access_token"])
     persona = body.get("persona")
     typer.echo(
         f"Logged in as {'operator' if persona is None else 'persona ' + persona}. "
-        f"Token saved to {api.DEFAULT_TOKEN_PATH}."
+        f"Token saved to {store.path}."
     )
 
 
@@ -187,6 +188,15 @@ def dispatch(
     target: str = typer.Argument(..., help="Target agent name (e.g. 'echo')."),
     message: str = typer.Argument(..., help="Initial user message."),
     raw: bool = typer.Option(False, "--raw", help="Print full Task JSON."),
+    context: str | None = typer.Option(
+        None,
+        "--context",
+        help=(
+            "A2A contextId to send the task under. One-shots sharing an id "
+            "share a per-conversation delegation budget instead of the "
+            "caller-wide one."
+        ),
+    ),
 ) -> None:
     """Send a one-shot A2A Task and print the response."""
     token = api.TokenStore().load()
@@ -194,7 +204,9 @@ def dispatch(
         typer.echo("no token; run `cbl login` first.", err=True)
         raise typer.Exit(code=1)
     try:
-        response = api.dispatch(token=token, target=target, message_text=message)
+        response = api.dispatch(
+            token=token, target=target, message_text=message, context_id=context
+        )
     except httpx.HTTPStatusError as exc:
         try:
             detail = exc.response.json().get("detail", exc.response.text)

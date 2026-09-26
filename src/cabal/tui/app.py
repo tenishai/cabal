@@ -29,6 +29,7 @@ class CabalTUI(App[None]):
         super().__init__()
         self.broker = broker
         self.persona = persona
+        self._broker_entered = False
 
     # ------------------------------------------------------------------
     # Composition
@@ -47,9 +48,18 @@ class CabalTUI(App[None]):
         Sending a ``Hello`` as the user on launch makes the persona introduce
         itself immediately, instead of presenting an empty ("dead") window.
         """
-        await self.broker.__aenter__()
+        # A boot failure (unset CABAL_MASTER_KEY, a key that cannot decrypt
+        # the database, ...) exits with its message and status 1 rather than
+        # a raw traceback (cabal#36).
+        try:
+            await self.broker.__aenter__()
+        except Exception as exc:  # noqa: BLE001
+            self.exit(return_code=1, message=f"cabal failed to start: {exc}")
+            return
+        self._broker_entered = True
         await self.query_one(PrimusPane).send_user_message("Hello")
 
     async def on_unmount(self) -> None:
-        """Exit the broker context when the app stops."""
-        await self.broker.__aexit__(None, None, None)
+        """Exit the broker context when the app stops, if it was entered."""
+        if self._broker_entered:
+            await self.broker.__aexit__(None, None, None)
