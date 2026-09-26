@@ -625,6 +625,23 @@ def create_app(
         # identity.toml AND known to PERSONA_REGISTRY get a LocalHandler.
         # Bulletin rows for unknown personas exist (from identity_sync)
         # but dispatch returns a clear "no handler" error.
+        # Fail fast at startup if [liminal] url is set but liminal is missing —
+        # beats a confusing error on first dispatch hours later. Driven by the
+        # URL alone, NOT nested under the personas guard below (cabal#126): a
+        # personas-less config with a liminal URL used to skip this check and
+        # come up "ready" with no tool surface. Setting the URL is the intent.
+        if identity is not None and identity.liminal.url:
+            try:
+                import liminal  # noqa: F401  # availability check
+            except ImportError as exc:
+                raise RuntimeError(
+                    "identity.toml configures `[liminal] url = "
+                    f"{identity.liminal.url!r}` but the liminal package "
+                    "is not installed. Run `pip install cabal[mcp]` "
+                    "(or `pip install -e ../liminal` for the "
+                    "sibling-checkout dev layout)."
+                ) from exc
+
         litellm_client: LiteLLMClient | None = None
         registered_persona_names: list[str] = ["echo"]
         if identity is not None and identity.personas:
@@ -651,18 +668,6 @@ def create_app(
             mcp_http_client: httpx.AsyncClient | None = None
             stored_signing_key = None
             if identity.liminal.url:
-                # Fail fast at startup if liminal is missing — beats a
-                # confusing error on first dispatch hours later.
-                try:
-                    import liminal  # noqa: F401  # availability check
-                except ImportError as exc:
-                    raise RuntimeError(
-                        "identity.toml configures `[liminal] url = "
-                        f"{identity.liminal.url!r}` but the liminal package "
-                        "is not installed. Run `pip install cabal[mcp]` "
-                        "(or `pip install -e ../liminal` for the "
-                        "sibling-checkout dev layout)."
-                    ) from exc
                 mcp_http_client = httpx.AsyncClient(timeout=httpx.Timeout(60.0))
                 _app.state.mcp_http_client = mcp_http_client
                 async with open_session(sessionmaker) as session:

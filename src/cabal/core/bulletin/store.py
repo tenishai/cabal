@@ -71,11 +71,24 @@ async def register_agent(
     safety_tier: str,
     agent_card_json: dict,
     agent_card_kid: str,
-    generation: int = 1,
+    generation: int | None = None,
     status: str = "active",
     kind: str = "member",
     federation_audience: str | None = None,
 ) -> AgentRow:
+    """Insert one bulletin row.
+
+    `generation=None` (the default) resolves through `next_generation`, which
+    scans every status. There is deliberately NO numeric default (cabal#149):
+    `1` is only correct for a name with no history, and a hardcoded 1 collided
+    with a retired row twice -- `register_session` (#148) and `sync_personas`
+    after graduate -> absorb -> reload. Generation allocation is an invariant of
+    the (name, generation) PK, so it lives here rather than in each caller.
+    Pass an explicit value only when the caller has already resolved one (the
+    card it signs names the generation, e.g. rotate and graduate).
+    """
+    if generation is None:
+        generation = await next_generation(session, name)
     row = Agent(
         name=name,
         generation=generation,
@@ -106,7 +119,7 @@ async def register_federated(
     agent_card_kid: str,
     capabilities: dict | None = None,
     safety_tier: str = "approval-required",
-    generation: int = 1,
+    generation: int | None = None,
 ) -> AgentRow:
     """Register a *federated* bulletin entry — a sovereign peer persona this
     cabal is a client of (cabal#45).
@@ -187,17 +200,13 @@ async def register_session(
     await ensure_session_persona(session)
     # NOT generation=1. A session name is deliberately STABLE across restarts
     # (CABAL_SESSION_NAME), so register -> end -> register is the ordinary daily
-    # cycle, and `end` retires the row rather than deleting it. Hardcoding 1
-    # collides with the retired row on the composite PK the second time a
-    # session ever starts. `next_generation` scans all statuses; its own
-    # docstring warns about exactly this and it sits forty lines up this file.
+    # cycle, and `end` retires the row rather than deleting it. `register_agent`
+    # resolves an omitted generation through `next_generation` (cabal#149).
     # Two concurrent registers of the same name can both read MAX and both
     # insert; the loser gets a UNIQUE failure. DO NOT ADD A LOCK OR A RETRY --
     # `beat` is self-healing (`heartbeat || register`), so the loser's next
     # Stop 404s on heartbeat and re-registers. The window is one turn
     # (PR #148 review, nit 2).
-    if generation is None:
-        generation = await next_generation(session, name)
     row = await register_agent(
         session,
         name=name,
@@ -213,8 +222,8 @@ async def register_session(
         kind=SESSION_KIND,
     )
     if work is not None:
-        await heartbeat(session, name, generation, work=work)
-        return await get(session, name, generation) or row
+        await heartbeat(session, name, row.generation, work=work)
+        return await get(session, name, row.generation) or row
     return row
 
 

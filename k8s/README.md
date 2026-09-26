@@ -36,6 +36,35 @@ CABAL_URL=http://127.0.0.1:7400 cbl login --code <CODE>
 CABAL_URL=http://127.0.0.1:7400 cbl chat archivist
 ```
 
+## Upgrading
+
+`kubectl apply -k k8s/` on its own does **not** roll the pods, and a running
+pod never sees a changed `identity.toml`:
+
+- `configmap.yaml` is a plain `resources:` entry, not a `configMapGenerator`,
+  so the ConfigMap name is stable and applying it leaves both pod templates
+  unchanged. No rollout is triggered.
+- `cabal-core.yaml` mounts `identity.toml` with `subPath`, and Kubernetes does
+  not propagate ConfigMap updates into a `subPath` mount.
+- The image is `:latest` with `imagePullPolicy: IfNotPresent`, so a recreated
+  pod can start a cached older image.
+
+So after every apply, restart both Deployments and wait for them:
+
+```bash
+kubectl apply -k k8s/
+kubectl -n cabal rollout restart deploy/cabal-core deploy/cabal-litellm
+kubectl -n cabal rollout status  deploy/cabal-core
+```
+
+**The ConfigMap and the image must land together whenever persona vocabulary
+changes** (a persona rename, or adding or removing one). If they drift, the
+next unrelated pod recreation (node drain, eviction, OOM) starts one version of
+the code against the other version's `identity.toml`. Personas the running code
+does not know keep their bulletin rows but get no handler: startup logs
+`personas.no_handler_registered` at info level and carries on, and they fail
+only when something dispatches to them (cabal#114).
+
 ## Files
 
 | File | Purpose |

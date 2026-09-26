@@ -292,3 +292,24 @@ def test_capability_card_has_required_fields() -> None:
     assert card["handler"] == "documents"
     tool_names = {t["name"] for t in card["tools"]}
     assert tool_names == {"search", "refresh", "list_sources"}
+
+
+@pytest.mark.asyncio
+async def test_get_handler_reads_env_db_path(monkeypatch, tmp_path: Path) -> None:
+    """cabal#129 — liminal discovery calls get_handler() with no arguments, so
+    before CABAL_LIBRARIAN_DB the discovered handler refused every call with
+    "no librarian corpus configured". Unset/empty keeps the old None."""
+    from cabal.handlers.documents import get_handler
+
+    db = tmp_path / "documents.db"
+    monkeypatch.setenv("CABAL_LIBRARIAN_DB", str(db))
+    handler = get_handler()
+    assert handler.default_config.db_path == db
+    # The discovered handler is live: a real call reaches the corpus.
+    result = await handler.dispatch("search", {"query": "anything"}, _ctx())
+    assert result.is_error is False, result.error
+
+    monkeypatch.setenv("CABAL_LIBRARIAN_DB", "")
+    assert get_handler().default_config.db_path is None
+    monkeypatch.delenv("CABAL_LIBRARIAN_DB", raising=False)
+    assert get_handler().default_config.db_path is None

@@ -52,6 +52,22 @@ _BUDGET_NOTE_SHAPE = re.compile(r"\d{1,9} of \d{1,9} used", re.ASCII)
 _RESULT_SUMMARY_MAX = 2000
 
 
+#: cabal#138 -- the shared honesty floor. Appended at every site that assembles
+#: a system prompt (`build_messages`, and the primus PLAN and AGGREGATE hops,
+#: which build their own), so no persona author can forget it and an operator's
+#: `system_prompt_override` still carries it. Kept short on purpose: a long
+#: preamble crowds out the persona prompt on a small model. A prompt-level floor,
+#: not enforcement -- a model can still ignore it.
+HONESTY_FLOOR = (
+    "\n\nHonesty rules (always apply):\n"
+    "- Not knowing is an acceptable answer. Say so rather than inventing one.\n"
+    "- Do not claim a capability you cannot demonstrate. If you have no memory "
+    "store, no tool, or no access, say that.\n"
+    "- Cite only what you actually retrieved. Mark any part of an answer that "
+    "did not come from a retrieved result as unverified."
+)
+
+
 @dataclass
 class LLMPersona:
     """LocalHandler-shaped LLM agent.
@@ -205,6 +221,7 @@ class LLMPersona:
         """
         system_content = (
             self.system_prompt
+            + HONESTY_FLOOR
             + self._delegation_budget_note(task)
             + self._recall_for_task(task)
         )

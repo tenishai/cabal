@@ -40,6 +40,7 @@ posture, same per-persona db_path override path.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -146,8 +147,8 @@ class DocumentsHandler:
         db_path = self._resolve_db_path(ctx)
         if db_path is None:
             return ToolResult.failure(
-                "no librarian corpus configured: set default_config.db_path "
-                "or pass ctx.extra['documents.db_path']"
+                "no librarian corpus configured: set CABAL_LIBRARIAN_DB, "
+                "default_config.db_path, or pass ctx.extra['documents.db_path']"
             )
 
         try:
@@ -229,7 +230,16 @@ class DocumentsHandler:
 
 
 def get_handler() -> Handler:
-    return DocumentsHandler()
+    """Entry-point factory, called by liminal discovery with no arguments.
+
+    Reads ``CABAL_LIBRARIAN_DB`` (if set and non-empty) as the served handler's fallback
+    corpus path, the same convention as ``CABAL_ARCHITECT_DB`` for patterns
+    (cabal#129). Without it the discovered handler has no corpus and refuses
+    every call. A per-persona ``ctx.extra['documents.db_path']`` still overrides it.
+    """
+    db_env = os.environ.get("CABAL_LIBRARIAN_DB")
+    config = DocumentsConfig(db_path=Path(db_env).expanduser()) if db_env else DocumentsConfig()
+    return DocumentsHandler(default_config=config)
 
 
 __all__ = ["DocumentsHandler", "DocumentsConfig", "get_handler"]

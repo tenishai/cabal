@@ -514,6 +514,11 @@ class DelegationBudgetGuardrail:
     def limit(self) -> int:
         return self._limit
 
+    @property
+    def caller_window(self) -> float:
+        """Seconds a caller-keyed budget window lasts before it refills."""
+        return self._caller_window
+
     def usage(self, session_key: str) -> tuple[int, int]:
         """(spent, limit) for a key. cabal#156.
 
