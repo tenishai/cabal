@@ -697,10 +697,15 @@ class DelegationBudgetGuardrail:
             # written for and no help at all to the human whose `cbl chat`
             # session has just hit a wall that does not refill. This PR is what
             # makes operators meet that message.
+            # "BY THIS CALLER" ON THE WINDOWED BRANCH (cabal#161). A caller
+            # key is shared across that caller's unrelated conversations, so
+            # "in this conversation" told the reader a fresh conversation
+            # would clear it -- false, and at odds with the refill clause.
+            scope = "by this caller" if windowed else "in this conversation"
             refill = (
                 f" This budget refills {self._caller_window:.0f}s after its first "
-                "delegation; thread a contextId to get a per-conversation budget "
-                "instead."
+                "delegation; thread a contextId (`cbl dispatch --context`) to "
+                "get a per-conversation budget instead."
                 if windowed
                 else (
                     " This budget belongs to the conversation and does not "
@@ -709,7 +714,7 @@ class DelegationBudgetGuardrail:
             )
             reason = (
                 f"Delegation budget exhausted: {self._limit} delegations "
-                f"already made in this conversation (limit {self._limit}). Every "
+                f"already made {scope} (limit {self._limit}). Every "
                 "delegation counts regardless of wording, so rephrasing will "
                 "not get through. If you cannot answer from what you have, "
                 f"say so and stop rather than asking again.{refill}"
@@ -967,10 +972,11 @@ class DelegationDepthGuardrail:
         # defensible -- a depth of 1 is a working bound where a budget of 0 is
         # one nothing can satisfy -- but it is two shapes, not one.
         #
-        # IT IS THE SHAPE #156 WILL GIVE THE PRIMUS'S max_legs -- future tense
-        # on purpose (#144 r1 Nit): that symbol does not exist in this tree yet
-        # and a maintainer grepping the named precedent finds nothing. The
-        # three-axis framing becomes true when #156 lands, not before.
+        # IT IS THE SHAPE OF THE PRIMUS'S max_legs: `max(1, min(max_legs,
+        # MAX_LEGS_PER_FANOUT))` in agents/primus.py, which #156 added and
+        # `max_legs_override` (#178) made settable from config. This comment
+        # was written in the future tense before that symbol existed (#144 r1
+        # Nit) and outlived the condition by several PRs (#182).
         #
         # `delegation_depth_limit` does now get a config validator, so a typo
         # in identity.toml is caught at load on every axis even where the

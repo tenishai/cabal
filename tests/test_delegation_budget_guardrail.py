@@ -690,6 +690,25 @@ async def test_each_key_class_tells_the_reader_how_to_recover() -> None:
 
 
 @pytest.mark.asyncio
+async def test_each_key_class_names_what_its_budget_is_keyed_on() -> None:
+    """cabal#161 — a caller key spans that caller's unrelated conversations,
+    so its refusal must not say "in this conversation": read literally, that
+    promises a fresh conversation clears it, and it does not."""
+    g = DelegationBudgetGuardrail(limit=1, caller_window_seconds=3600)
+    ctx = _ctx()
+
+    await g.check(_task(context_id="c"), ctx)
+    conversation = await g.check(_task(context_id="c"), ctx)
+    await g.check(_task(context_id=None, task_id="a"), ctx)
+    windowed = await g.check(_task(context_id=None, task_id="b"), ctx)
+
+    assert "already made by this caller" in windowed.reason, windowed.reason
+    assert "in this conversation" not in windowed.reason
+    assert "cbl dispatch --context" in windowed.reason
+    assert "already made in this conversation" in conversation.reason
+
+
+@pytest.mark.asyncio
 async def test_unicode_digits_are_not_a_budget_figure() -> None:
     """cabal#156 r4 Nit — `\\d` IS UNICODE-AWARE IN A str PATTERN.
 

@@ -63,11 +63,21 @@ def main(
     # Lazy imports so the module is importable even when the broker or
     # Textual isn't available (e.g., during unit tests of the CLI layer).
     from cabal.tui.app import CabalTUI
+    from cabal.tui.client.base import BrokerError
     from cabal.tui.client.inprocess import InProcessBrokerClient
 
-    broker = InProcessBrokerClient(
-        default_persona=persona,
-        config_path=config,
-        db_url=db_url,
-    )
-    CabalTUI(broker=broker, persona=persona).run()
+    try:
+        broker = InProcessBrokerClient(
+            default_persona=persona,
+            config_path=config,
+            db_url=db_url,
+        )
+    except BrokerError as exc:
+        typer.echo(f"cabal failed to start: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    tui = CabalTUI(broker=broker, persona=persona)
+    tui.run()
+    # A boot failure inside the app exits it with a message and a non-zero
+    # code (cabal#36); pass the code on so a script can tell.
+    if tui.return_code:
+        raise typer.Exit(code=tui.return_code)

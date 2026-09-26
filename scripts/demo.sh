@@ -16,9 +16,10 @@ _json_field() {
     fi
 }
 
-OP_TOKEN=$(cat ~/.cabal/token 2>/dev/null || true)
+TOKEN_FILE="${CABAL_HOME:-$HOME/.cabal}/token"
+OP_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null || true)
 if [ -z "$OP_TOKEN" ]; then
-    echo "ERROR: no operator token found at ~/.cabal/token. Run 'make bootstrap' first."
+    echo "ERROR: no operator token found at $TOKEN_FILE. Run 'make bootstrap' first."
     exit 1
 fi
 
