@@ -127,7 +127,8 @@ async def register_federated(
     `endpoint` is the sovereign service's HTTPS URL; `federation_audience` is its
     stable service id, which the caller mints into the dispatch token `aud` and
     which `_prepare` verifies against. `agent_card_json`/`agent_card_kid` hold the
-    sovereign service's own signed AgentCard.
+    sovereign service's own signed AgentCard. `generation=None` resolves
+    through `next_generation`, as in `register_agent`.
     """
     return await register_agent(
         session,

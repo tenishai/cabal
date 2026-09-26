@@ -621,10 +621,6 @@ def create_app(
             _app.state.session_tracker = session_tracker
             log.info("memory.techne_enabled", db_path=str(techne_db))
 
-        # LLM-backed persona handlers: only personas declared in
-        # identity.toml AND known to PERSONA_REGISTRY get a LocalHandler.
-        # Bulletin rows for unknown personas exist (from identity_sync)
-        # but dispatch returns a clear "no handler" error.
         # Fail fast at startup if [liminal] url is set but liminal is missing —
         # beats a confusing error on first dispatch hours later. Driven by the
         # URL alone, NOT nested under the personas guard below (cabal#126): a
@@ -642,6 +638,10 @@ def create_app(
                     "sibling-checkout dev layout)."
                 ) from exc
 
+        # LLM-backed persona handlers: only personas declared in
+        # identity.toml AND known to PERSONA_REGISTRY get a LocalHandler.
+        # Bulletin rows for unknown personas exist (from identity_sync)
+        # but dispatch returns a clear "no handler" error.
         litellm_client: LiteLLMClient | None = None
         registered_persona_names: list[str] = ["echo"]
         if identity is not None and identity.personas:
