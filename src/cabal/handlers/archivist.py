@@ -31,6 +31,7 @@ Deferred from MVP (covered in cabal/archivist/__init__.py docstring):
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -179,8 +180,8 @@ class ArchivistHandler:
         db_path = self._resolve_db_path(ctx)
         if db_path is None:
             return ToolResult.failure(
-                "no archivist corpus configured: set default_config.db_path "
-                "or pass ctx.extra['archivist.db_path']"
+                "no archivist corpus configured: set CABAL_ARCHIVIST_DB, "
+                "default_config.db_path, or pass ctx.extra['archivist.db_path']"
             )
 
         store = ArchivistStore(db_path)
@@ -288,7 +289,16 @@ class ArchivistHandler:
 
 
 def get_handler() -> Handler:
-    return ArchivistHandler()
+    """Entry-point factory, called by liminal discovery with no arguments.
+
+    Reads ``CABAL_ARCHIVIST_DB`` (if set and non-empty) as the served handler's fallback
+    corpus path, the same convention as ``CABAL_ARCHITECT_DB`` for patterns
+    (cabal#129). Without it the discovered handler has no corpus and refuses
+    every call. A per-persona ``ctx.extra['archivist.db_path']`` still overrides it.
+    """
+    db_env = os.environ.get("CABAL_ARCHIVIST_DB")
+    config = ArchivistConfig(db_path=Path(db_env).expanduser()) if db_env else ArchivistConfig()
+    return ArchivistHandler(default_config=config)
 
 
 # ---- helpers ------------------------------------------------------------

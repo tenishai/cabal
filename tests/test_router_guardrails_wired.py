@@ -139,6 +139,23 @@ def test_delegation_budget_is_wired_with_its_configured_limit() -> None:
     assert budgets[0].limit == 7
 
 
+def test_delegation_budget_is_wired_with_its_configured_caller_window() -> None:
+    """cabal#160 -- dropping `caller_window_seconds=` at the wiring site left
+    the full suite green. The config default (3600) equals the guard default
+    (CALLER_RATE_WINDOW_SECONDS), so a disconnected knob behaves identically
+    until an operator sets it. 900 discriminates: it is neither default."""
+    identity = IdentityConfig(
+        guardrails=GuardrailsConfig(delegation_budget_caller_window_seconds=900.0)
+    )
+    budgets = [
+        g
+        for g in build_router_input_guardrails(identity)
+        if isinstance(g, DelegationBudgetGuardrail)
+    ]
+    assert len(budgets) == 1
+    assert budgets[0].caller_window == 900.0
+
+
 def test_delegation_depth_is_wired_with_its_configured_limit() -> None:
     """cabal#144 r1 Important — THE MUTANT THAT SURVIVED ALL 873 TESTS.
 
