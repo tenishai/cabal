@@ -77,7 +77,12 @@ async def sync_personas(
             if current is not None:
                 continue
 
-            card = _build_agent_card(agent_name, persona_name, persona_cfg, 1)
+            # cabal#149: never a hardcoded 1. `get_active` sees only active
+            # rows, so after graduate -> absorb the name still has retired
+            # generations, and the documented recovery (`cbl reload identity`)
+            # lands here. Resolved once so the signed card and the row agree.
+            generation = await bulletin_store.next_generation(session, agent_name)
+            card = _build_agent_card(agent_name, persona_name, persona_cfg, generation)
             signed = sign_card(card, signing_key)
             await bulletin_store.register_agent(
                 session,
@@ -89,6 +94,7 @@ async def sync_personas(
                 safety_tier=persona_cfg.safety_tier,
                 agent_card_json={"jws": signed, "card": card.model_dump()},
                 agent_card_kid=signing_key.kid,
+                generation=generation,
             )
             log.info(
                 "identity_sync.registered_agent",

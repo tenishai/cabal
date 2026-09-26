@@ -381,3 +381,24 @@ def test_capability_card_shape() -> None:
     assert card["handler"] == "archivist"
     tool_names = {t["name"] for t in card["tools"]}
     assert tool_names == {"publish", "search", "get", "schema"}
+
+
+@pytest.mark.asyncio
+async def test_get_handler_reads_env_db_path(monkeypatch, tmp_path: Path) -> None:
+    """cabal#129 — liminal discovery calls get_handler() with no arguments, so
+    before CABAL_ARCHIVIST_DB the discovered handler refused every call with
+    "no archivist corpus configured". Unset/empty keeps the old None."""
+    from cabal.handlers.archivist import get_handler
+
+    db = tmp_path / "archivist.db"
+    monkeypatch.setenv("CABAL_ARCHIVIST_DB", str(db))
+    handler = get_handler()
+    assert handler.default_config.db_path == db
+    # The discovered handler is live: a real call reaches the corpus.
+    result = await handler.dispatch("schema", {}, _ctx())
+    assert result.is_error is False, result.error
+
+    monkeypatch.setenv("CABAL_ARCHIVIST_DB", "")
+    assert get_handler().default_config.db_path is None
+    monkeypatch.delenv("CABAL_ARCHIVIST_DB", raising=False)
+    assert get_handler().default_config.db_path is None
