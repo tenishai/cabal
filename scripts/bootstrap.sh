@@ -58,10 +58,17 @@ fi
 echo "Bootstrap code: $CODE"
 
 echo "==> Exchanging code for operator token..."
-OP_TOKEN=$(curl -sf -X POST "$CABAL_URL/auth/bootstrap" \
+# Capture the response first: piping a failed exchange straight into the JSON reader
+# turned an expired code into a bare JSONDecodeError (tenishai/agora#47).
+if ! RESP=$(curl -sf -X POST "$CABAL_URL/auth/bootstrap" \
     -H "Content-Type: application/json" \
-    -d "{\"code\": \"$CODE\"}" \
-    | _json_field access_token)
+    -d "{\"code\": \"$CODE\"}"); then
+    echo "ERROR: cabal refused the bootstrap code. Codes expire 5 minutes after cabal starts"
+    echo "and work once. Restart cabal for a fresh code, then run this again:"
+    echo "  docker compose -f $COMPOSE_FILE restart cabal"
+    exit 1
+fi
+OP_TOKEN=$(printf '%s' "$RESP" | _json_field access_token)
 
 TOKEN_FILE="${CABAL_HOME:-$HOME/.cabal}/token"
 mkdir -p "$(dirname "$TOKEN_FILE")"
@@ -85,6 +92,21 @@ fi
 
 echo "==> Restarting liminal with new token..."
 docker compose -f "$COMPOSE_FILE" restart liminal
+
+LIMINAL_URL="${LIMINAL_URL:-http://localhost:9100}"
+echo "==> Waiting for liminal to be healthy at $LIMINAL_URL ..."
+attempts=0
+until curl -sf "$LIMINAL_URL/healthz" >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -gt 60 ]; then
+        echo "ERROR: liminal did not become healthy after 2 minutes."
+        echo "Check logs: docker logs liminal-dev"
+        exit 1
+    fi
+    printf "."
+    sleep 2
+done
+echo " healthy."
 
 echo ""
 echo "Bootstrap complete."
