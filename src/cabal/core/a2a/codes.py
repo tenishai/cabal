@@ -10,11 +10,13 @@ Code families:
     700  human-input-required  (operator clarification needed)
     701  policy-violation       (safety-tier guard refused; not retryable)
     702  budget-exhausted       (token budget overran)
+    703  tool-blocked           (a tool or rule refused the work; same name and
+                                 meaning as daedalus's ReasonCode.TOOL_BLOCKED)
     704  escalation             (subordinate handed back to caller; primus
                                  should pass to operator)
 
 Numbers are intentionally non-contiguous to leave room. State on the wire
-mirrors A2A: 700 → `input-required`, 701/702 → `failed`, 704 → `failed`.
+mirrors A2A: 700 → `input-required`, 701/702/703 → `failed`, 704 → `failed`.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 CODE_HUMAN_INPUT = 700
 CODE_POLICY_VIOLATION = 701
 CODE_BUDGET_EXHAUSTED = 702
+CODE_TOOL_BLOCKED = 703
 CODE_ESCALATION = 704
 
 
@@ -33,6 +36,7 @@ _STATE_FOR: dict[int, str] = {
     CODE_HUMAN_INPUT: "input-required",
     CODE_POLICY_VIOLATION: "failed",
     CODE_BUDGET_EXHAUSTED: "failed",
+    CODE_TOOL_BLOCKED: "failed",
     CODE_ESCALATION: "failed",
 }
 

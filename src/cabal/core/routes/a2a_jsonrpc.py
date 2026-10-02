@@ -95,9 +95,18 @@ async def _resolve_dispatch_token(
             ),
         )
 
+    sub = claims.get("sub") or ""
+    # A token with no sub failed to identify its bearer (cabal#184). Refuse to
+    # re-mint it rather than default the principal to "operator".
+    if not sub:
+        return None, make_error_response(
+            id=None,
+            code=ERROR_UNAUTHORIZED,
+            message="token carries no sub; refusing to re-mint a dispatch token",
+        )
+
     sessionmaker = request.app.state.sessionmaker
     master_key = request.app.state.master_key
-    sub = claims.get("sub") or ""
     async with open_session(sessionmaker) as session:
         # THE PAIRS POLICY HAS TO LIVE HERE TOO, and its absence was a full
         # bypass: the same colleague token refused by POST /a2a/tasks was
@@ -120,7 +129,7 @@ async def _resolve_dispatch_token(
     return (
         mint(
             signing_key=stored,
-            sub=claims.get("sub", "operator"),
+            sub=sub,
             aud=target,
             persona=claims.get("cabal_persona"),
             scope=["dispatch"],
