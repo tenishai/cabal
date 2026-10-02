@@ -59,7 +59,7 @@ Pull requests and issues are in tenishai/cabal.
   mentions of that document now say it is not in this repo, and no longer give a path.
 - **TUI and CLI error messages** are honest and clean at boot, and the delegation-budget
   block message no longer says "conversation" on the caller path (tenishai/cabal#228,
-  issues tenishai/cabal#36, tenishai/cabal#91, tenishai/cabal#161, tenishai/cabal#182).
+  issues tenishai/cabal#36, tenishai/cabal#91, tenishai/cabal#161).
 
 ### Fixed
 
@@ -73,8 +73,8 @@ Pull requests and issues are in tenishai/cabal.
   (tenishai/cabal#229, issue tenishai/cabal#126), and `k8s/README.md` documents rolling
   config and image together so a persona rename does not degrade silently (issue
   tenishai/cabal#114).
-- **A missed primus lookup names the real agent**: `--persona rook` fails with "no agent
-  registered", and the message now says the agent registers as `rook-primus`
+- **A missed primus lookup names the real agent**: `--persona mason` fails with "no agent
+  registered", and the message now says the agent registers as `mason-primus`
   (tenishai/cabal#228, issue tenishai/cabal#95).
 - **techne and librarian state survive container recreation**: they were written to the
   container's writable layer instead of the `/data` volume (tenishai/cabal#217, issue
@@ -90,8 +90,8 @@ Pull requests and issues are in tenishai/cabal.
 - **A revoked colleague pass can no longer buy liminal tokens** (tenishai/cabal#224); see
   Added above.
 - **`.env` is untracked** (tenishai/cabal#209). The master key it carried has been
-  rotated and is dead. The old value remains in git history before the history rewrite;
-  there is no re-encryption path, so changing the master key means `cbl reset-auth` and
+  rotated and is dead. The old (dead) value is still in this repository's history, in
+  the commits from tenishai/cabal#11 up to tenishai/cabal#209. There is no re-encryption path, so changing the master key means `cbl reset-auth` and
   re-minting `LIMINAL_CABAL_TOKEN`.
 - **The Docker runtime stage runs `apt-get upgrade`**, refreshable with `APT_REFRESH`, so
   base packages reach current Debian security revisions even from a cached base layer;

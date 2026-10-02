@@ -5,8 +5,10 @@
 # fork), so test.yml treats them like a maintainer's PR and runs `unit` on the
 # self-hosted pool. A dependency bump runs install-time code before review, so
 # keep the self-hosted runner off this repository once it is public, or route
-# dependabot[bot] PRs to the hosted `fork-pr` job (techne's dependabot.yml
-# explains the same trade-off).
+# dependabot[bot] PRs to the hosted `fork-pr` job. techne's dependabot.yml leaves
+# out the pip ecosystem for this reason; cabal enables it because it pins only
+# floors, so `unit`'s `pip install -e ".[dev]"` already pulls the newest releases
+# on every run and a Dependabot bump adds little new exposure.
 version: 2
 updates:
   - package-ecosystem: "pip"
