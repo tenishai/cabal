@@ -37,7 +37,7 @@ def _require_liminal() -> Any:
     except ImportError as exc:
         raise ImportError(
             "cabal MCP tool surface requires liminal. Install it via the "
-            "`mcp` extra: `pip install cabal[mcp]` (or `pip install -e ../liminal` "
+            "`mcp` extra: `pip install tenishai-cabal[mcp]` (or `pip install -e ../liminal` "
             "if you're using the sibling-checkout layout)."
         ) from exc
     return _liminal_client

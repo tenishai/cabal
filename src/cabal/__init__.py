@@ -3,7 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = version("cabal")
+    __version__ = version("tenishai-cabal")
 except PackageNotFoundError:  # editable install before metadata is generated
     __version__ = "0.0.0+unknown"
 

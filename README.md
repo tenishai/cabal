@@ -4,6 +4,9 @@ Self-hosted personal agent orchestration platform. Cabal Core is the SQLite-back
 control plane and A2A broker; personas (Architect, Archivist, Librarian, ...) and
 the Mason primus run as agent modules registered with the bulletin board.
 
+The distribution is named `tenishai-cabal` (`pip show tenishai-cabal`; extras install as
+`tenishai-cabal[mcp]`); the import package is still `cabal` and the commands are `cbl` and `cabal`.
+
 ## Status
 
 **The suite passes.** All phases through the security + hygiene sweep are complete:

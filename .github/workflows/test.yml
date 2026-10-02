@@ -18,14 +18,12 @@ concurrency:
 jobs:
   # ---- unit: no sibling deps; push, dispatch, same-repo PRs -----------------
   # Fork PRs run fork-pr instead. tests/test_ci_workflow.py pins the guard below.
-  # SELF-HOSTED on mash1 (2026-09-23): hosted Actions stopped on a billing failure.
-  # The `if:` below is DEFENCE IN DEPTH for honest fork PRs, not a security boundary:
-  # for `pull_request` GitHub runs the PR's own copy of this file, so a fork can
-  # delete the guard (see the ATTACKER-EDITABLE block in tenishai/techne's test.yml).
-  # The real controls: this repo is private, "Run workflows from fork pull requests"
-  # is off (checked 2026-09-23), and the runner stops before the go-public flip.
-  # That flip is tracked in tenishai/agora#20; the sequence is
-  # docs/go-public-runbook.md in tenishai/techne.
+  # unit runs on a self-hosted runner pool. The `if:` below is DEFENCE IN DEPTH for
+  # honest fork PRs, not a security boundary: for `pull_request` GitHub runs the PR's
+  # own copy of this file, so a fork can delete the guard (see the ATTACKER-EDITABLE
+  # block in tenishai/techne's test.yml). The real controls are the repository's
+  # "Run workflows from fork pull requests" setting and keeping the self-hosted
+  # runner off any repository that accepts untrusted PRs.
   unit:
     runs-on: [self-hosted, linux, x64, cabal-ci]
     timeout-minutes: 20  # one small runner; a hung job starves it
@@ -37,18 +35,18 @@ jobs:
 
     steps:
       - name: Checkout cabal
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           path: cabal
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: cabal/pyproject.toml
       # The runner CONTAINER persists between jobs (same machine name across legs), so
-      # setup-python's interpreter in _work/_tool is shared: a bare `pip install` would
+      # setup-python's interpreter is shared on the runner: a bare `pip install` would
       # let one job's packages satisfy the next job's imports (liminal#103 r1). A fresh
       # venv per job, first on PATH, keeps each run to what it installed itself.
       # setup-python stays (proven on this runner) rather than the image's interpreters.
@@ -71,6 +69,67 @@ jobs:
         working-directory: cabal
         run: pytest -q -m "not integration"
 
+  # ---- dco: every commit a PR adds carries a matching Signed-off-by ---------
+  # Copied from tenishai/techne's test.yml (CONTRIBUTING.md, "Developer
+  # Certificate of Origin"). Hosted runner, no install step: it only reads git
+  # history, so there is no PR code to execute and no reason to use the
+  # self-hosted pool. Matches the sign-off anywhere in the message (a hook that
+  # appends a trailer moves it out of git's trailer block).
+  #
+  # DEPENDABOT EXEMPTION: a commit authored EXACTLY as
+  # `dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>` is
+  # skipped. Dependabot signs off as `dependabot[bot] <support@github.com>`, which
+  # never matches its noreply author email, so its PRs failed otherwise. Unlike
+  # techne's arch-cards copy, this one runs on hosted infrastructure for fork PRs
+  # too, so the exemption applies only when the PR's head is this repository: a
+  # fork can forge any commit author, including this one, and gets no exemption.
+  dco:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - name: Checkout cabal
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: DCO sign-off check
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BOT_EXEMPT: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          set -euo pipefail
+          export GIT_NO_REPLACE_OBJECTS=1
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --no-tags --quiet --unshallow origin "$BASE_SHA" "$HEAD_SHA"
+          else
+            git fetch --no-tags --quiet origin "$BASE_SHA" "$HEAD_SHA"
+          fi
+          commits=$(git rev-list --no-merges "$BASE_SHA..$HEAD_SHA")
+          if [ -z "$commits" ]; then
+            echo "::error::DCO: no non-merge commits in $BASE_SHA..$HEAD_SHA, so nothing was checked"
+            exit 1
+          fi
+          bad=0
+          skipped=0
+          for c in $commits; do
+            author=$(git log -1 --format='%an <%ae>' "$c")
+            if [ "$BOT_EXEMPT" = true ] && [ "$author" = "dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>" ]; then
+              echo "DCO: skipping ${c:0:12} as a bot commit ($author)"
+              skipped=$((skipped + 1))
+              continue
+            fi
+            # no `grep -q`: an early exit SIGPIPEs `tr`, and pipefail reads that as a miss
+            if ! git log -1 --format=%B "$c" | tr -d '\r' | grep -Fxi -- "Signed-off-by: $author" >/dev/null; then
+              echo "::error::DCO: commit ${c:0:12} has no 'Signed-off-by: $author' trailer"
+              bad=1
+            fi
+          done
+          if [ "$bad" -ne 0 ]; then
+            echo "Sign off with 'git commit -s'. To fix existing commits, see 'Developer Certificate of Origin' in CONTRIBUTING.md."
+            exit 1
+          fi
+          echo "DCO: $(($(echo "$commits" | wc -l | tr -d ' ') - skipped)) commit(s) signed off by their authors$( [ "$skipped" -gt 0 ] && printf ' (%s skipped as bot commits)' "$skipped" )"
+
   # ---- integration: full suite with siblings --------------------------------
   integration:
     # Manual dispatch only. The sibling checkouts carry no token: while techne
@@ -86,30 +145,30 @@ jobs:
 
     steps:
       - name: Checkout cabal
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           path: cabal
 
       - name: Checkout techne
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: tenishai/techne
           path: techne
 
       - name: Checkout liminal
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: tenishai/liminal
           path: liminal
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: cabal/pyproject.toml
       # The runner CONTAINER persists between jobs (same machine name across legs), so
-      # setup-python's interpreter in _work/_tool is shared: a bare `pip install` would
+      # setup-python's interpreter is shared on the runner: a bare `pip install` would
       # let one job's packages satisfy the next job's imports (liminal#103 r1). A fresh
       # venv per job, first on PATH, keeps each run to what it installed itself.
       # setup-python stays (proven on this runner) rather than the image's interpreters.
@@ -143,12 +202,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout cabal
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           path: cabal
 
       - name: Checkout techne
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: tenishai/techne
           path: techne
@@ -172,12 +231,12 @@ jobs:
 
     steps:
       - name: Checkout cabal
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           path: cabal
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
