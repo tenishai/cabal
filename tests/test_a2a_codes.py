@@ -7,6 +7,7 @@ from cabal.core.a2a.codes import (
     CODE_ESCALATION,
     CODE_HUMAN_INPUT,
     CODE_POLICY_VIOLATION,
+    CODE_TOOL_BLOCKED,
     CabalReason,
     annotate,
     is_escalation,
@@ -29,6 +30,15 @@ def _task() -> Task:
 def test_700_maps_to_input_required() -> None:
     s = make_status(CabalReason(code=CODE_HUMAN_INPUT, message="need more info"))
     assert s.state == "input-required"
+
+
+def test_703_is_tool_blocked_and_maps_to_failed() -> None:
+    """cabal#237: daedalus sends 703 (TOOL_BLOCKED); it must be a known code."""
+    assert CODE_TOOL_BLOCKED == 703
+    s = make_status(CabalReason(code=CODE_TOOL_BLOCKED, message="a rule stopped this"))
+    assert s.state == "failed"
+    out = annotate(_task(), CabalReason(code=CODE_TOOL_BLOCKED, message="x"))
+    assert out.metadata["cabal_reason_code"] == 703
 
 
 def test_701_702_704_map_to_failed() -> None:

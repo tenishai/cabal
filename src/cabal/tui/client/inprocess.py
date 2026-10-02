@@ -145,12 +145,19 @@ class InProcessBrokerClient:
                     f"token aud={claims.get('aud')!r} cannot dispatch to {persona!r}; "
                     "token must have operator scope or be pre-scoped to the target"
                 )
+            sub = claims.get("sub") or ""
+            if not sub:
+                # cabal#184: no sub means the token failed to identify its
+                # bearer; never default it to the "operator" principal.
+                raise BrokerError(
+                    "operator token carries no sub; refusing to mint a dispatch token"
+                )
             if self._signing_key is None:
                 raise BrokerError("no active signing key available after boot")
             try:
                 dispatch_token = mint(
                     signing_key=self._signing_key,
-                    sub=claims.get("sub", "operator"),
+                    sub=sub,
                     aud=persona,
                     persona=claims.get("cabal_persona"),
                     scope=["dispatch"],

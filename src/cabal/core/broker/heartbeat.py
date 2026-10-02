@@ -57,19 +57,23 @@ class HeartbeatScheduler:
         self._task = None
 
     async def _run(self) -> None:
+        # One failed ping (a locked DB, a dropped connection) must not end the
+        # scheduler: it is caught per iteration, logged, and the loop carries
+        # on at the next interval (cabal#230).
+        # Initial ping right at startup so list_agents reflects liveness
+        # immediately.
+        await self._ping_guarded()
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
+            except TimeoutError:
+                await self._ping_guarded()
+
+    async def _ping_guarded(self) -> None:
         try:
-            # Initial ping right at startup so list_agents reflects liveness
-            # immediately.
             await self._ping_once()
-            while not self._stop.is_set():
-                try:
-                    await asyncio.wait_for(
-                        self._stop.wait(), timeout=self._interval
-                    )
-                except TimeoutError:
-                    await self._ping_once()
         except Exception as exc:  # noqa: BLE001
-            log.error("heartbeat.scheduler_crashed", error=str(exc))
+            log.error("heartbeat.ping_failed", error=str(exc))
 
     async def _ping_once(self) -> None:
         async with open_session(self._sessionmaker) as session:

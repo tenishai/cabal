@@ -53,13 +53,14 @@ class TechneMemoryStore:
     use_vectors: bool = False  # vectors require backfill; off by default
 
     def recall(self, query: str, *, limit: int = 5) -> list[MemoryHit]:
-        # Lazy import so the dep stays soft.
-        import techne
-
         cleaned = _sanitize_query(query)
         if not cleaned:
             return []
         try:
+            # Lazy import so the dep stays soft; inside the try so a missing
+            # techne degrades to "no hits" like any other memory failure.
+            import techne
+
             results = techne.search.search(
                 self.db_path,
                 cleaned,
@@ -93,9 +94,9 @@ class TechneMemoryStore:
         confidence: str = "medium",
         **_extra: Any,
     ) -> None:
-        import techne
-
         try:
+            import techne
+
             techne.knowledge.store(
                 self.db_path,
                 content=content,

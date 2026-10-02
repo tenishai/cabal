@@ -236,8 +236,10 @@ Linked feedback memory: `feedback-decision-authority`.
 ### D-007: Cryptography library for AgentCard signing
 
 - **Question**: cryptography vs. Authlib vs. python-jose?
-- **Choice**: Authlib + cryptography (Authlib uses cryptography under the hood)
-- **Reasoning**: Authlib gives us JWT + JWS in one library and is what we want
+- **Choice**: joserfc + cryptography. Chosen as Authlib at first; the code imports
+  `joserfc` directly (Authlib's own JOSE layer, split out) and never imports
+  `authlib`, so `pyproject.toml` declares joserfc (cabal#235).
+- **Reasoning**: joserfc gives us JWT + JWS in one library and is what we want
   for the bootstrap-code/JWT flow anyway. python-jose has a long unmaintained
   fork history; cryptography alone means we'd implement JWS framing ourselves.
 - **Lands in**: `pyproject.toml` deps.

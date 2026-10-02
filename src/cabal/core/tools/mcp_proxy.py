@@ -108,36 +108,6 @@ class MCPToolProxy:
             )
 
 
-def build_token_provider(
-    *,
-    persona: str,
-    agent_name: str,
-    mint_jwt: Callable[..., str],
-    ttl_seconds: int = 60 * 60,
-    aud: str = "liminal",
-) -> Callable[[], str]:
-    """Construct a no-arg callable that returns a freshly-minted JWT.
-
-    `mint_jwt` is `cabal.core.auth.jwt.mint`. We pre-bind everything but
-    the timestamp so the closure stays cheap (Authlib JWT mint is sub-ms).
-
-    `aud` is the gateway's audience and defaults to the same literal this
-    took before cabal#187. Whoever wires this up should pass
-    `identity.liminal.jwt_aud` so a non-default gateway is reachable.
-    """
-
-    def provider() -> str:
-        return mint_jwt(
-            sub=agent_name,
-            aud=aud,
-            persona=persona,
-            scope=["dispatch"],
-            ttl_seconds=ttl_seconds,
-        )
-
-    return provider
-
-
 def build_proxy(
     *,
     base_url: str,

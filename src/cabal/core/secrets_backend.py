@@ -4,7 +4,9 @@ The Protocol abstracts secrets storage so cabal can support multiple backends
 without changing call sites. Default impl (SqliteFernetBackend) is the existing
 behavior; future backends (OS keychain, GPG-encrypted file, OpenBao/Vault, AWS
 Secrets Manager, GCP Secret Manager, etc.) drop in by implementing the
-Protocol and registering via `[project.entry-points."cabal.secrets_backends"]`.
+Protocol and wiring them into `create_app`, which constructs the one backend
+today. There is no plugin discovery: nothing reads a
+`cabal.secrets_backends` entry-point group (cabal#235).
 
 Wiring: `create_app` constructs the backend in lifespan and exposes it on
 `app.state.secrets_backend`. Routes call `app.state.secrets_backend.<method>`
