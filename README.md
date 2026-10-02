@@ -54,7 +54,9 @@ compose/          identity.dev.toml, litellm-config.yaml, litestream.yml
 
 ## Quickstart (development)
 
-**Prerequisite**: clone `tenishai/techne` and `tenishai/liminal` as siblings:
+**Prerequisites**: Python 3.12 or newer, `git`, and on Debian/Ubuntu
+`sudo apt install python3-venv` (a stock install lacks the `venv` module).
+cabal, techne and liminal are cloned as siblings:
 
 ```
 parent/
@@ -88,7 +90,13 @@ parent/
 >    comes back **on** until you rename it.
 
 ```bash
-python3.12 -m venv .venv
+mkdir parent && cd parent
+git clone https://github.com/tenishai/cabal.git
+git clone https://github.com/tenishai/techne.git
+git clone https://github.com/tenishai/liminal.git
+cd cabal
+
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 pip install -e ../techne
@@ -96,9 +104,13 @@ pip install -e ../liminal
 
 # Generate a master key
 export CABAL_MASTER_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+# Name the operator. Without this (or `operator_id` under `[cabal]` in
+# identity.toml), `cbl login` fails with "operator_id not configured".
+# The daemon reads it, so set it in the shell that starts the daemon.
+export CABAL_OPERATOR_ID=alice
 
 cbl daemon up
-# In another terminal: grab the bootstrap code from the log
+# In another terminal: grab the bootstrap code from the daemon's log
 cbl login --code <CODE>
 cbl dispatch echo "hello cabal"
 ```
@@ -112,10 +124,17 @@ pytest -q
 ## Quickstart (Docker Compose)
 
 ```bash
-make up                  # dev stack; nothing to prepare, see the note below
+make up                  # dev stack; needs the prerequisites below
 make bootstrap           # mints operator + liminal service token, restarts liminal
 make demo                # 6-step smoke test: healthz → mint → init → tools/list → set → get
 ```
+
+**Prerequisites for `make up`**: Docker with the Compose plugin, and `docker buildx`
+(on Ubuntu: `sudo apt install docker-buildx`). The dev compose file builds the cabal
+and liminal images from sibling checkouts of `techne` and `liminal` (BuildKit named
+build contexts, which need buildx), so clone both next to this repo as in the
+layout above before running it. The generated `.env` and the tracked
+`compose/identity.dev.toml` cover the rest, so there is nothing else to prepare.
 
 Logs: `make logs`. Tear down: `make down`.
 
