@@ -20,6 +20,17 @@
 # through to the index. Neither given: the build stops and says so.
 FROM scratch AS techne
 
+# ----- liminal: a sibling checkout, optional ---------------------------------
+# cabal imports liminal for its MCP tool proxy, and startup fails fast
+# ("the liminal package is not installed", cabal#126) when identity.toml sets
+# `[liminal] url` without it. The dev and production compose files and the
+# example identity all set that URL, so both compose files pass
+#   --build-context liminal=../liminal
+# and the package lands in the image. Without the context this stage is empty
+# and the image has no liminal: right for an identity with no `[liminal]`
+# block, and a startup error naming the missing package for one that has it.
+FROM scratch AS liminal
+
 # ----- Build stage ----------------------------------------------------------
 FROM python:3.12-slim AS build
 
@@ -40,6 +51,7 @@ WORKDIR /build
 # lands on PyPI, drop the techne stage and the install branch below and add a
 # `techne>=0.17.0` pin to pyproject.toml's dependencies.
 COPY --from=techne / /build/techne
+COPY --from=liminal / /build/liminal
 ARG EXTRA_INDEX_URL=""
 ARG AR_TOKEN=""
 
@@ -57,6 +69,9 @@ RUN python3 -m venv /venv \
       && rm -rf /tmp/techne-dist; \
     else \
       echo "techne: pass --build-context techne=../techne or --build-arg EXTRA_INDEX_URL=… (see the techne stage)" >&2; exit 1; \
+    fi \
+ && if [ -f /build/liminal/pyproject.toml ]; then \
+      /venv/bin/pip install --no-cache-dir /build/liminal; \
     fi \
  && mkdir -p src/cabal && touch src/cabal/__init__.py \
  && /venv/bin/pip install --no-cache-dir . \
