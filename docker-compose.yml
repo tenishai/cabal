@@ -30,6 +30,7 @@ services:
       # techne is published to PyPI (then pyproject.toml owns the dep).
       additional_contexts:
         techne: ../techne
+        liminal: ../liminal
     container_name: cabal-core
     restart: unless-stopped
     environment:

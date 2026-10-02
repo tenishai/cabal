@@ -20,6 +20,7 @@ services:
       pull: true
       additional_contexts:
         techne: ../techne
+        liminal: ../liminal
     container_name: cabal-dev
     restart: unless-stopped
     environment:
