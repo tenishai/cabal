@@ -66,6 +66,12 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Fixed
 
+- **`make bootstrap` explains an expired code and waits for liminal** (tenishai/cabal#248).
+  Exchanging an expired or used bootstrap code used to end in a bare `JSONDecodeError`;
+  it now says the code expired and how to get a new one. The script also waits for
+  liminal's `/healthz` after restarting it, so `make demo` can run straight after. The
+  README says to bootstrap within 5 minutes of `make up` and adds `sudo apt update`
+  before the apt installs. Found by the 2026-10-02 clean-machine run (tenishai/agora#47).
 - **Persona sync is generation-safe** (tenishai/cabal#229, issue tenishai/cabal#149):
   `sync_personas` no longer registers at a hardcoded generation 1, so the documented
   recovery from absorb works. The same PR adds a shared honesty rule for personas

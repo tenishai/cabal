@@ -79,7 +79,8 @@ importable (`pip install tenishai-cabal[memory]`):
 ## Quickstart (development)
 
 **Prerequisites**: Python 3.12 or newer, `git`, and on Debian/Ubuntu
-`sudo apt install python3-venv` (a stock install lacks the `venv` module).
+`sudo apt update && sudo apt install python3-venv` (a stock install lacks the
+`venv` module).
 cabal, techne and liminal are cloned as siblings:
 
 ```
@@ -149,12 +150,18 @@ pytest -q
 
 ```bash
 make up                  # dev stack; needs the prerequisites below
-make bootstrap           # mints operator + liminal service token, restarts liminal
+make bootstrap           # within 5 minutes of `make up`: mints tokens, restarts liminal
 make demo                # 6-step smoke test: healthz → mint → init → tools/list → set → get
 ```
 
+Run `make bootstrap` within 5 minutes of `make up`: the bootstrap code cabal prints at
+startup expires after that. If it has, restart cabal for a fresh code
+(`docker compose -f docker-compose.dev.yml restart cabal`) and run it again.
+`make bootstrap` waits for liminal to come back healthy before it returns, so
+`make demo` can follow straight away.
+
 **Prerequisites for `make up`**: Docker with the Compose plugin, and `docker buildx`
-(on Ubuntu: `sudo apt install docker-buildx`). The dev compose file builds the cabal
+(on Ubuntu: `sudo apt update && sudo apt install docker-buildx`). The dev compose file builds the cabal
 and liminal images from sibling checkouts of `techne` and `liminal` (BuildKit named
 build contexts, which need buildx), so clone both next to this repo as in the
 layout above before running it. The generated `.env` and the tracked
