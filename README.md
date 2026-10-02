@@ -184,7 +184,7 @@ are set — run it first to check rather than discovering it during `up`.
 ## Configuration (identity.toml)
 
 ```toml
-[operator]
+[cabal]
 operator_id = "alice"
 
 [personas.archivist]
