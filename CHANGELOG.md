@@ -21,7 +21,7 @@ Pull requests and issues are in tenishai/cabal.
 - **`SECURITY.md`**: how to report a vulnerability privately, what is in scope
   (tenishai/cabal#225, follow-ups in tenishai/cabal#227).
 - **Community files for the public release**: `CONTRIBUTING.md` (including the Developer
-  Certificate of Origin), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), `SUPPORT.md`,
+  Certificate of Origin), `CODE_OF_CONDUCT.md` (Contributor Covenant 3.0), `SUPPORT.md`,
   issue and pull request templates, and a Dependabot config for pip and GitHub Actions.
   CI gains a DCO sign-off check on pull requests.
 - **`AGENTS.md`**, a copyright notice in the README, and a Docker quickstart that works
