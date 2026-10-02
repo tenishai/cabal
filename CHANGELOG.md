@@ -30,6 +30,9 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Changed
 
+- **README says which handlers the shipped stacks leave unconfigured** (part of
+  tenishai/cabal#129). `archivist`, `documents`, `patterns` and `code` need corpus paths
+  that no compose or k8s file sets; the README now names the env vars and the gap.
 - **Operator state defaults to `~/.cabal`, not the checkout** (tenishai/cabal#212, issue
   tenishai/cabal#211). Resolution order: an explicit `--config`; then `./identity.toml`
   if it exists (existing installs keep working in place); then
