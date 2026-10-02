@@ -81,3 +81,32 @@ async def test_stop_is_clean(sessionmaker) -> None:
     await sched.stop()
     # Re-stop should be a no-op
     await sched.stop()
+
+
+@pytest.mark.asyncio
+async def test_ping_error_does_not_kill_scheduler(sessionmaker) -> None:
+    """cabal#230: one failing ping is logged and the next interval still pings."""
+    await _seed(sessionmaker)
+    sched = HeartbeatScheduler(sessionmaker, interval_seconds=0.01)
+    sched.watch(["echo"])
+    real_ping = sched._ping_once
+    calls = 0
+
+    async def flaky() -> None:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise RuntimeError("database is locked")
+        await real_ping()
+
+    sched._ping_once = flaky  # type: ignore[method-assign]
+    await sched.start()
+    await asyncio.sleep(0.3)
+    task = sched._task
+    assert task is not None and not task.done(), "scheduler died after a ping error"
+    await sched.stop()
+
+    assert calls >= 3
+    async with sessionmaker() as s:
+        row = await bulletin_store.get(s, "echo", 1)
+    assert row is not None and row.last_heartbeat is not None

@@ -123,6 +123,15 @@ async def _resolve_dispatch_token(
                 ),
             )
 
+        # A token with no sub failed to identify its bearer (cabal#184). Refuse
+        # to re-mint it rather than invent a principal: the old default was the
+        # bare string "operator", the most privileged name in the system.
+        if not sub:
+            raise HTTPException(
+                status_code=401,
+                detail="token carries no sub; refusing to re-mint a dispatch token",
+            )
+
         if "operator" not in scope:
             # Room-owned policy: the flat dispatch_pairs table the room syncs
             # via PUT /admin/dispatch-pairs decides which caller->target pairs
@@ -154,7 +163,7 @@ async def _resolve_dispatch_token(
         raise HTTPException(status_code=500, detail="no active signing key")
     return mint(
         signing_key=stored,
-        sub=claims.get("sub", "operator"),
+        sub=sub,
         aud=audience,
         persona=claims.get("cabal_persona"),
         scope=["dispatch"],

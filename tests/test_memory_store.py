@@ -61,3 +61,21 @@ def test_techne_invalid_type_swallowed_by_commit(techne_db) -> None:
     # techne rejects unknown types — wrapper logs and continues
     store.commit("opinion", type="totally_made_up", tags="x")
     assert store.recall("opinion") == []
+
+
+def test_techne_store_degrades_when_techne_is_not_installed(monkeypatch, tmp_path: Path) -> None:
+    """cabal#235: the techne import sits inside the try, so a missing techne
+    gives no hits / a swallowed commit rather than an ImportError."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_techne(name, *args, **kwargs):
+        if name == "techne" or name.startswith("techne."):
+            raise ImportError("No module named 'techne'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_techne)
+    store = TechneMemoryStore(db_path=tmp_path / "techne.db")
+    assert store.recall("anything useful") == []
+    store.commit("a fact")  # must not raise
