@@ -39,6 +39,12 @@ Pull requests and issues are in tenishai/cabal.
   `--build-context techne=...` as before, or `--build-arg EXTRA_INDEX_URL` (and
   `AR_TOKEN` for a private index) and techne installs from that index alone. With
   neither, the build says so and stops.
+- **The distribution is now named `tenishai-cabal`**, because the PyPI name `cabal` belongs
+  to an unrelated project. The import package (`cabal`) and the commands (`cbl`, `cabal`)
+  are unchanged. Anything that looks cabal up by distribution name must change
+  (`pip show tenishai-cabal`, `pip install 'tenishai-cabal[mcp]'`,
+  `importlib.metadata.version("tenishai-cabal")`), and existing environments should
+  `pip uninstall cabal` before installing, so two distributions do not own one package.
 - **techne floor and source pin move to 0.17.0** (tenishai/cabal#195, issue
   tenishai/cabal#194).
 - **Pinned and bounded CI**: every third-party Action is pinned to a commit SHA, `unit`

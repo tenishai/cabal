@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cabal"
+name = "tenishai-cabal"
 version = "0.2.0"
 description = "Self-hosted personal agent orchestration platform"
 readme = "README.md"
@@ -47,7 +47,7 @@ dependencies = [
 # `mcp` pulls in liminal so personas with `[mcp].enabled = true` in
 # identity.toml can connect to a liminal gateway. Without this extra,
 # cabal still runs — personas without an [mcp] block work fine; personas
-# with one fail at first dispatch with a clear "install cabal[mcp]" error.
+# with one fail at first dispatch with a clear "install tenishai-cabal[mcp]" error.
 mcp = ["liminal>=0.1"]
 tui = ["textual>=1.0"]
 

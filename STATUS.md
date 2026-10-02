@@ -160,7 +160,7 @@ repo public:
 - [ ] In `cabal/CABAL-DECISIONS.md`, mark D-008 and D-012 SUPERSEDED with a
       pointer to a new decision entry recording the PyPI flip.
 - [ ] Decide whether Cabal itself should be on PyPI by then so
-      `pip install cabal` works for adopters.
+      `pip install tenishai-cabal` works for adopters.
 
 ## Suggested next session focus
 
