@@ -62,7 +62,13 @@ CARD = {
     ),
     "tools": [
         {"name": "search", "description": "Find documents matching a query."},
-        {"name": "refresh", "description": "Re-ingest one or all sources."},
+        # Operator-only: liminal refuses the call unless the caller holds
+        # operator scope (tenishai/cabal#233).
+        {
+            "name": "refresh",
+            "description": "Re-ingest one or all sources (operator-only).",
+            "requires_operator": True,
+        },
         {"name": "list_sources", "description": "What sources are configured."},
     ],
     "activation": "always",
@@ -83,8 +89,6 @@ class DocumentsConfig:
     db_path: Path | None = None
     adapters: list[SourceAdapter] = field(default_factory=list)
     default_top_k: int = 10
-    # When True, refresh() requires the calling token carry operator scope.
-    operator_scope_required_for_refresh: bool = True
 
 
 @dataclass
@@ -118,8 +122,8 @@ class DocumentsHandler:
             ToolSpec(
                 name="refresh",
                 description=(
-                    "Re-ingest one or all sources. Operator scope required by "
-                    "default."
+                    "Re-ingest one or all sources. Operator-only: the caller "
+                    "needs operator scope."
                 ),
                 input_schema={
                     "type": "object",
@@ -167,7 +171,7 @@ class DocumentsHandler:
         if name == "search":
             return await self._search(store, payload)
         if name == "refresh":
-            return await self._refresh(store, payload, ctx)
+            return await self._refresh(store, payload)
         if name == "list_sources":
             return await self._list_sources(store)
         return ToolResult.failure(f"unknown tool {name!r}")
@@ -189,16 +193,9 @@ class DocumentsHandler:
         return ToolResult.json({"query": query, "hits": hits})
 
     async def _refresh(
-        self, store: LibrarianStore, payload: dict[str, Any], ctx: Context
+        self, store: LibrarianStore, payload: dict[str, Any]
     ) -> ToolResult:
-        if self.default_config.operator_scope_required_for_refresh:
-            scope = ctx.extra.get("cabal_scope") or ctx.extra.get("scope") or []
-            # Also accept operator scope conveyed via credentials map (fallback)
-            if "operator" not in scope:
-                # No scope info available; tolerate when ctx is bare (library/test usage).
-                # In production this is enforced at the liminal route layer, which
-                # rejects non-operator tokens before reaching here.
-                pass
+        # Operator scope is enforced by liminal's gate on the card's requires_operator flag.
         source_name = payload.get("source_name") or None
         if source_name is not None and source_name not in store.sources:
             return ToolResult.failure(
