@@ -321,6 +321,16 @@ de-registration cannot be relied on — a crashed session never runs its Stop
 hook — so staleness, not `cbl session end`, is what makes a dead session read
 as dead. Reaping those rows is tracked in #70.
 
+## Operator-only tools (`documents.refresh`, `patterns.record`)
+
+liminal refuses these two tools unless the caller's token holds `operator`
+scope alongside `dispatch`. Persona tokens carry only `dispatch` and the
+`cbl login` token carries only `operator`, so mint one with both:
+`cbl token mint-service --sub operator:<you> --persona <persona> --scope dispatch --scope operator --aud liminal --ttl-days 1`
+(after `cbl login`). In a sovereign liminal the policy grant must hold
+`operator` instead, and with `LIMINAL_AUTH_DISABLED=1` these tools are refused
+outright. This needs a liminal release that has `requires_operator`.
+
 ## Modes
 
 - **Solo (default)**: one process, all personas as local handlers, dispatch router
