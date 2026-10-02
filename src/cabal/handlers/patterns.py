@@ -53,6 +53,9 @@ CARD = {
         {
             "name": "record",
             "description": "Append a new pattern to the corpus (operator-only).",
+            # liminal refuses the call unless the caller holds operator scope
+            # (tenishai/cabal#233).
+            "requires_operator": True,
         },
     ],
     "activation": "always",
@@ -107,8 +110,8 @@ class PatternsHandler:
             ToolSpec(
                 name="record",
                 description=(
-                    "Record a new architectural pattern. Operator scope required "
-                    "(checked by the liminal route layer)."
+                    "Record a new architectural pattern. Operator-only: the "
+                    "caller needs operator scope."
                 ),
                 input_schema={
                     "type": "object",
