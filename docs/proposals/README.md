@@ -25,7 +25,7 @@ the proposal they came from.
 
 - **Build-status claims.** `cabal-tui.md` says the `cabal` entry point "does not
   exist yet"; it exists. Check the code, not the proposal.
-- **Cross-references.** Several cite a `docs/cabal.md` this repo does not have
+- **Cross-references.** Several cite the original Cabal design document, which this repo does not have
   (#202), and one points into a sibling repo that is not public.
 - **Example names.** Worked examples use placeholder operators. Where a real
   first name survives, it is an artifact of who was in the room, not a product
