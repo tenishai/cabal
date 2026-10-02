@@ -5,8 +5,8 @@
 | **Status** | Proposal |
 | **Authors** | Richard DiMartino + Raven (AI) |
 | **Created** | 2026-07-02 |
-| **Extends** | Singleton personas and the two deployment modes. NOTE: this line cited `docs/cabal.md`, which does not exist in this repo (#202). The surviving description of singleton personas is [architecture.md](../architecture.md); the deployment-mode discussion was never carried over. |
-| **Relates to** | techne#507 (federated fleets), liminal (JWKS verify + scope), the team-scale open question — originally `docs/cabal.md` §735, a document this repo does not have (#202) — (team-scale bootstrap creds) |
+| **Extends** | Singleton personas and the two deployment modes. NOTE: this line cited the original Cabal design document, which is not in this repo (#202). The surviving description of singleton personas is [architecture.md](../architecture.md); the deployment-mode discussion was never carried over. |
+| **Relates to** | techne#507 (federated fleets), liminal (JWKS verify + scope), the team-scale open question — originally §735 of the original Cabal design document, which this repo does not have (#202) — (team-scale bootstrap creds) |
 
 ---
 
@@ -40,7 +40,7 @@ router). What's new is the **graduation boundary**, the **parent principal**, an
 
 ## Motivation
 
-The original design locked singleton personas (Q10) as members of a single cabal — recorded in `docs/cabal.md`, which this repo does not have (#202). Even
+The original design locked singleton personas (Q10) as members of a single cabal — recorded in the original Cabal design document, which this repo does not have (#202). Even
 in "production / scale mode," where Archivist runs in its own container, it stays
 inside the operator's trust domain: Cabal Core signs its tokens, the `grants` table
 gates it, it is *the operator's* Archivist reachable over HTTP.
@@ -51,7 +51,7 @@ Two things push past that:
    federated fleets* — several operators each run their own cabal. Shared
    memory across those fleets means an agent in bob's cabal must be able to deposit
    into / query another operator's Archivist. That is a **cross-owner trust boundary**, which
-   the v1 design explicitly defers (`docs/cabal.md` §735 and the Director note — neither survives here, see #202).
+   the v1 design explicitly defers (§735 of the original design document and the Director note — neither survives here, see #202).
 
 2. **The operator's framing (2026-07-02).** *"If we spin out the Archivist, he
    becomes his own thing — I'd stop using the local persona if a remote one is

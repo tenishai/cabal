@@ -76,5 +76,5 @@ Dispatch logic added to a handler is in the wrong layer.
 
 `docs/architecture.md` is the current description. `docs/proposals/` are design notes, not
 documentation of current behaviour — several are stale or superseded (#205), and several
-cite a `docs/cabal.md` that does not exist (#202). Do not treat a proposal as a spec
+cite the original Cabal design document, which is not in this repo (#202). Do not treat a proposal as a spec
 without checking it against the code.

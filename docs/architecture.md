@@ -159,5 +159,5 @@ per-virtual-key spend. Litestream pushes WAL frames to object storage.
   on top.
 - Detailed lifecycle hook taxonomy — NOT WRITTEN DOWN. `HookName` at
   `src/cabal/core/hooks/registry.py:37` is the authority; the call sites are the taxonomy.
-  (This line used to point at a `docs/cabal.md` that does not exist in this
-  repo — see #202.)
+  (This line used to point at the original Cabal design document, which is not in
+  this repo — see #202.)

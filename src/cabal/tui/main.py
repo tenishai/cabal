@@ -55,7 +55,7 @@ def main(
         typer.echo(
             "Textual is not installed.\n"
             "Install the TUI dependencies with:\n\n"
-            "    pip install 'cabal[tui]'\n",
+            "    pip install 'tenishai-cabal[tui]'\n",
             err=True,
         )
         raise typer.Exit(code=1) from None
