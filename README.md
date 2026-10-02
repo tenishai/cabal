@@ -55,6 +55,27 @@ scripts/          bootstrap.sh, demo.sh
 compose/          identity.dev.toml, litellm-config.yaml, litestream.yml
 ```
 
+## Handler status in the shipped stacks
+
+The `handlers/` modules load inside liminal (`liminal serve`), and no shipped
+compose or k8s file sets their corpus paths, so they are not configured out of
+the box (tenishai/cabal#129 tracks the wiring). Each needs a corpus db that you
+point at yourself, and `documents`, `patterns` and `code` also need `techne`
+importable (`pip install tenishai-cabal[memory]`):
+
+- **`archivist`**: set `CABAL_ARCHIVIST_DB` on the liminal process, or give a
+  persona `archivist.db_path` in its `tool_extras`. Without either, every call
+  fails with "no archivist corpus configured".
+- **`documents`** (librarian): set `CABAL_LIBRARIAN_DB`, or a persona
+  `documents.db_path`. Without either, every call fails with "no librarian
+  corpus configured". `documents.refresh` is operator-only (see below).
+- **`patterns`**: set `CABAL_ARCHITECT_DB`, or a persona `patterns.db_path`.
+  `patterns.record` is operator-only (see below).
+- **`code`**: has no env var. The only path is a persona `code.db_path` in
+  `tool_extras`, and the handler has no repo list, so `code.refresh` has
+  nothing to index and rejects any named repo as unknown. The codex is a db per repo, which one path cannot address;
+  the design is still open in #129.
+
 ## Quickstart (development)
 
 **Prerequisites**: Python 3.12 or newer, `git`, and on Debian/Ubuntu
