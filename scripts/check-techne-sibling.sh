@@ -22,6 +22,15 @@ if [ "${TECHNE_ANY:-}" = "1" ]; then
   exit 0
 fi
 
+# The tag lookup below swallows git's errors (`|| true`), so a missing git, or
+# a git that refuses the checkout, would surface as "has no tag". Both are
+# caught first and reported as what they are.
+if ! command -v git >/dev/null 2>&1; then
+  echo "techne: git is not installed, so $sibling cannot be checked against the pin." >&2
+  echo "  Install git, or TECHNE_ANY=1 to build without the check." >&2
+  exit 1
+fi
+
 version="$(sed -n 's/^ARG TECHNE_VERSION=//p' "$here/Dockerfile")"
 if [ -z "$version" ]; then
   echo "techne: no ARG TECHNE_VERSION in $here/Dockerfile" >&2
@@ -32,6 +41,14 @@ tag="v$version"
 if [ ! -d "$sibling/.git" ] && [ ! -f "$sibling/.git" ]; then
   echo "techne: $sibling is not a git checkout. Clone it at the pinned tag:" >&2
   echo "  git clone --branch $tag https://github.com/tenishai/techne.git $sibling" >&2
+  exit 1
+fi
+
+# A checkout owned by another uid (a bind mount, as root) trips git's
+# safe.directory check; show git's own message rather than misreading it.
+if ! err="$(git -C "$sibling" rev-parse --git-dir 2>&1 >/dev/null)"; then
+  echo "techne: git cannot read $sibling:" >&2
+  echo "  $err" >&2
   exit 1
 fi
 
