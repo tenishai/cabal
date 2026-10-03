@@ -16,9 +16,11 @@
 # (TECHNE_VERSION, TECHNE_WHEEL_SHA256). Anything with write access to the
 # index can publish a file under a version number, so the version alone names
 # nothing: on 2026-10-02 the index's 0.18.0 turned out to be a build from
-# before the v0.18.0 tag, 16 package files behind it. A wheel whose hash does
-# not match stops the build. Moving to a new techne means changing both args
-# together, to a wheel built from that version's tag.
+# before the v0.18.0 tag, 16 package files behind it. When this step runs, a
+# wheel whose hash does not match stops the build. A warm build cache can skip
+# the step and reuse the layer an earlier run built, so the check runs on a
+# cold build or after the args change. Moving to a new techne means changing
+# both args together, to a wheel built from that version's tag.
 # The arg is not called PIP_EXTRA_INDEX_URL on purpose: pip reads that name
 # from the environment, and a build ARG is environment for every later RUN of
 # the stage, so the second install would stop to ask for a password.
