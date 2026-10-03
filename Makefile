@@ -2,7 +2,7 @@ COMPOSE := docker compose -f docker-compose.dev.yml
 # Refresh the Dockerfile's apt upgrade layer once a day (see APT_REFRESH there).
 export APT_REFRESH ?= $(shell date +%F)
 
-.PHONY: up down build rebuild logs bootstrap demo test-docker test-unit test-integration clean
+.PHONY: up down build rebuild logs bootstrap demo test-docker test-unit test-integration clean check-techne
 
 # Generate .env with a fresh master key on first run; skip if it exists.
 .env:
@@ -12,8 +12,12 @@ export APT_REFRESH ?= $(shell date +%F)
 	@echo "LIMINAL_CABAL_TOKEN=" >> .env
 	@echo "Created .env — CABAL_MASTER_KEY auto-generated."
 
+## check-techne: ../techne is at the tag the Dockerfile pins (TECHNE_ANY=1 skips).
+check-techne:
+	@bash scripts/check-techne-sibling.sh
+
 ## up: build images (if needed) and start the dev stack in the background.
-up: .env
+up: .env check-techne
 	$(COMPOSE) up -d --build
 	@echo ""
 	@echo "Services starting. Run 'make bootstrap' once cabal logs show 'cabal.ready'."
@@ -24,11 +28,11 @@ down:
 	$(COMPOSE) down
 
 ## build: (re)build images without starting.
-build: .env
+build: .env check-techne
 	$(COMPOSE) build
 
 ## rebuild: force a clean rebuild ignoring the layer cache.
-rebuild: .env
+rebuild: .env check-techne
 	$(COMPOSE) build --no-cache
 
 ## logs: tail logs from all services.

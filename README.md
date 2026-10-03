@@ -117,7 +117,7 @@ parent/
 ```bash
 mkdir parent && cd parent
 git clone https://github.com/tenishai/cabal.git
-git clone https://github.com/tenishai/techne.git
+git clone --branch v0.18.0 https://github.com/tenishai/techne.git   # the tag the Dockerfile pins
 git clone https://github.com/tenishai/liminal.git
 cd cabal
 
@@ -164,7 +164,11 @@ startup expires after that. If it has, restart cabal for a fresh code
 (on Ubuntu: `sudo apt update && sudo apt install docker-buildx`). The dev compose file builds the cabal
 and liminal images from sibling checkouts of `techne` and `liminal` (BuildKit named
 build contexts, which need buildx), so clone both next to this repo as in the
-layout above before running it. The generated `.env` and the tracked
+layout above before running it. `make build` and `make up` first check that
+`../techne` is at the tag the Dockerfile pins (`TECHNE_VERSION`, currently
+`v0.18.0`) and stop if it isn't; set `TECHNE_ANY=1` to build against whatever
+`../techne` has checked out, for example when changing techne and cabal
+together. The generated `.env` and the tracked
 `compose/identity.dev.toml` cover the rest, so there is nothing else to prepare.
 
 Logs: `make logs`. Tear down: `make down`.
@@ -204,6 +208,11 @@ the dev stack does not:
 
 `docker compose -f docker-compose.yml config` exits non-zero until 2, 3 and 4
 are set — run it first to check rather than discovering it during `up`.
+
+Because this stack is not built through `make`, nothing runs the techne check
+for you: run `bash scripts/check-techne-sibling.sh` before the first `up`. The
+image build itself only compares version strings, which cannot tell techne's
+main from the tag.
 
 > `CABAL_MASTER_KEY` encrypts the `signing_keys` and `secrets` tables. For the
 > dev stack, `make up` writes a fresh one into `.env` on first run (`Makefile:6`),

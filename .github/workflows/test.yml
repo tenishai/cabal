@@ -206,10 +206,19 @@ jobs:
         with:
           path: cabal
 
+      # techne at the tag the Dockerfile pins, read from its TECHNE_VERSION so
+      # there is one place to change. Unpinned, this built whatever techne's
+      # main was that day, which can report the same version as the tag.
+      - name: Read the pinned techne version
+        id: techne
+        working-directory: cabal
+        run: echo "ref=v$(sed -n 's/^ARG TECHNE_VERSION=//p' Dockerfile)" >> "$GITHUB_OUTPUT"
+
       - name: Checkout techne
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: tenishai/techne
+          ref: ${{ steps.techne.outputs.ref }}
           path: techne
 
       - name: Build the image (build proof asserts cabal imports with a version)
