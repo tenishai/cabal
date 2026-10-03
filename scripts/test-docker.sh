@@ -44,10 +44,14 @@ docker run --rm \
         echo "--- [1/5] install deps ---"
         apt-get update -qq 2>/dev/null
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            curl python3 make \
+            curl python3 make git \
             docker.io docker-compose-v2 docker-buildx 2>/dev/null \
             | grep -E "^Setting up docker" || true
         docker compose version
+        # make up checks ../techne against the pinned tag with git. The bind
+        # mount is owned by the host user, and git refuses a repository owned by
+        # another uid (safe.directory), which root here is on a Linux host.
+        git config --global --add safe.directory /workspace/techne
 
         echo "--- [2/5] make up (build + start) ---"
         # Bind-mount paths are resolved by the HOST daemon, not the container.
