@@ -36,6 +36,19 @@ CABAL_URL=http://127.0.0.1:7400 cbl login --code <CODE>
 CABAL_URL=http://127.0.0.1:7400 cbl chat archivist
 ```
 
+## Through Gojira
+
+`gojira.yaml` at the repo root is the deploy contract for
+[Gojira](https://github.com/tenishai/gojira). Connecting the repo there
+generates the Deployment, Service, CI workflow and per-environment overlays
+under `k8s/base` and `k8s/overlays/<env>`; `k8s/base/pvc.yaml` is the one
+object kept as app-authored. The flat manifests in this directory stay the
+standalone path. On a Gojira cluster, LiteLLM runs as its own app and
+`identity.toml` is a ConfigMap (`cabal-config`) made per environment, so
+`[litellm] api_base` points at that app's Service and the model list matches
+its config — the same pairing `tests/test_config_models_are_served.py` pins
+for the flat manifests.
+
 ## Upgrading
 
 `kubectl apply -k k8s/` on its own does **not** roll the pods, and a running
