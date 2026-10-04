@@ -284,6 +284,97 @@ async def test_list_filters_by_handler(sessionmaker, master_key) -> None:
     assert [e.handler for e in slack_only] == ["slack"]
 
 
+# ---- exact persona/handler matching (cabal#252) -------------------------
+#
+# Secret names are matched by prefix. LIKE treats `_` and `%` as wildcards and
+# SQLite's LIKE ignores ASCII case, so a persona name containing `_`, or one
+# differing only in case, used to reach other personas' rows.
+
+
+async def _seed_alice_and_bob(sessionmaker, master_key) -> None:
+    async with sessionmaker() as s:
+        for persona, value in (("alice", "a"), ("bob_", "b")):
+            await set_secret(
+                s, master_key=master_key, persona=persona, handler="notify",
+                key="URL", value=value,
+            )
+        await set_secret(
+            s, master_key=master_key, persona="alice", handler="no_fy",
+            key="URL", value="n",
+        )
+        await s.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persona", ["_lice", "_____", "ALICE", "Alice", "%", "a%"])
+async def test_get_does_not_match_wildcard_or_case_variant_personas(
+    sessionmaker, master_key, persona
+) -> None:
+    await _seed_alice_and_bob(sessionmaker, master_key)
+    async with sessionmaker() as s:
+        creds = await get_secrets_for(
+            s, master_key=master_key, persona=persona, handler="notify"
+        )
+    assert creds == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler", ["no_f_", "NO_FY"])
+async def test_get_does_not_match_wildcard_or_case_variant_handlers(
+    sessionmaker, master_key, handler
+) -> None:
+    await _seed_alice_and_bob(sessionmaker, master_key)
+    async with sessionmaker() as s:
+        creds = await get_secrets_for(
+            s, master_key=master_key, persona="alice", handler=handler
+        )
+    assert creds == {}
+
+
+@pytest.mark.asyncio
+async def test_get_still_matches_a_persona_named_with_underscore(
+    sessionmaker, master_key
+) -> None:
+    await _seed_alice_and_bob(sessionmaker, master_key)
+    async with sessionmaker() as s:
+        creds = await get_secrets_for(
+            s, master_key=master_key, persona="bob_", handler="notify"
+        )
+    assert creds == {"URL": "b"}
+
+
+@pytest.mark.asyncio
+async def test_purge_does_not_delete_wildcard_or_case_variant_matches(
+    sessionmaker, master_key
+) -> None:
+    await _seed_alice_and_bob(sessionmaker, master_key)
+    async with sessionmaker() as s:
+        deleted = sum(
+            [
+                await purge_secrets_for(s, persona=p, handler="notify")
+                for p in ("_lice", "ALICE", "%")
+            ]
+        )
+        await s.commit()
+    assert deleted == 0
+    async with sessionmaker() as s:
+        assert await list_secret_entries(s, persona="alice") != []
+
+
+@pytest.mark.asyncio
+async def test_list_filters_match_exactly(sessionmaker, master_key) -> None:
+    await _seed_alice_and_bob(sessionmaker, master_key)
+    async with sessionmaker() as s:
+        assert await list_secret_entries(s, persona="_lice") == []
+        assert await list_secret_entries(s, persona="ALICE") == []
+        assert await list_secret_entries(s, persona="_lice", handler="notify") == []
+        assert await list_secret_entries(s, handler="no_f_") == []
+        assert await list_secret_entries(s, handler="NO_FY") == []
+        assert await list_secret_entries(s, handler="NOTIFY") == []
+        notify = await list_secret_entries(s, handler="notify")
+    assert sorted(e.persona for e in notify) == ["alice", "bob_"]
+
+
 # ---- env merge ---------------------------------------------------------
 
 
