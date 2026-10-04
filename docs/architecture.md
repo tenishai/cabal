@@ -22,7 +22,7 @@ graph TB
     LITS["Litestream sidecar<br/>→ S3 / GCS / sftp"]
 
     %% ===== A2A wire =====
-    A2A{{"A2A v1.0 JSON-RPC<br/>message/send · tasks/get · stream"}}
+    A2A{{"A2A Task dispatch<br/>POST /a2a/tasks · local calls"}}
 
     %% ===== Personas =====
     subgraph Project["Project Personas"]
@@ -118,14 +118,25 @@ tokens; rotates the AgentCard signing key under Fernet at rest), project/convers
 event tables, and the SSE event bus. State lives in one SQLite file; Litestream
 streams the WAL off-host for durability.
 
-**A2A v1.0 wire.** Every dispatch — operator-to-persona and persona-to-persona —
-is an A2A `message/send`. The router collapses local hops to direct Python calls
-when target and caller share a process. The caller's bearer JWT is verified on
-every hop regardless (`router._prepare`), so the security model is uniform across
-solo and per-pod deployments. The router does **not** verify AgentCards when it
-dispatches: `_dispatch_remote` forwards the caller's JWT, and that JWT is the
-trust. `AgentCardVerifier` (`core/a2a/card.py`) exists and is tested, but nothing
-on the dispatch path calls it (#226).
+**A2A wire, pre-1.0 method names.** Between processes, cabal's own dispatch posts the
+Task to `POST /a2a/tasks` on the target (`router._dispatch_remote`); it does not use a
+JSON-RPC envelope. That route expects a `TaskRequest` and rejects the bare Task, so
+non-local hops fail today (#264). For other callers, each agent serves A2A JSON-RPC on
+`POST /agents/{name}` with the method names of A2A 0.3.0 (`message/send` and
+`tasks/get`, with `message/stream` on `/agents/{name}/stream`), where A2A v1.0 uses
+PascalCase (`SendMessage`, `GetTask`). Every JSON-RPC and stream call needs a
+cabal-issued bearer token; the card is readable without one. Discovery differs from
+both 0.3.0 and v1.0, which serve the AgentCard at `/.well-known/agent-card.json` with
+signatures in a `signatures` array inside it: the card cabal serves at
+`/agents/{name}/.well-known/agent-card` is the stored card, `{"jws": ..., "card":
+...}` for a persona cabal signs, and the root `/.well-known/agent-card` is an unsigned
+stub (#261). The router collapses local hops to direct Python calls when target and
+caller share a process. The caller's bearer JWT is verified on every hop regardless
+(`router._prepare`), so the security model is uniform across solo and per-pod
+deployments. The router does **not** verify AgentCards when it dispatches:
+`_dispatch_remote` forwards the caller's JWT, and that JWT is the trust.
+`AgentCardVerifier` (`core/a2a/card.py`) exists and is tested, but nothing on the
+dispatch path calls it (#226).
 
 **Personas.** Project personas (mason, raven, …) own the work. Primus agents own
 plan/dispatch/aggregate; subordinates fan out under them. Singleton personas

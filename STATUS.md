@@ -24,7 +24,7 @@ for the per-decision rationale log.
   - `cbl status` lists the agent fleet + heartbeats
   - `cbl primus rotate <persona>` rotates a primus generation
 - **Five real personas**: Archivist (memory-backed via techne), Architect (opus, patterns), Librarian (citation-mandated docs), Mason (SRE/infra primus, fans out to an implementer subordinate), Wright (software primus, likewise).
-- **A2A v1.0 JSON-RPC**: `POST /agents/{name}` with `message/send` + `tasks/get`; per-agent `/.well-known/agent-card`.
+- **A2A JSON-RPC, pre-1.0 method names**: `POST /agents/{name}` with `message/send` + `tasks/get` (the A2A 0.3.0 names); per-agent `/.well-known/agent-card`, which for the personas cabal signs returns cabal's own card format (`{"jws": ..., "card": ...}`). Not A2A v1.0, which uses PascalCase methods (`SendMessage`), and not A2A 0.3.0 or v1.0 discovery, which serves the AgentCard at `/.well-known/agent-card.json` with a `signatures` array inside it (#261).
 - **Containerized**: Dockerfile + docker-compose.yml with LiteLLM proxy + Litestream sidecars.
 
 ## Build arc — what landed in each phase

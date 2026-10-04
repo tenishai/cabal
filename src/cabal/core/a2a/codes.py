@@ -1,4 +1,4 @@
-"""Cabal reason codes layered over A2A v1.0 task states.
+"""Cabal reason codes layered over A2A task states.
 
 A2A only defines coarse outcomes (`failed`, `input-required`, etc.). Cabal
 agents need to be more specific so callers can decide whether to retry,

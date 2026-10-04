@@ -1,4 +1,4 @@
-"""A2A v1.0 JSON-RPC 2.0 envelope types.
+"""A2A JSON-RPC 2.0 envelope types, using A2A's pre-1.0 method names (not A2A v1.0; see #261).
 
 The A2A wire protocol is JSON-RPC 2.0 over HTTPS. This module defines the
 pydantic models for parsing inbound requests and serializing responses.
@@ -36,7 +36,7 @@ class _Open(BaseModel):
 
 
 class MessageSendParams(_Open):
-    """A2A v1.0 message/send params."""
+    """A2A message/send params."""
 
     message: Message
     configuration: dict[str, Any] | None = None
