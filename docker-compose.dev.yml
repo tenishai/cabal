@@ -43,6 +43,7 @@ services:
       dockerfile: Dockerfile
       args:
         APT_REFRESH: ${APT_REFRESH:-unset}   # make exports the date; see Dockerfile
+        TECHNE_ANY_VERSION: ${TECHNE_ANY:-}  # 1: build against any ../techne (see liminal's Dockerfile)
       pull: true
       additional_contexts:
         techne: ../techne

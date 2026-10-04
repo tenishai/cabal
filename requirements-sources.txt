@@ -12,5 +12,5 @@
 #       pip install -e ../techne -e ../liminal
 #
 # Bump a pinned tag when you want consumers to pick up a new release.
-techne @ git+https://github.com/tenishai/techne.git@v0.17.0
-liminal @ git+https://github.com/tenishai/liminal.git@v0.2.0
+techne @ git+https://github.com/tenishai/techne.git@v0.18.0
+tenishai-liminal @ git+https://github.com/tenishai/liminal.git@v0.3.0

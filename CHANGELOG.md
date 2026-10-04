@@ -50,6 +50,12 @@ Pull requests and issues are in tenishai/cabal.
   `pip uninstall cabal` before installing, so two distributions do not own one package.
 - **techne floor and source pin move to 0.17.0** (tenishai/cabal#195, issue
   tenishai/cabal#194).
+- **liminal 0.3.0 and techne 0.18.0** (tenishai/cabal#253). liminal 0.3.0 is published as
+  `tenishai-liminal`, so the `mcp` and `full` extras name `tenishai-liminal>=0.3`, and an
+  environment that has the old `liminal` distribution should `pip uninstall liminal` first.
+  The techne floor is 0.18.0, and `requirements-sources.txt` pins techne v0.18.0 and
+  liminal v0.3.0. With `TECHNE_ANY=1`, compose now builds the liminal image against any
+  `../techne` too.
 - **Pinned and bounded CI**: every third-party Action is pinned to a commit SHA, `unit`
   runs on a self-hosted pool behind techne's fork guard with fork PRs routed to a hosted
   twin (tenishai/cabal#219), and the dispatch-only jobs clone techne and liminal without
