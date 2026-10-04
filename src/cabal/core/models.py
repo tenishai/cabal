@@ -115,8 +115,8 @@ class Conversation(Base):
     cabal_escalated_from: Mapped[str | None] = mapped_column(
         String, ForeignKey("conversations.task_id")
     )
-    # Full Task body persisted on dispatch success — enables tasks/get and
-    # tasks/resubscribe (A2A v1.0) without replaying the event log.
+    # Full Task body persisted on dispatch success — serves tasks/get, and a
+    # future tasks/resubscribe, without replaying the event log.
     result_json: Mapped[dict | None] = mapped_column(JSON)
     # cabal#2 — points at a `task_checkpoints` row when a persona's
     # tool-use loop has saved partial state. Cleared when the Task

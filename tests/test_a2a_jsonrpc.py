@@ -1,4 +1,4 @@
-"""A2A v1.0 JSON-RPC envelope tests."""
+"""A2A JSON-RPC envelope tests (pre-1.0 method names; see #261)."""
 
 from __future__ import annotations
 
