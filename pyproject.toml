@@ -48,16 +48,16 @@ dependencies = [
 # identity.toml can connect to a liminal gateway. Without this extra,
 # cabal still runs — personas without an [mcp] block work fine; personas
 # with one fail at first dispatch with a clear "install tenishai-cabal[mcp]" error.
-mcp = ["liminal>=0.1"]
+mcp = ["tenishai-liminal>=0.3"]
 tui = ["textual>=1.0"]
 
 # `memory` pulls in techne for the Archivist persona + any persona that
 # binds a TechneMemoryStore. Same shape — cabal runs without it; personas
 # that need it raise a clear error pointing at this extra.
-memory = ["techne>=0.17.0"]
+memory = ["techne>=0.18.0"]
 
 # Everything wired together, for the canonical platform install.
-full = ["liminal>=0.1", "techne>=0.17.0"]
+full = ["tenishai-liminal>=0.3", "techne>=0.18.0"]
 
 dev = [
     "pytest>=8.3",
