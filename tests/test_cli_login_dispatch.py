@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import socket
+import sqlite3
 import threading
 import time
 
 import pytest
 import uvicorn
 from fastapi import FastAPI
-from sqlalchemy import select
 from typer.testing import CliRunner
 
 import cabal.cli.client as api
 from cabal.cli.main import app as cli_app
-from cabal.core.models import BootstrapCode
+from cabal.core.app import create_app
 
 
 @contextlib.contextmanager
@@ -59,26 +60,29 @@ def serve(fastapi_app: FastAPI):
 
 
 @pytest.mark.integration  # spins up a real uvicorn daemon — excluded from the unit job
-@pytest.mark.asyncio
-async def test_cli_login_and_dispatch_against_live_daemon(
-    app: FastAPI, monkeypatch, tmp_path
-) -> None:
+def test_cli_login_and_dispatch_against_live_daemon(monkeypatch, tmp_path) -> None:
     """End-to-end: launch the FastAPI app over a real socket, drive it via
-    the cbl CLI, verify login + dispatch + token storage."""
-    # Fetch the bootstrap code from the same DB the app uses
-    sessionmaker = app.state.sessionmaker
-    async with sessionmaker() as s:
-        result = await s.execute(
-            select(BootstrapCode).where(BootstrapCode.used_at.is_(None))
-        )
-        code = result.scalar_one().code
+    the cbl CLI, verify login + dispatch + token storage.
 
-    # Start uvicorn against the configured app
+    uvicorn runs the app's only lifespan. Using the `app` fixture here ran it
+    twice against one SQLite file, and the fixture's first heartbeat could hold
+    the write lock while serve() blocked its event loop (cabal#254)."""
+    db_url = os.environ["CABAL_DB_URL"]
+    app = create_app(
+        agent="all",
+        config_path="identity.toml",
+        db_url=db_url.replace("sqlite://", "sqlite+aiosqlite://", 1),
+    )
     runner = CliRunner()
     token_path = tmp_path / "token"
     monkeypatch.setattr(api, "DEFAULT_TOKEN_PATH", token_path)
 
     with serve(app) as port:
+        # The lifespan has issued the bootstrap code by the time serve() yields.
+        with contextlib.closing(sqlite3.connect(db_url.removeprefix("sqlite:///"))) as db:
+            (code,) = db.execute(
+                "SELECT code FROM bootstrap_codes WHERE used_at IS NULL"
+            ).fetchone()
         monkeypatch.setenv("CABAL_URL", f"http://127.0.0.1:{port}")
 
         # cbl login --code <CODE>
