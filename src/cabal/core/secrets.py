@@ -25,7 +25,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import delete, select
+from sqlalchemy import ColumnElement, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cabal.core.models import Secret
@@ -36,6 +36,13 @@ NAME_SEP = ":"
 def make_name(persona: str, handler: str, key: str) -> str:
     """Canonical secret name: `<persona>:<handler>:<KEY>`."""
     return f"{persona}{NAME_SEP}{handler}{NAME_SEP}{key}"
+
+
+def _name_starts_with(prefix: str) -> ColumnElement[bool]:
+    """Exact, case-sensitive prefix test on `Secret.name`. Not LIKE: LIKE
+    treats `_` and `%` as wildcards and SQLite's LIKE ignores ASCII case, so a
+    persona such as `_lice` or `ALICE` reached alice's secrets (cabal#252)."""
+    return func.substr(Secret.name, 1, len(prefix)) == prefix
 
 
 def parse_name(name: str) -> tuple[str, str, str]:
@@ -122,7 +129,7 @@ async def get_secrets_for(
     fernet = Fernet(master_key)
     prefix = f"{persona}{NAME_SEP}{handler}{NAME_SEP}"
     result = await session.execute(
-        select(Secret).where(Secret.name.like(f"{prefix}%"))
+        select(Secret).where(_name_starts_with(prefix))
     )
     out: dict[str, str] = {}
     for row in result.scalars():
@@ -148,12 +155,10 @@ async def list_secret_entries(
     stmt = select(Secret.name)
     if persona is not None and handler is not None:
         stmt = stmt.where(
-            Secret.name.like(f"{persona}{NAME_SEP}{handler}{NAME_SEP}%")
+            _name_starts_with(f"{persona}{NAME_SEP}{handler}{NAME_SEP}")
         )
     elif persona is not None:
-        stmt = stmt.where(Secret.name.like(f"{persona}{NAME_SEP}%"))
-    elif handler is not None:
-        stmt = stmt.where(Secret.name.contains(f"{NAME_SEP}{handler}{NAME_SEP}"))
+        stmt = stmt.where(_name_starts_with(f"{persona}{NAME_SEP}"))
     stmt = stmt.order_by(Secret.name)
     result = await session.execute(stmt)
     entries: list[SecretEntry] = []
@@ -161,6 +166,10 @@ async def list_secret_entries(
         try:
             p, h, k = parse_name(name)
         except ValueError:
+            continue
+        # A handler-only filter compares the parsed name: a SQL substring test
+        # would need the same wildcard and case care as the prefix (cabal#252).
+        if handler is not None and h != handler:
             continue
         entries.append(SecretEntry(persona=p, handler=h, key=k))
     return entries
@@ -175,7 +184,7 @@ async def purge_secrets_for(
     """Delete every secret for (persona, handler). Returns deleted count."""
     prefix = f"{persona}{NAME_SEP}{handler}{NAME_SEP}"
     result = await session.execute(
-        delete(Secret).where(Secret.name.like(f"{prefix}%"))
+        delete(Secret).where(_name_starts_with(prefix))
     )
     return result.rowcount or 0
 

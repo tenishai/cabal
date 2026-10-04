@@ -99,6 +99,12 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Security
 
+- **Secret lookups match the persona and handler exactly** (tenishai/cabal#258, issue
+  tenishai/cabal#252). They used SQL `LIKE`, where `_` and `%` are wildcards and SQLite
+  ignores ASCII case, so a request for persona `_lice` or `ALICE` returned alice's secrets
+  and a purge for that name deleted them. Fetching, listing and purging now compare names
+  exactly and case-sensitively. The `CABAL_SECRET_*` env override still matches
+  case-insensitively.
 - **A wrong audience on `/auth/liminal-token` returns 403, not 401** (tenishai/cabal#227,
   issue tenishai/cabal#191), and the test that covers it now fails when the gate is
   removed.
