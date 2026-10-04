@@ -1,4 +1,4 @@
-"""A2A v1.0 primitive types.
+"""A2A primitive types (cabal is not A2A v1.0; see #261).
 
 We use pydantic models so FastAPI can validate inbound JSON. Field names
 match the Linux Foundation A2A spec where they exist; Cabal-specific

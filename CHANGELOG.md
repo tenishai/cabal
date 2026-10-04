@@ -72,6 +72,17 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Fixed
 
+- **cabal no longer claims A2A v1.0** (tenishai/cabal#263, refs tenishai/cabal#261). Its
+  code and docs said "A2A v1.0". The A2A JSON-RPC route each agent serves uses A2A's
+  pre-1.0 method names (`message/send`, `tasks/get`, as in A2A 0.3.0), not v1.0's
+  `SendMessage` and `GetTask`, and every JSON-RPC and stream call needs a cabal-issued
+  token. Its agent card matches no A2A version: for the personas it signs, cabal serves
+  `{"jws": ..., "card": ...}` at `/agents/{name}/.well-known/agent-card`, where A2A 0.3.0
+  and v1.0 serve the AgentCard at `/.well-known/agent-card.json` with a `signatures` array
+  inside it, so an A2A client cannot discover a cabal agent. cabal's own dispatch between
+  processes does not use this route; it posts Tasks to `/a2a/tasks` (see
+  tenishai/cabal#264). Whether to move to v1.0 is open in tenishai/agora discussion 50.
+
 - **`make bootstrap` explains an expired code and waits for liminal** (tenishai/cabal#248).
   Exchanging an expired or used bootstrap code used to end in a bare `JSONDecodeError`;
   it now says the code expired and how to get a new one. The script also waits for

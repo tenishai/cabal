@@ -1,6 +1,6 @@
 """A2A `.well-known/` endpoints.
 
-`/.well-known/agent-card` returns the signed AgentCard for Cabal Core itself.
+`/.well-known/agent-card` returns a stub card for Cabal Core itself (unsigned; see #261).
 `/.well-known/jwks.json` returns the public-key set used to verify caller JWTs
 and signed AgentCards.
 

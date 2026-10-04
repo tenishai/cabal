@@ -1,7 +1,9 @@
-"""A2A v1.0 JSON-RPC route mounted per-agent at /agents/{name}.
+"""A2A JSON-RPC route mounted per-agent at /agents/{name}, using A2A's pre-1.0
+method names and cabal's own card format; not A2A v1.0 (see #261).
 
 Each agent exposes:
-    GET  /agents/{name}/.well-known/agent-card  → signed AgentCard JWS
+    GET  /agents/{name}/.well-known/agent-card  → the stored card, {"jws", "card"} for a
+                                                   persona cabal signs
     POST /agents/{name}                          → JSON-RPC 2.0 envelope
 
 Methods:
@@ -212,7 +214,7 @@ async def per_agent_stream(
     agent_name: str = Path(..., min_length=1, max_length=64),
     authorization: str | None = Header(default=None),
 ) -> StreamingResponse:
-    """A2A v1.0 message/stream endpoint.
+    """A2A message/stream endpoint.
 
     Body is the same JSON-RPC envelope used by /agents/{name}, but the
     response is an SSE stream: each text delta from the LLM becomes an

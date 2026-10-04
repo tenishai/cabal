@@ -18,7 +18,7 @@ Caller-token semantics:
       begins once the room syncs its first set. The gate is SCOPE, not
       the shape of the sub: any caller string is looked up in the table.
 
-Phase 1 surface — A2A v1.0 JSON-RPC envelope lands in Phase 2 with
+Phase 1 surface — the A2A JSON-RPC envelope lands in Phase 2 with
 streaming + tasks/get + resubscribe.
 """
 
