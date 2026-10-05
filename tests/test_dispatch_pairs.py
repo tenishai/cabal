@@ -433,6 +433,21 @@ async def _dispatch_jsonrpc(
     )
 
 
+async def _dispatch_v1(client: AsyncClient, token: str, *, target: str = TARGET, req_id: str = "v1-1"):
+    return await client.post(
+        f"/agents/{target}/a2a",
+        json={
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": "SendMessage",
+            "params": {
+                "message": {"messageId": "m-1", "role": "ROLE_USER", "parts": [{"text": "hi"}]}
+            },
+        },
+        headers={"Authorization": f"Bearer {token}", "A2A-Version": "1.0"},
+    )
+
+
 @pytest.mark.asyncio
 async def test_jsonrpc_honours_dispatch_pairs(app: FastAPI, client: AsyncClient) -> None:
     """A policy enforced on one of two doors is not enforced.
@@ -440,7 +455,7 @@ async def test_jsonrpc_honours_dispatch_pairs(app: FastAPI, client: AsyncClient)
     `routes/a2a_jsonrpc._resolve_dispatch_token` is a twin of the one in
     `routes/tasks`, and it re-minted without ever consulting the table --
     so the same token refused by POST /a2a/tasks dispatched happily through
-    POST /agents/{name}. Both doors, same answer.
+    POST /agents/{name}. Every door, same answer, the A2A v1.0 path included.
     """
     from cabal.core import dispatch_pairs
 
@@ -458,6 +473,10 @@ async def test_jsonrpc_honours_dispatch_pairs(app: FastAPI, client: AsyncClient)
     assert body.get("error") is not None, f"JSON-RPC let a refused caller through: {body}"
     assert "not a colleague" in body["error"]["message"], body
 
+    v1 = await _dispatch_v1(client, rogue, req_id="v1-rogue")
+    assert v1.status_code == 403, v1.text
+    assert "not a colleague" in v1.text
+
 
 @pytest.mark.asyncio
 async def test_jsonrpc_allows_a_synced_pair(app: FastAPI, client: AsyncClient) -> None:
@@ -471,6 +490,10 @@ async def test_jsonrpc_allows_a_synced_pair(app: FastAPI, client: AsyncClient) -
     rpc = await _dispatch_jsonrpc(client, allowed, req_id="rpc-allowed")
     assert rpc.status_code == 200, rpc.text
     assert rpc.json().get("error") is None, rpc.json()
+
+    v1 = await _dispatch_v1(client, allowed, req_id="v1-allowed")
+    assert v1.status_code == 200, v1.text
+    assert v1.json()["result"]["task"]["status"]["state"] == "TASK_STATE_COMPLETED", v1.json()
 
 
 @pytest.mark.asyncio

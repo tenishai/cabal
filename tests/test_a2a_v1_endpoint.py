@@ -31,12 +31,17 @@ async def _bootstrap_token(app: FastAPI, client: AsyncClient) -> str:
     return r.json()["access_token"]
 
 
-async def _stranger_token(app: FastAPI) -> str:
-    """A valid token for a caller that is neither the operator nor the task's owner."""
+async def _colleague_token(app: FastAPI, sub: str, scope: list[str] | None = None) -> str:
+    """A valid non-operator token, colleague scope unless told otherwise."""
     async with open_session(app.state.sessionmaker) as session:
         stored = await load_active_signing_key(session, master_key=app.state.master_key)
     assert stored is not None
-    return mint(signing_key=stored, sub="agent:stranger", aud="cabal-core", scope=["colleague"])
+    return mint(signing_key=stored, sub=sub, aud="cabal-core", scope=scope or ["colleague"])
+
+
+async def _stranger_token(app: FastAPI) -> str:
+    """A valid token for a caller that is neither the operator nor the task's owner."""
+    return await _colleague_token(app, "agent:stranger")
 
 
 def _message(text: str = "hello v1", **extra: Any) -> dict[str, Any]:
@@ -167,6 +172,14 @@ async def test_send_message_to_an_unknown_agent_is_404(app: FastAPI, client: Asy
 
 
 @pytest.mark.asyncio
+async def test_a_token_without_dispatch_scope_is_403(app: FastAPI, client: AsyncClient) -> None:
+    token = await _colleague_token(app, "agent:narrow", scope=["dispatch"])
+    r = await _call(client, token, "SendMessage", {"message": _message()})
+    assert r.status_code == 403
+    assert "requires operator or colleague scope" in r.text
+
+
+@pytest.mark.asyncio
 async def test_an_invalid_token_is_401(client: AsyncClient) -> None:
     r = await _call(client, "not-a-jwt", "SendMessage", {"message": _message()})
     assert r.status_code == 401
@@ -196,6 +209,19 @@ async def test_get_task_matches_legacy_tasks_get(app: FastAPI, client: AsyncClie
     assert task["status"]["state"] == "TASK_STATE_COMPLETED"
     assert task["status"]["message"]["parts"][0]["text"] == "echo: store me"
     assert task["status"]["message"] == sent["status"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_non_operator_caller_reads_its_own_task(app: FastAPI, client: AsyncClient) -> None:
+    """The owner branch of GetTask: the main audience of this endpoint is a
+    non-operator A2A client reading back the task it sent."""
+    owner = await _colleague_token(app, "agent:owner")
+    sent = await _sent_task(client, owner)
+    r = await _call(client, owner, "GetTask", {"id": sent["id"]})
+    body = r.json()
+    assert "error" not in body, body
+    assert body["result"]["id"] == sent["id"]
+    assert body["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
 
 
 @pytest.mark.asyncio
