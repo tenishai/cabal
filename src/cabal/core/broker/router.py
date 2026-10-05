@@ -17,7 +17,7 @@ one independently and assert them identically across solo + scale modes.
 from __future__ import annotations
 
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -96,6 +96,17 @@ def _ensure_trace(task: Task) -> Task:
     # A fresh span per hop, always.
     task.metadata["cabal_span_id"] = secrets.token_hex(8)
     return task
+
+
+@dataclass(slots=True)
+class _Started:
+    """A dispatch past its start phase: what the run phase needs."""
+
+    ctx: DispatchContext
+    task: Task
+    is_session_root: bool
+    target_agent: str
+    caller_jwt: str
 
 
 def _with_context(task: Task, response: Task) -> Task:
@@ -271,6 +282,34 @@ class DispatchRouter:
         `target_generation` of None means "the active generation"; an explicit
         integer routes to that exact generation (used by subordinate returns).
         """
+        started = await self._start_dispatch(target_agent, target_generation, task, caller_jwt)
+        return await self._run_dispatch(started)
+
+    async def start_detached(
+        self,
+        *,
+        target_agent: str,
+        target_generation: int | None,
+        task: Task,
+        caller_jwt: str,
+    ) -> tuple[Task, Coroutine[Any, Any, Task]]:
+        """Begin a dispatch whose persona call runs later (#277).
+
+        Runs the start phase now, auth included, so a refused token is refused
+        here and the task's row exists in `submitted` before this returns.
+        Returns the task and the run phase as a coroutine for the caller to
+        hand to its owner (the app's detached-task registry). Cancel it through
+        the AbortCoordinator, like any dispatch.
+        """
+        started = await self._start_dispatch(target_agent, target_generation, task, caller_jwt)
+        return started.task, self._run_dispatch(started)
+
+    async def _start_dispatch(
+        self, target_agent: str, target_generation: int | None, task: Task, caller_jwt: str
+    ) -> _Started:
+        """Everything before the persona call: auth, trace ids, the AbortGraph
+        node, the conversations row, the session hook."""
+
         ctx = await self._prepare(target_agent, target_generation, caller_jwt)
         task = _ensure_trace(task)
         # cabal#11 — register this invocation in the AbortGraph. Parent comes
@@ -293,6 +332,19 @@ class DispatchRouter:
                 },
             )
 
+        return _Started(
+            ctx=ctx,
+            task=task,
+            is_session_root=is_session_root,
+            target_agent=target_agent,
+            caller_jwt=caller_jwt,
+        )
+
+    async def _run_dispatch(self, started: _Started) -> Task:
+        """Router guardrails, the persona call, and the success or failure
+        bookkeeping. Records `working` just before the persona is called."""
+        ctx, task, is_session_root = started.ctx, started.task, started.is_session_root
+        target_agent, caller_jwt = started.target_agent, started.caller_jwt
         try:
             # cabal#39 — router-level input guardrail check before the A2A hop.
             # A BLOCK here prevents dispatch entirely and surfaces a
@@ -361,6 +413,7 @@ class DispatchRouter:
                 # mint site (routes/tasks._resolve_dispatch_token) and _prepare must
                 # resolve the SAME row for their audience/kind to agree. Both use
                 # get_active today; keep it that way if you change audience resolution.
+                await self._bookkeeper.on_dispatch_working(task)
                 if ctx.target.name in self._local and ctx.target.kind != "federated":
                     response = await self._dispatch_local(self._local[ctx.target.name], task)
                 else:
