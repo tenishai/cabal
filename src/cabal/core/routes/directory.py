@@ -2,7 +2,7 @@
 
 The `colleague` scope (minted by a separate room service, `sub` shaped
 like "agent:<name>") grants exactly two things: this read, and dispatch
-re-mint (see `tasks.py:_resolve_dispatch_token`). Nothing else — a
+re-mint (see `_dispatch_auth.dispatch_token`). Nothing else — a
 colleague token must still get 403 on every /admin route.
 
 Serialization reads the bulletin board's `agent_card_json` tolerantly: it

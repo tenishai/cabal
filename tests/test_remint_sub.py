@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 from typing import Any
 
@@ -77,11 +78,29 @@ async def test_jsonrpc_remint_refuses_missing_sub(app: FastAPI, client: AsyncCli
     assert "no sub" in body["error"]["message"]
 
 
+def _member_audience(monkeypatch) -> None:
+    """No database behind this stub app: the persona is a member, so its
+    dispatch audience is its own name (cabal#234)."""
+
+    @contextlib.asynccontextmanager
+    async def no_session(_sm: Any):
+        yield None
+
+    async def own_name(_session: Any, target: str) -> str:
+        return target
+
+    monkeypatch.setattr(inprocess, "open_session", no_session)
+    monkeypatch.setattr(inprocess, "dispatch_audience", own_name)
+
+
 @pytest.mark.asyncio
 async def test_inprocess_remint_refuses_missing_sub(monkeypatch) -> None:
     client = inprocess.InProcessBrokerClient(operator_token="t")
-    client._app = SimpleNamespace(state=SimpleNamespace(jwks_provider=lambda: None))
+    client._app = SimpleNamespace(
+        state=SimpleNamespace(jwks_provider=lambda: None, sessionmaker=None)
+    )
     client._signing_key = object()  # type: ignore[assignment]
+    _member_audience(monkeypatch)
     monkeypatch.setattr(
         inprocess, "verify", lambda *a, **k: {"aud": "cabal-core", "cabal_scope": ["operator"]}
     )

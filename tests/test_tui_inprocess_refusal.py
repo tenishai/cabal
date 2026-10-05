@@ -6,6 +6,7 @@ runs without the techne/liminal siblings the full in-process tests need.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
@@ -26,10 +27,28 @@ class _RaisingRouter:
         yield ""  # pragma: no cover - makes this an async generator
 
 
+def _member_audience(monkeypatch) -> None:
+    """No database behind this stub app: the persona is a member, so its
+    dispatch audience is its own name (cabal#234)."""
+
+    @contextlib.asynccontextmanager
+    async def no_session(_sm: Any):
+        yield None
+
+    async def own_name(_session: Any, target: str) -> str:
+        return target
+
+    monkeypatch.setattr(inprocess, "open_session", no_session)
+    monkeypatch.setattr(inprocess, "dispatch_audience", own_name)
+
+
 def _client(monkeypatch, exc: Exception) -> inprocess.InProcessBrokerClient:
     client = inprocess.InProcessBrokerClient(operator_token="t")
-    client._app = SimpleNamespace(state=SimpleNamespace(jwks_provider=lambda: None))
+    client._app = SimpleNamespace(
+        state=SimpleNamespace(jwks_provider=lambda: None, sessionmaker=None)
+    )
     client._router = _RaisingRouter(exc)
+    _member_audience(monkeypatch)
     # aud == persona: an already-scoped token, so no minting is needed.
     monkeypatch.setattr(inprocess, "verify", lambda *a, **k: {"aud": "archivist"})
     monkeypatch.setattr(inprocess, "refusal", lambda *a, **k: None)

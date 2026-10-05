@@ -2,10 +2,10 @@
 
 kobo (the room) owns the policy of which agent may dispatch to which
 target; cabal just stores flat `(caller, target)` pairs and enforces
-them at BOTH re-mint steps -- `POST /a2a/tasks`
-(`routes/tasks.py::_resolve_dispatch_token`) and the JSON-RPC door,
-`POST /agents/{name}` and `/agents/{name}/stream`
-(`routes/a2a_jsonrpc.py::_resolve_dispatch_token`).
+them in the one re-mint policy, `routes/_dispatch_auth.dispatch_token`,
+which every door calls: `POST /a2a/tasks`, the JSON-RPC door
+(`POST /agents/{name}` and `/agents/{name}/stream`) and the A2A v1.0 path
+(`POST /agents/{name}/a2a`).
 
 An EMPTY table means OPEN: before the room has ever synced a set of
 pairs, every agent-to-agent dispatch is allowed. Enforcement begins the
@@ -450,12 +450,13 @@ async def _dispatch_v1(client: AsyncClient, token: str, *, target: str = TARGET,
 
 @pytest.mark.asyncio
 async def test_jsonrpc_honours_dispatch_pairs(app: FastAPI, client: AsyncClient) -> None:
-    """A policy enforced on one of two doors is not enforced.
+    """A policy enforced on some doors is not enforced.
 
-    `routes/a2a_jsonrpc._resolve_dispatch_token` is a twin of the one in
-    `routes/tasks`, and it re-minted without ever consulting the table --
-    so the same token refused by POST /a2a/tasks dispatched happily through
-    POST /agents/{name}. Every door, same answer, the A2A v1.0 path included.
+    The JSON-RPC door once had its own copy of the re-mint policy, and it
+    re-minted without ever consulting the table -- so the same token refused
+    by POST /a2a/tasks dispatched happily through POST /agents/{name}. Every
+    door now calls `_dispatch_auth.dispatch_token`; this pins the same answer
+    on each, the A2A v1.0 path included.
     """
     from cabal.core import dispatch_pairs
 
@@ -480,7 +481,7 @@ async def test_jsonrpc_honours_dispatch_pairs(app: FastAPI, client: AsyncClient)
 
 @pytest.mark.asyncio
 async def test_jsonrpc_allows_a_synced_pair(app: FastAPI, client: AsyncClient) -> None:
-    """The twin must not be refusing everything either."""
+    """The shared policy must not be refusing everything either."""
     from cabal.core import dispatch_pairs
 
     async with open_session(app.state.sessionmaker) as session:

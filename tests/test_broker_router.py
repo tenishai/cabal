@@ -877,6 +877,102 @@ async def test_federated_token_mint_uses_sovereign_audience(
     assert claims["cabal_scope"] == ["dispatch"]
 
 
+def _shim_request(sessionmaker, master_key, jwks_provider):
+    from types import SimpleNamespace
+
+    state = SimpleNamespace(
+        jwks_provider=jwks_provider, sessionmaker=sessionmaker, master_key=master_key
+    )
+    return SimpleNamespace(app=SimpleNamespace(state=state))
+
+
+@pytest.mark.asyncio
+async def test_shared_policy_mints_sovereign_audience(
+    sessionmaker, signing_key, master_key, jwks_provider, federated_archivist_row
+) -> None:
+    """cabal#234: the policy both JSON-RPC routes use mints a federated
+    target's federation_audience, as the REST route always did. Before the fix
+    it minted the bare name, and the router refused its own token."""
+    from cabal.core.routes._dispatch_auth import dispatch_token
+
+    request = _shim_request(sessionmaker, master_key, jwks_provider)
+    operator_token = mint(
+        signing_key=signing_key, sub="operator", aud="cabal-core", scope=["operator"]
+    )
+    minted = await dispatch_token(request, operator_token, "archivist")
+    assert isinstance(minted, str), minted
+    claims = verify(minted, key_set=jwks_provider(), expected_audience=None)
+    assert claims["aud"] == "archivist@rd"
+    assert claims["cabal_scope"] == ["dispatch"]
+
+
+@pytest.mark.asyncio
+async def test_shared_policy_passes_a_token_aimed_at_the_sovereign(
+    sessionmaker, signing_key, master_key, jwks_provider, federated_archivist_row
+) -> None:
+    """A token already aimed at the sovereign id is used as it is. One aimed
+    at the bare name is not passed through: it is treated like any token
+    aimed elsewhere, so with only dispatch scope it is refused, and with
+    operator scope it is re-minted for the sovereign id."""
+    from cabal.core.routes._dispatch_auth import DispatchRefusal, dispatch_token
+
+    request = _shim_request(sessionmaker, master_key, jwks_provider)
+    aimed = mint(signing_key=signing_key, sub="agent:x", aud="archivist@rd", scope=["dispatch"])
+    assert await dispatch_token(request, aimed, "archivist") == aimed
+
+    bare = mint(signing_key=signing_key, sub="agent:x", aud="archivist", scope=["dispatch"])
+    refused = await dispatch_token(request, bare, "archivist")
+    assert isinstance(refused, DispatchRefusal)
+    assert refused.kind == "forbidden"
+
+    bare_operator = mint(
+        signing_key=signing_key, sub="operator", aud="archivist", scope=["operator"]
+    )
+    reminted = await dispatch_token(request, bare_operator, "archivist")
+    assert isinstance(reminted, str) and reminted != bare_operator
+    claims = verify(reminted, key_set=jwks_provider(), expected_audience=None)
+    assert claims["aud"] == "archivist@rd"
+
+
+@pytest.mark.asyncio
+async def test_federated_target_without_audience_is_a_server_fault(
+    sessionmaker, signing_key, master_key, jwks_provider
+) -> None:
+    """A federated row with no federation_audience is a registration fault:
+    an internal refusal, which the REST route answers with HTTP 500."""
+    from fastapi import HTTPException
+
+    from cabal.core.routes._dispatch_auth import DispatchRefusal, dispatch_token
+    from cabal.core.routes.tasks import _resolve_dispatch_token
+
+    async with sessionmaker() as s:
+        s.add(Persona(name="archivist", config_json={}))
+        await s.flush()
+        await bulletin_store.register_federated(
+            s,
+            name="archivist",
+            persona_name="archivist",
+            endpoint="https://archivist.rd.ts.net",
+            federation_audience="",
+            agent_card_json={"name": "archivist"},
+            agent_card_kid="kid-fed",
+        )
+        await s.commit()
+
+    request = _shim_request(sessionmaker, master_key, jwks_provider)
+    operator_token = mint(
+        signing_key=signing_key, sub="operator", aud="cabal-core", scope=["operator"]
+    )
+    refused = await dispatch_token(request, operator_token, "archivist")
+    assert isinstance(refused, DispatchRefusal)
+    assert refused.kind == "internal"
+    assert "federation_audience" in refused.message
+
+    with pytest.raises(HTTPException) as exc:
+        await _resolve_dispatch_token(request, operator_token, "archivist")
+    assert exc.value.status_code == 500
+
+
 # ---- resume_local federated guard (cabal#45) ---------------------------
 
 

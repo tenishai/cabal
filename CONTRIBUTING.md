@@ -36,8 +36,8 @@ A few things worth knowing before you spend effort:
   the files you touch.
 - **AGENTS.md** is the context file for AI coding agents, and `CLAUDE.md` is a
   one-line bridge to it. A rule an agent must follow belongs there, not only here.
-  It also lists the repo's traps (for example, `_resolve_dispatch_token` exists
-  twice and a policy change must touch both).
+  It also lists the repo's traps (for example, where the dispatch-token policy
+  lives, and why a route must not grow its own copy).
 - **Alembic migrations ship as package data.** Adding a revision under
   `src/cabal/migrations/versions/` is also a packaging change.
 - **Docker.** `make up` builds the dev stack from sibling checkouts of techne and
