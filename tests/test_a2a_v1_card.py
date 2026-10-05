@@ -375,3 +375,102 @@ async def test_directory_lists_the_v1_card_url(
     assert agents["echo"]["agent_card_url"] == "https://cabal.test/agents/echo/.well-known/agent-card.json"
     # A federated peer's card is the peer's own.
     assert agents["peer"]["agent_card_url"] is None
+
+
+# ---- the front door at /.well-known/agent-card.json --------------------------------
+
+
+def test_resolve_front_door(monkeypatch) -> None:
+    from cabal.config.identity import resolve_front_door
+
+    monkeypatch.delenv("CABAL_FRONT_DOOR", raising=False)
+    assert resolve_front_door(None) is None
+    identity = IdentityConfig(cabal=CabalConfig(front_door=" mason-primus "))
+    assert resolve_front_door(identity) == "mason-primus"
+    assert resolve_front_door(IdentityConfig(cabal=CabalConfig(front_door="  "))) is None
+    monkeypatch.setenv("CABAL_FRONT_DOOR", "echo")
+    assert resolve_front_door(identity) == "echo"
+    # A blank variable is unset: it does not hide the configured value.
+    monkeypatch.setenv("CABAL_FRONT_DOOR", "   ")
+    assert resolve_front_door(identity) == "mason-primus"
+
+
+def test_a_blank_public_url_variable_does_not_hide_the_config(monkeypatch) -> None:
+    identity = IdentityConfig(cabal=CabalConfig(public_url="https://from-config.test"))
+    monkeypatch.setenv("CABAL_PUBLIC_URL", "  ")
+    assert resolve_public_url(identity) == "https://from-config.test"
+    assert resolve_public_url(None) is None
+
+
+@pytest.mark.asyncio
+async def test_root_card_is_the_front_door_personas_card(
+    app: FastAPI, client: AsyncClient, monkeypatch
+) -> None:
+    monkeypatch.setenv("CABAL_PUBLIC_URL", "https://cabal.test")
+    monkeypatch.setenv("CABAL_FRONT_DOOR", "echo")
+    r = await client.get("/.well-known/agent-card.json")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("application/json")
+    root = r.json()
+    AgentCardV1.model_validate(root)
+    assert verify_card(root, app.state.jwks_provider())
+    assert root["supportedInterfaces"][0]["url"] == "https://cabal.test/agents/echo/a2a"
+    assert root["description"].endswith(
+        "Other agents on this cabal are listed at https://cabal.test/directory."
+    )
+
+    own = (await client.get("/agents/echo/.well-known/agent-card.json")).json()
+    drop = ("description", "signatures")
+    assert {k: v for k, v in root.items() if k not in drop} == {
+        k: v for k, v in own.items() if k not in drop
+    }
+    assert "directory" not in own["description"]
+
+
+@pytest.mark.asyncio
+async def test_root_card_without_a_front_door_is_404(client: AsyncClient, monkeypatch) -> None:
+    monkeypatch.setenv("CABAL_PUBLIC_URL", "https://cabal.test")
+    monkeypatch.delenv("CABAL_FRONT_DOOR", raising=False)
+    r = await client.get("/.well-known/agent-card.json")
+    assert r.status_code == 404
+    assert "front_door" in r.text
+
+
+@pytest.mark.asyncio
+async def test_root_card_misconfiguration_is_503(
+    app: FastAPI, client: AsyncClient, monkeypatch
+) -> None:
+    monkeypatch.setenv("CABAL_FRONT_DOOR", "echo")
+    monkeypatch.delenv("CABAL_PUBLIC_URL", raising=False)
+    assert (await client.get("/.well-known/agent-card.json")).status_code == 503
+
+    monkeypatch.setenv("CABAL_PUBLIC_URL", "https://cabal.test")
+    monkeypatch.setenv("CABAL_FRONT_DOOR", "ghostly")
+    r = await client.get("/.well-known/agent-card.json")
+    assert r.status_code == 503
+    assert "ghostly" in r.text
+
+    async with app.state.sessionmaker() as s:
+        s.add(Persona(name="peer", config_json={}))
+        await s.flush()
+        await bulletin_store.register_federated(
+            s,
+            name="peer",
+            persona_name="peer",
+            endpoint="https://peer.example",
+            federation_audience="peer@remote",
+            agent_card_json={"name": "peer"},
+            agent_card_kid="kid-peer",
+        )
+        await s.commit()
+    monkeypatch.setenv("CABAL_FRONT_DOOR", "peer")
+    assert (await client.get("/.well-known/agent-card.json")).status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_legacy_root_stub_is_unchanged(client: AsyncClient, monkeypatch) -> None:
+    monkeypatch.setenv("CABAL_PUBLIC_URL", "https://cabal.test")
+    monkeypatch.setenv("CABAL_FRONT_DOOR", "echo")
+    r = await client.get("/.well-known/agent-card")
+    assert r.status_code == 200
+    assert r.json()["stub"] is True

@@ -30,8 +30,12 @@ Pull requests and issues are in tenishai/cabal.
   and for a federated peer).
   `cabal.core.a2a.v1_card` holds the card model, the RFC 8785 serializer (checked against
   the RFC's own number samples), signing, and verification for v1.0 cards.
-  cabal-core's own card at `/.well-known/agent-card.json` is not in this change: what it
-  advertises is still an open question in tenishai/cabal#270.
+  `/.well-known/agent-card.json`, the host's discovery card, serves the card of the persona
+  named by the new `cabal.front_door` setting (or `$CABAL_FRONT_DOOR`), with a line in its
+  description pointing at `/directory`. With no front door it answers 404; with a front door
+  that names an agent without a card here, or without a public URL, 503. cabal-core has no
+  endpoint of its own to name, and a well-known card must name one. The legacy stub at
+  `/.well-known/agent-card` is unchanged.
 - **A2A v1.0 ListTasks and CancelTask** (issue tenishai/cabal#268, epic tenishai/cabal#272).
   `ListTasks` on `POST /agents/{name}/a2a` returns the caller's own tasks on that persona
   (every task on it, for the operator), newest status first, with cursor pagination

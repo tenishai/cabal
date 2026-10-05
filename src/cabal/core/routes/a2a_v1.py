@@ -174,16 +174,17 @@ def _tenant_mismatch(tenant: str | None, agent_name: str) -> bool:
     return tenant is not None and tenant != "" and tenant != agent_name
 
 
-@router.get("/{agent_name}/.well-known/agent-card.json")
-async def v1_agent_card(
-    request: Request, agent_name: str = Path(..., min_length=1, max_length=64)
-) -> JSONResponse:
-    """The agent's A2A v1.0 card, signed (#270). The legacy card stays at
-    `/agents/{name}/.well-known/agent-card`.
+async def signed_agent_card(
+    request: Request, agent_name: str, *, front_door: bool = False
+) -> dict[str, Any]:
+    """The signed v1.0 card for the bulletin agent `agent_name` (#270).
 
     503 when `cabal.public_url` is unset or malformed: the card's interface
-    URL must be the address a client reaches, and nothing else knows it. A
-    federated peer's card is the peer's own, so it has none here.
+    URL must be the address a client reaches, and nothing else knows it. An
+    unknown agent, a federated peer (its card is the peer's own) and a
+    presence row have no card: 404, or 503 for the front door, where it means
+    `cabal.front_door` names the wrong agent. The front door's description
+    also points at the directory, inside the signed content.
     """
     try:
         base_url = resolve_public_url(getattr(request.app.state, "identity", None))
@@ -198,6 +199,11 @@ async def v1_agent_card(
         row = await bulletin_store.get_active(session, agent_name)
         stored = await load_active_signing_key(session, master_key=request.app.state.master_key)
     if row is None or row.kind in {"federated", "session"}:
+        if front_door:
+            raise HTTPException(
+                status_code=503,
+                detail=f"cabal.front_door names {agent_name!r}, which has no A2A v1.0 card here",
+            )
         raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
     if stored is None:
         raise HTTPException(status_code=500, detail="no active signing key")
@@ -208,7 +214,19 @@ async def v1_agent_card(
         legacy=legacy.get("card", legacy) if isinstance(legacy, dict) else {},
         base_url=base_url,
     )
-    return JSONResponse(signed_card(card, stored), media_type="application/json")
+    if front_door:
+        pointer = f"Other agents on this cabal are listed at {base_url}/directory."
+        card.description = f"{card.description} {pointer}" if card.description else pointer
+    return signed_card(card, stored)
+
+
+@router.get("/{agent_name}/.well-known/agent-card.json")
+async def v1_agent_card(
+    request: Request, agent_name: str = Path(..., min_length=1, max_length=64)
+) -> JSONResponse:
+    """The agent's A2A v1.0 card, signed (#270). The legacy card stays at
+    `/agents/{name}/.well-known/agent-card`."""
+    return JSONResponse(await signed_agent_card(request, agent_name), media_type="application/json")
 
 
 @router.post("/{agent_name}/a2a")
