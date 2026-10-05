@@ -8,6 +8,23 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **A2A v1.0 agent cards for each persona** (issue tenishai/cabal#270, epic tenishai/cabal#272).
+  `GET /agents/{name}/.well-known/agent-card.json` serves the agent's v1.0 AgentCard with
+  one embedded signature: `typ: JOSE`, RS256, by cabal's active signing key, over the card
+  with default values and `signatures` removed and the rest in RFC 8785 form (spec 8.4).
+  The card's one interface is `{public_url}/agents/{name}/a2a` (JSON-RPC, A2A 1.0); its
+  capabilities (streaming, push notifications, extended card) are all off; its input and
+  output modes are `text/plain` and `application/json`. It is built from the agent's legacy
+  card, which is unchanged at `/agents/{name}/.well-known/agent-card`.
+  The card needs the new `cabal.public_url` setting (or `$CABAL_PUBLIC_URL`), the URL
+  clients reach cabal at: without a valid one the route answers 503 rather than publish a
+  wrong interface URL. A federated peer has no card here.
+  `/directory` lists each agent's card URL as `agent_card_url` (null without a public URL,
+  and for a federated peer).
+  `cabal.core.a2a.v1_card` holds the card model, the RFC 8785 serializer (checked against
+  the RFC's own number samples), signing, and verification for v1.0 cards.
+  cabal-core's own card at `/.well-known/agent-card.json` is not in this change: what it
+  advertises is still an open question in tenishai/cabal#270.
 - **A2A v1.0 ListTasks and CancelTask** (issue tenishai/cabal#268, epic tenishai/cabal#272).
   `ListTasks` on `POST /agents/{name}/a2a` returns the caller's own tasks on that persona
   (every task on it, for the operator), newest status first, with cursor pagination

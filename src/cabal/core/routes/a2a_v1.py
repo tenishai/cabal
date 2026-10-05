@@ -47,6 +47,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select
 
+from cabal.config.identity import resolve_public_url
 from cabal.core.a2a.types import Task, TaskStatus
 from cabal.core.a2a.v1 import (
     STATE_FROM_V1,
@@ -61,6 +62,7 @@ from cabal.core.a2a.v1 import (
     message_from_v1,
     task_to_v1,
 )
+from cabal.core.a2a.v1_card import persona_card, signed_card
 from cabal.core.a2a.v1_errors import (
     CONTENT_TYPE_NOT_SUPPORTED,
     INTERNAL_ERROR,
@@ -80,6 +82,7 @@ from cabal.core.a2a.v1_errors import (
     unauthenticated,
 )
 from cabal.core.a2a.version import is_v1, requested_version
+from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.broker.router import (
     AgentNotFoundError,
     CallerJWTError,
@@ -169,6 +172,43 @@ def _params_error(request_id: Any, message: str) -> JSONResponse:
 
 def _tenant_mismatch(tenant: str | None, agent_name: str) -> bool:
     return tenant is not None and tenant != "" and tenant != agent_name
+
+
+@router.get("/{agent_name}/.well-known/agent-card.json")
+async def v1_agent_card(
+    request: Request, agent_name: str = Path(..., min_length=1, max_length=64)
+) -> JSONResponse:
+    """The agent's A2A v1.0 card, signed (#270). The legacy card stays at
+    `/agents/{name}/.well-known/agent-card`.
+
+    503 when `cabal.public_url` is unset or malformed: the card's interface
+    URL must be the address a client reaches, and nothing else knows it. A
+    federated peer's card is the peer's own, so it has none here.
+    """
+    try:
+        base_url = resolve_public_url(getattr(request.app.state, "identity", None))
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if base_url is None:
+        raise HTTPException(
+            status_code=503,
+            detail="cabal.public_url is not set, and an A2A v1.0 card is not served without it",
+        )
+    async with open_session(request.app.state.sessionmaker) as session:
+        row = await bulletin_store.get_active(session, agent_name)
+        stored = await load_active_signing_key(session, master_key=request.app.state.master_key)
+    if row is None or row.kind in {"federated", "session"}:
+        raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+    if stored is None:
+        raise HTTPException(status_code=500, detail="no active signing key")
+    legacy = row.agent_card_json or {}
+    card = persona_card(
+        name=row.name,
+        persona=row.persona_name,
+        legacy=legacy.get("card", legacy) if isinstance(legacy, dict) else {},
+        base_url=base_url,
+    )
+    return JSONResponse(signed_card(card, stored), media_type="application/json")
 
 
 @router.post("/{agent_name}/a2a")

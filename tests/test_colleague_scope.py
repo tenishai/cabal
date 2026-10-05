@@ -148,6 +148,7 @@ async def test_directory_reads_bare_card(app: FastAPI, client: AsyncClient) -> N
         "purpose_tags": ["billing"],
         "capability": "invoicing",
         "description": "a bare-card agent",
+        "agent_card_url": None,
     }
 
 
@@ -180,6 +181,7 @@ async def test_directory_reads_jws_wrapped_card(app: FastAPI, client: AsyncClien
         "purpose_tags": ["infra", "on-call"],
         "capability": "provisioning",
         "description": "a jws-wrapped agent",
+        "agent_card_url": None,
     }
 
 
@@ -197,6 +199,7 @@ async def test_directory_missing_metadata_defaults(app: FastAPI, client: AsyncCl
         "purpose_tags": [],
         "capability": "",
         "description": "",
+        "agent_card_url": None,
     }
 
 

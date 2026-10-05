@@ -18,6 +18,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, Request
 
+from cabal.config.identity import resolve_public_url
 from cabal.core.auth.jwt import extract_bearer
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
@@ -39,6 +40,10 @@ async def list_directory(
     )
     async with open_session(request.app.state.sessionmaker) as session:
         rows = await bulletin_store.list_all(session)
+    try:
+        base_url = resolve_public_url(getattr(request.app.state, "identity", None))
+    except ValueError:
+        base_url = None  # the card route says why; the roster still lists
 
     agents = []
     for row in rows:
@@ -59,6 +64,14 @@ async def list_directory(
                 "purpose_tags": meta.get("purpose_tags", []),
                 "capability": meta.get("capability", ""),
                 "description": card.get("description", ""),
+                # The A2A v1.0 card (#270): this directory is the registry
+                # that discovery goes through. None without a public URL, and
+                # for a federated peer, whose card is the peer's own.
+                "agent_card_url": (
+                    f"{base_url}/agents/{row.name}/.well-known/agent-card.json"
+                    if base_url is not None and row.kind != "federated"
+                    else None
+                ),
             }
         )
     return {"agents": agents}

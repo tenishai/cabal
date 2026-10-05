@@ -6,6 +6,9 @@
 host = "127.0.0.1"
 port = 7400
 data_dir = "data"
+# The URL clients reach this cabal at. A2A v1.0 agent cards name each persona's
+# interface by it and are not served without it. $CABAL_PUBLIC_URL overrides it.
+# public_url = "https://cabal.example"
 
 # ----- LiteLLM proxy -----
 # api_base points at a running LiteLLM proxy. api_key_env names the env
