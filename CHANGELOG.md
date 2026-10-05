@@ -8,6 +8,13 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **A2A v1.0 cards declare bearer-JWT auth** (issue tenishai/cabal#271, epic tenishai/cabal#272).
+  Every persona card, and so the front-door card, declares one security scheme, `bearer`
+  (`httpAuthSecurityScheme`, `scheme: "Bearer"`, `bearerFormat: "JWT"`), and a security
+  requirement naming it. Outside agents get that JWT from the cabal's operator, as #271
+  decided. Default-value removal for signing now reaches into these fields, including map
+  values, so a verifier that fills an empty scope list or description back in still gets the
+  signed content.
 - **A2A v1.0 content types on SendMessage** (issue tenishai/cabal#274, epic tenishai/cabal#272).
   A message part whose media type is not in the persona card's `defaultInputModes`
   (`text/plain`, `application/json`) gets `ContentTypeNotSupportedError` (`-32005`). A part's
