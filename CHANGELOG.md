@@ -8,6 +8,13 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **A2A v1.0 wire types** (issue tenishai/cabal#266, epic tenishai/cabal#272).
+  `cabal.core.a2a.v1` holds the v1.0 data model, the SendMessage and GetTask request models
+  and the SendMessage response, serialized per v1.0 (camelCase, ProtoJSON enums such as
+  `TASK_STATE_COMPLETED` and `ROLE_USER`, ISO-8601 UTC timestamps). It converts cabal's
+  internal Task to v1.0, including tasks still in flight, and inbound v1.0 messages to the
+  internal form. Nothing serves them yet; the v1.0 endpoint is tenishai/cabal#267, and the
+  legacy dialect is unchanged.
 - **A2A v1.0 errors** (issue tenishai/cabal#269, epic tenishai/cabal#272).
   `cabal.core.a2a.v1_errors` defines the nine A2A v1.0 errors with their codes (`-32001` to
   `-32009`) and the `google.rpc.ErrorInfo` that spec 9.5 requires in the error's `data`, plus
