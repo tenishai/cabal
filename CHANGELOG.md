@@ -8,6 +8,13 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **A2A v1.0 errors** (issue tenishai/cabal#269, epic tenishai/cabal#272).
+  `cabal.core.a2a.v1_errors` defines the nine A2A v1.0 errors with their codes (`-32001` to
+  `-32009`) and the `google.rpc.ErrorInfo` that spec 9.5 requires in the error's `data`, plus
+  helpers for answering authentication and authorization with HTTP 401 (with
+  `WWW-Authenticate: Bearer`) and 403. The v1.0 interface (tenishai/cabal#267) will use them;
+  nothing serves them yet. cabal's legacy codes reuse `-32001` to `-32003` for other
+  meanings, so they stay on the legacy routes only.
 - **Revoke every token a subject holds** (tenishai/cabal#221). `POST /admin/token/revoke`
   (operator scope) records that tokens for a subject issued before a cutoff are refused.
   Every verification site on the dispatch path (REST, JSON-RPC, the broker router) and
