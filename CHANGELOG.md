@@ -8,11 +8,23 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **A2A v1.0 SendMessage and GetTask** (issue tenishai/cabal#267, epic tenishai/cabal#272).
+  `POST /agents/{name}/a2a` now serves `SendMessage` and `GetTask` in the v1.0 dialect.
+  Both need a bearer token; a request without one gets HTTP 401 with `WWW-Authenticate: Bearer`.
+  `SendMessage` dispatches to the persona in the path with the same token policy as the
+  legacy `message/send`, and returns the task the persona returns. A `tenant` must name that persona.
+  Push notification config gets `-32003`; `returnImmediately` (tenishai/cabal#277) and a
+  `message.taskId` (tenishai/cabal#276) get `-32004`; `raw` and `url` parts get `-32005`.
+  `GetTask` answers a missing task, another caller's task, and another persona's task with
+  the same `TaskNotFoundError` (`-32001`), so it never reveals that a task exists.
+  `SendStreamingMessage` and `SubscribeToTask` get `-32004`; other methods get `-32601`.
+  The token policy moved to `routes/_dispatch_auth.py`, shared by both dialects; the legacy
+  routes keep their error codes.
 - **A2A v1.0 version gate** (issue tenishai/cabal#265, epic tenishai/cabal#272). A new
   per-persona path, `POST /agents/{name}/a2a`, accepts `A2A-Version: 1.0` (header or
   `A2A-Version` query parameter; a patch number is ignored) and answers any other version,
-  including none, with `VersionNotSupportedError` (`-32009`) once the body parses as a JSON-RPC request. Behind the gate it answers
-  every method with `-32601` until tenishai/cabal#267 adds `SendMessage` and `GetTask`. The
+  including none, with `VersionNotSupportedError` (`-32009`) once the body parses as a JSON-RPC request. Behind the gate are
+  `SendMessage` and `GetTask` (tenishai/cabal#267, above). The
   legacy routes still accept requests with no `A2A-Version`, which is every current client;
   a well-formed request with a non-empty `A2A-Version` now gets `-32009` on `/agents/{name}`
   and `/agents/{name}/stream`, and HTTP 400 on `/a2a/tasks`. A malformed body still gets its

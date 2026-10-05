@@ -22,7 +22,6 @@ from fastapi import APIRouter, Header, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
-from cabal.core import dispatch_pairs
 from cabal.core.a2a.jsonrpc import (
     ERROR_AGENT_NOT_FOUND,
     ERROR_FORBIDDEN,
@@ -41,8 +40,7 @@ from cabal.core.a2a.jsonrpc import (
 from cabal.core.a2a.types import Task, TaskStatus
 from cabal.core.a2a.v1_errors import VERSION_NOT_SUPPORTED, a2a_error
 from cabal.core.a2a.version import requested_version
-from cabal.core.auth.jwt import JWTError, mint, verify
-from cabal.core.auth.keys import load_active_signing_key
+from cabal.core.auth.jwt import JWTError, verify
 from cabal.core.auth.revocations import refusal
 from cabal.core.broker.router import (
     AgentNotFoundError,
@@ -54,6 +52,7 @@ from cabal.core.broker.router import (
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 from cabal.core.models import Conversation
+from cabal.core.routes._dispatch_auth import DispatchRefusal, dispatch_token
 
 router = APIRouter(prefix="/agents", tags=["a2a"])
 
@@ -67,79 +66,23 @@ def _bearer(authorization: str | None) -> str | None:
 async def _resolve_dispatch_token(
     request: Request, raw_token: str, target: str
 ) -> tuple[str | None, JSONRPCResponse | None]:
-    """Returns (dispatch_token, error_response). One is always None."""
-    try:
-        claims = verify(
-            raw_token,
-            key_set=request.app.state.jwks_provider(),
-            expected_audience=None,
-        )
-    except JWTError as exc:
-        return None, make_error_response(
-            id=None, code=ERROR_UNAUTHORIZED, message=str(exc)
-        )
-    if (why := refusal(getattr(request.app.state, "revocations", None), claims)) is not None:
-        return None, make_error_response(id=None, code=ERROR_UNAUTHORIZED, message=why)
+    """Returns (dispatch_token, error_response). One is always None.
 
-    if claims.get("aud") == target:
-        return raw_token, None
-
-    # Mirrors routes/tasks._resolve_dispatch_token. JSON-RPC is the A2A surface
-    # an external agent actually dials, so the two gates must agree on who may
-    # dispatch; a colleague accepted over REST and refused here is the same
-    # token getting two answers.
-    scope = claims.get("cabal_scope") or []
-    if not ({"operator", "colleague"} & set(scope)):
-        return None, make_error_response(
-            id=None,
-            code=ERROR_UNAUTHORIZED,
-            message=(
-                f"token aud={claims.get('aud')!r} cannot dispatch to {target!r} "
-                "(requires operator or colleague scope)"
-            ),
-        )
-
-    sub = claims.get("sub") or ""
-    # A token with no sub failed to identify its bearer (cabal#184). Refuse to
-    # re-mint it rather than default the principal to "operator".
-    if not sub:
-        return None, make_error_response(
-            id=None,
-            code=ERROR_UNAUTHORIZED,
-            message="token carries no sub; refusing to re-mint a dispatch token",
-        )
-
-    sessionmaker = request.app.state.sessionmaker
-    master_key = request.app.state.master_key
-    async with open_session(sessionmaker) as session:
-        # THE PAIRS POLICY HAS TO LIVE HERE TOO, and its absence was a full
-        # bypass: the same colleague token refused by POST /a2a/tasks was
-        # dispatching through POST /agents/{name} because this twin re-minted
-        # without ever consulting the table. Scope alone is not the gate —
-        # scope says who may ask for a re-mint, the pairs table says who may
-        # call whom, and a policy enforced on one of two doors is not enforced.
-        if "operator" not in scope:
-            if not await dispatch_pairs.is_allowed(session, caller=sub, target=target):
-                return None, make_error_response(
-                    id=None,
-                    code=ERROR_FORBIDDEN,
-                    message=f"{sub} is not a colleague of {target} yet. Ask in the room.",
-                )
-        stored = await load_active_signing_key(session, master_key=master_key)
-    if stored is None:
-        return None, make_error_response(
-            id=None, code=ERROR_INTERNAL, message="no active signing key"
-        )
-    return (
-        mint(
-            signing_key=stored,
-            sub=sub,
-            aud=target,
-            persona=claims.get("cabal_persona"),
-            scope=["dispatch"],
-        ),
-        None,
-    )
+    The policy lives in `_dispatch_auth.dispatch_token`, shared with the A2A
+    v1.0 route; this keeps the legacy route's error codes: a dispatch-pairs
+    refusal is FORBIDDEN, a server fault is INTERNAL, and every other refusal
+    is UNAUTHORIZED, as before.
+    """
+    result = await dispatch_token(request, raw_token, target)
+    if not isinstance(result, DispatchRefusal):
+        return result, None
+    if result.kind == "internal":
+        code = ERROR_INTERNAL
+    elif result.legacy_forbidden:
+        code = ERROR_FORBIDDEN
+    else:
+        code = ERROR_UNAUTHORIZED
+    return None, make_error_response(id=None, code=code, message=result.message)
 
 
 @router.get("/{agent_name}/.well-known/agent-card")
