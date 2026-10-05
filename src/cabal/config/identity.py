@@ -60,6 +60,10 @@ class CabalConfig(_Open):
     # the domain's front door (#270), e.g. "mason-primus". Unset: no root card.
     # $CABAL_FRONT_DOOR wins over this.
     front_door: str | None = None
+    # How many messages of a conversation an A2A v1.0 SendMessage replays to
+    # the persona when it starts a new task in an existing contextId (#276):
+    # the newest ones are kept. 0 turns replay off.
+    context_replay_messages: int = Field(default=40, ge=0)
 
 
 #: Keyword names cabal itself binds on the way to the provider. An

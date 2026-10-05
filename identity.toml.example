@@ -12,6 +12,9 @@ data_dir = "data"
 # The persona whose A2A v1.0 card is served at /.well-known/agent-card.json, the
 # host's front door. Unset, that URL answers 404. $CABAL_FRONT_DOOR overrides it.
 # front_door = "mason-primus"
+# How many messages of a conversation an A2A v1.0 SendMessage replays to the
+# persona when it starts a new task in an existing contextId (newest kept). 0 is off.
+# context_replay_messages = 40
 
 # ----- LiteLLM proxy -----
 # api_base points at a running LiteLLM proxy. api_key_env names the env
