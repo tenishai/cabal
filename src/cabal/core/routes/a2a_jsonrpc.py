@@ -39,6 +39,8 @@ from cabal.core.a2a.jsonrpc import (
     make_success_response,
 )
 from cabal.core.a2a.types import Task, TaskStatus
+from cabal.core.a2a.v1_errors import VERSION_NOT_SUPPORTED, a2a_error
+from cabal.core.a2a.version import requested_version
 from cabal.core.auth.jwt import JWTError, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.auth.revocations import refusal
@@ -154,6 +156,29 @@ async def per_agent_card(
     return row.agent_card_json
 
 
+# These routes speak cabal's pre-1.0 dialect, which is no declared A2A
+# version. Current clients send no A2A-Version. A well-formed request that
+# asks for a version gets VersionNotSupportedError rather than silently getting
+# legacy semantics (spec 3.6.2); the version is checked after the body parses
+# and the envelope validates, so a malformed body gets that error first. cabal's A2A 1.0 interface is being built at /agents/{name}/a2a
+# (routes/a2a_v1.py, epic #272).
+_LEGACY_VERSION_MESSAGE = (
+    "this legacy interface serves no A2A version; send no A2A-Version here. "
+    "cabal's A2A 1.0 interface is /agents/{name}/a2a"
+)
+
+
+def _legacy_version_refusal(request_id: str | int | None, version: str | None) -> JSONRPCResponse:
+    err = a2a_error(
+        VERSION_NOT_SUPPORTED,
+        message=_LEGACY_VERSION_MESSAGE,
+        metadata={"requestedVersion": version or ""},
+    )
+    return make_error_response(
+        id=request_id, code=err["code"], message=err["message"], data=err["data"]
+    )
+
+
 @router.post("/{agent_name}")
 async def per_agent_jsonrpc(
     request: Request,
@@ -176,6 +201,9 @@ async def per_agent_jsonrpc(
             code=ERROR_INVALID_REQUEST,
             message=f"invalid JSON-RPC envelope: {exc}",
         )
+
+    if requested_version(request) is not None:
+        return _legacy_version_refusal(rpc_req.id, requested_version(request))
 
     raw_token = _bearer(authorization)
     if raw_token is None:
@@ -233,6 +261,12 @@ async def per_agent_stream(
             _sse_error_only(
                 ERROR_INVALID_REQUEST, f"invalid JSON-RPC envelope: {exc}"
             ),
+            media_type="text/event-stream",
+        )
+
+    if requested_version(request) is not None:
+        return StreamingResponse(
+            _sse_error_only(VERSION_NOT_SUPPORTED.code, _LEGACY_VERSION_MESSAGE),
             media_type="text/event-stream",
         )
 
