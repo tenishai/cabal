@@ -364,8 +364,10 @@ def _public_metadata(metadata: dict[str, Any]) -> dict[str, Any] | None:
     """Task metadata as a v1.0 client sees it. The reason keys are renamed to
     camelCase, as v1.0 field names are (DM-SERIAL-001). cabal's other
     `cabal_*` keys (trace and span ids, the delegation budget, session flags,
-    the routed agent) are internal bookkeeping and are left out. A client's
-    own metadata keys pass through as sent."""
+    the routed agent) are internal bookkeeping and are left out. The
+    `cabal_` prefix is reserved for cabal: a client's own key with it is
+    dropped or renamed the same way. Every other key passes through as
+    sent."""
     public: dict[str, Any] = {}
     for key, value in metadata.items():
         if key in _PUBLIC_CABAL_KEYS:
