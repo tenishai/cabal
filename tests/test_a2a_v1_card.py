@@ -186,7 +186,11 @@ def test_a_reconstructed_card_still_verifies() -> None:
     rebuilt = json.loads(json.dumps(card, sort_keys=True))
     rebuilt["supportedInterfaces"][0]["tenant"] = ""
     rebuilt["capabilities"]["extensions"] = []
-    rebuilt["securitySchemes"] = {}
+    # Defaults inside the security fields (#271): an empty scope list. And a
+    # skill's securityRequirements, a repeated field these cards never emit,
+    # added back by the verifier as an empty list.
+    rebuilt["securityRequirements"][0]["schemes"]["bearer"]["list"] = []
+    rebuilt["skills"][0]["securityRequirements"] = []
     assert verify_card(rebuilt, _key_set(key)) == "k1"
 
 
@@ -238,6 +242,37 @@ def test_any_verifying_signature_is_enough() -> None:
 
 
 # ---- the persona card --------------------------------------------------------------
+
+
+def test_persona_card_requires_a_bearer_jwt() -> None:
+    card = _card().to_wire()
+    assert card["securitySchemes"] == {
+        "bearer": {
+            "httpAuthSecurityScheme": {
+                "scheme": "Bearer",
+                "bearerFormat": "JWT",
+                "description": "A JWT issued by this cabal. Outside agents get one from the cabal's operator.",
+            }
+        }
+    }
+    assert card["securityRequirements"] == [{"schemes": {"bearer": {}}}]
+    AgentCardV1.model_validate(card)
+
+
+def test_default_removal_inside_security_fields() -> None:
+    """Map values are messages too: an empty description or scope list goes."""
+    card = {
+        "name": "a",
+        "securitySchemes": {
+            "bearer": {"httpAuthSecurityScheme": {"scheme": "Bearer", "bearerFormat": "", "description": ""}}
+        },
+        "securityRequirements": [{"schemes": {"bearer": {"list": []}}}],
+    }
+    assert json.loads(signing_payload(card)) == {
+        "name": "a",
+        "securitySchemes": {"bearer": {"httpAuthSecurityScheme": {"scheme": "Bearer"}}},
+        "securityRequirements": [{"schemes": {"bearer": {}}}],
+    }
 
 
 def test_persona_card_shape() -> None:
