@@ -8,6 +8,21 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **A2A v1.0 ListTasks and CancelTask** (issue tenishai/cabal#268, epic tenishai/cabal#272).
+  `ListTasks` on `POST /agents/{name}/a2a` returns the caller's own tasks on that persona
+  (every task on it, for the operator), newest status first, with cursor pagination
+  (`pageSize` 1 to 100, default 50; `nextPageToken` is `""` on the last page) and the
+  `status`, `statusTimestampAfter`, `contextId` and `historyLength` options. Artifacts are
+  left out unless `includeArtifacts` is true. A task still in flight has no stored Task, so
+  a `contextId` filter does not match it.
+  `CancelTask` cancels a task running in this process through the `AbortCoordinator`, waits
+  up to 5 seconds for its dispatch to record the end, and returns the task. A finished task,
+  one dispatched outside this process (a federated peer, say), and one with nothing running behind it get
+  `TaskNotCancelableError` (`-32002`); a task the caller may not see gets `-32001`.
+  The four push notification config methods now get `-32003` and `GetExtendedAgentCard`
+  `-32004`, matching what the cards will declare (tenishai/cabal#270).
+  A non-operator token with no `sub` now owns no task on this path, so it cannot see a task
+  whose caller was not recorded.
 - **A2A v1.0 SendMessage and GetTask** (issue tenishai/cabal#267, epic tenishai/cabal#272).
   `POST /agents/{name}/a2a` now serves `SendMessage` and `GetTask` in the v1.0 dialect.
   Both need a bearer token; a request without one gets HTTP 401 with `WWW-Authenticate: Bearer`.

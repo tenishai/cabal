@@ -12,9 +12,19 @@ with `WWW-Authenticate: Bearer`). Then:
   belongs to another caller, or belongs to another persona gets the same
   TaskNotFoundError (-32001), so the answer never reveals that a task exists
   (spec 3.3.2).
+- `ListTasks` returns the caller's own tasks on this persona (every task on
+  it, for the operator), newest status first, a page at a time (#268).
+- `CancelTask` cancels a task running in this process through the
+  `AbortCoordinator`, waits up to `CANCEL_WAIT_SECONDS` for its dispatch to
+  record the end, and returns the task as it then stands. A finished task, one
+  dispatched outside this process, and one with nothing running behind it get
+  TaskNotCancelableError (-32002); a task the caller may not see gets
+  TaskNotFoundError (#268).
 - `SendStreamingMessage` and `SubscribeToTask` return UnsupportedOperationError
-  (-32004): streaming is off in the first cut (#275).
-- Every other method returns MethodNotFound (-32601) for now (#268).
+  (-32004): streaming is off in the first cut (#275). `GetExtendedAgentCard`
+  returns it too, and the four push notification config methods return
+  PushNotificationNotSupportedError (-32003): the cards declare neither (#270).
+- Every other method returns MethodNotFound (-32601).
 
 A request's `tenant`, when sent, must name the persona in the path. The path
 is distinct from the legacy `POST /agents/{name}` and from the `/a2a` prefix
@@ -24,6 +34,10 @@ the A2A compatibility kit post to the interface URL plus "/".
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -31,11 +45,15 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 
 from cabal.core.a2a.types import Task, TaskStatus
 from cabal.core.a2a.v1 import (
+    STATE_FROM_V1,
+    CancelTaskRequestV1,
     GetTaskRequestV1,
+    ListTasksRequestV1,
+    ListTasksResponseV1,
     SendMessageRequestV1,
     SendMessageResponseV1,
     UnsupportedPartError,
@@ -51,6 +69,7 @@ from cabal.core.a2a.v1_errors import (
     JSON_PARSE_ERROR,
     METHOD_NOT_FOUND,
     PUSH_NOTIFICATION_NOT_SUPPORTED,
+    TASK_NOT_CANCELABLE,
     TASK_NOT_FOUND,
     UNSUPPORTED_OPERATION,
     VERSION_NOT_SUPPORTED,
@@ -68,6 +87,7 @@ from cabal.core.broker.router import (
     DispatchError,
     GuardrailBlocked,
 )
+from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 from cabal.core.models import Conversation
 from cabal.core.routes._dispatch_auth import DispatchRefusal, dispatch_token, verify_caller
@@ -75,6 +95,24 @@ from cabal.core.routes._dispatch_auth import DispatchRefusal, dispatch_token, ve
 router = APIRouter(prefix="/agents", tags=["a2a-v1"])
 
 _STREAMING_METHODS = frozenset({"SendStreamingMessage", "SubscribeToTask"})
+_PUSH_CONFIG_METHODS = frozenset(
+    {
+        "CreateTaskPushNotificationConfig",
+        "GetTaskPushNotificationConfig",
+        "ListTaskPushNotificationConfigs",
+        "DeleteTaskPushNotificationConfig",
+    }
+)
+# States in which a task's dispatch has ended; CancelTask refuses them. (An
+# operator can still resume a canceled task through /admin when its persona is
+# local and left a checkpoint.)
+_TERMINAL_STATES = frozenset({"completed", "failed", "canceled", "rejected"})
+# How long CancelTask waits for the canceled dispatch to record its end.
+# Cancellation is cooperative, so a running persona stops at its next safe
+# boundary; past this, CancelTask returns the task as it stands.
+CANCEL_WAIT_SECONDS = 5.0
+_CANCEL_POLL_SECONDS = 0.05
+_DEFAULT_PAGE_SIZE = 50
 
 
 def _reply(body: dict[str, Any]) -> JSONResponse:
@@ -169,10 +207,24 @@ async def v1_jsonrpc(
         return await _send_message(request, agent_name, raw_token, request_id, params)
     if method == "GetTask":
         return await _get_task(request, agent_name, raw_token, request_id, params)
+    if method == "ListTasks":
+        return await _list_tasks(request, agent_name, raw_token, request_id, params)
+    if method == "CancelTask":
+        return await _cancel_task(request, agent_name, raw_token, request_id, params)
     if method in _STREAMING_METHODS:
         return _error(
             request_id,
             a2a_error(UNSUPPORTED_OPERATION, message=f"{method}: this agent does not stream"),
+        )
+    if method in _PUSH_CONFIG_METHODS:
+        return _error(
+            request_id,
+            a2a_error(PUSH_NOTIFICATION_NOT_SUPPORTED, message="this agent does not send push notifications"),
+        )
+    if method == "GetExtendedAgentCard":
+        return _error(
+            request_id,
+            a2a_error(UNSUPPORTED_OPERATION, message="this agent has no extended agent card"),
         )
     return _error(request_id, jsonrpc_error(METHOD_NOT_FOUND, f"method not found: {method!r}"))
 
@@ -242,6 +294,39 @@ async def _send_message(
     return _result(request_id, SendMessageResponseV1(task=v1_task).to_wire())
 
 
+def _owner_filter(claims: dict[str, Any]) -> tuple[bool, str | None]:
+    """(is the caller the operator, the caller's sub). A non-operator token
+    with no sub owns nothing, so it never matches a row whose caller is NULL."""
+    is_operator = "operator" in (claims.get("cabal_scope") or [])
+    return is_operator, claims.get("sub") or None
+
+
+def _visible(row: Conversation | None, agent_name: str, claims: dict[str, Any]) -> bool:
+    """Whether the caller may see `row`: a task on this persona that the
+    caller sent, or any task on it for the operator."""
+    if row is None or row.target_agent != agent_name:
+        return False
+    is_operator, sub = _owner_filter(claims)
+    return is_operator or (sub is not None and sub == row.caller_agent)
+
+
+async def _load_row(request: Request, task_id: str) -> Conversation | None:
+    async with open_session(request.app.state.sessionmaker) as session:
+        return (
+            await session.execute(select(Conversation).where(Conversation.task_id == task_id))
+        ).scalar_one_or_none()
+
+
+def _row_to_v1(row: Conversation, history_length: int | None = None) -> dict[str, Any]:
+    return conversation_to_v1(
+        task_id=row.task_id,
+        state=row.state,
+        result_json=row.result_json,
+        updated_at=row.updated_at,
+        history_length=history_length,
+    ).to_wire()
+
+
 async def _get_task(
     request: Request, agent_name: str, raw_token: str, request_id: Any, params: Any
 ) -> JSONResponse:
@@ -257,28 +342,188 @@ async def _get_task(
     claims = verify_caller(request, raw_token)
     if isinstance(claims, DispatchRefusal):
         return _refuse(claims, request_id)
-    is_operator = "operator" in (claims.get("cabal_scope") or [])
-
-    async with open_session(request.app.state.sessionmaker) as session:
-        row = (
-            await session.execute(select(Conversation).where(Conversation.task_id == req.id))
-        ).scalar_one_or_none()
-    visible = (
-        row is not None
-        and row.target_agent == agent_name
-        and (is_operator or claims.get("sub") == row.caller_agent)
-    )
-    if not visible or row is None:
+    row = await _load_row(request, req.id)
+    if row is None or not _visible(row, agent_name, claims):
         # One answer for missing, another caller's, and another persona's task.
         return _error(request_id, a2a_error(TASK_NOT_FOUND))
-    v1_task = conversation_to_v1(
-        task_id=row.task_id,
-        state=row.state,
-        result_json=row.result_json,
-        updated_at=row.updated_at,
-        history_length=req.history_length,
+    return _result(request_id, _row_to_v1(row, req.history_length))
+
+
+def _utc_naive(ts: datetime) -> datetime:
+    """A timestamp as the conversations table stores it: UTC wall time. An
+    aware value in another zone is converted, not just stripped."""
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(UTC)
+    return ts.replace(tzinfo=None)
+
+
+def _encode_page_token(row: Conversation) -> str:
+    raw = json.dumps([_utc_naive(row.updated_at).isoformat(), row.task_id])
+    return base64.urlsafe_b64encode(raw.encode()).decode("ascii")
+
+
+def _decode_page_token(token: str) -> tuple[datetime, str] | None:
+    """The (updated_at, task_id) cursor, or None for a token that does not
+    decode to one. A token is not signed, so a caller can write its own
+    cursor; it only moves where the page starts, inside the caller's own
+    scope."""
+    try:
+        ts, task_id = json.loads(base64.urlsafe_b64decode(token.encode("ascii")))
+        return _utc_naive(datetime.fromisoformat(ts)), str(task_id)
+    except (binascii.Error, UnicodeError, ValueError, TypeError):
+        return None
+
+
+async def _list_tasks(
+    request: Request, agent_name: str, raw_token: str, request_id: Any, params: Any
+) -> JSONResponse:
+    if not isinstance(params, dict):
+        return _params_error(request_id, "ListTasks params must be an object")
+    try:
+        req = ListTasksRequestV1.model_validate(params)
+    except ValidationError as exc:
+        return _params_error(request_id, f"invalid ListTasks params: {exc.error_count()} error(s)")
+    if _tenant_mismatch(req.tenant, agent_name):
+        return _params_error(request_id, f"tenant {req.tenant!r} does not match the path")
+    cursor = None
+    if req.page_token:
+        cursor = _decode_page_token(req.page_token)
+        if cursor is None:
+            return _params_error(request_id, "invalid pageToken")
+
+    claims = verify_caller(request, raw_token)
+    if isinstance(claims, DispatchRefusal):
+        return _refuse(claims, request_id)
+    is_operator, sub = _owner_filter(claims)
+    page_size = req.page_size or _DEFAULT_PAGE_SIZE
+
+    where = [Conversation.target_agent == agent_name]
+    if not is_operator:
+        if sub is None:
+            return _result(
+                request_id,
+                ListTasksResponseV1(tasks=[], next_page_token="", page_size=page_size, total_size=0).to_wire(),
+            )
+        where.append(Conversation.caller_agent == sub)
+    if req.status is not None and req.status != "TASK_STATE_UNSPECIFIED":
+        where.append(Conversation.state == STATE_FROM_V1[req.status])
+    if req.status_timestamp_after is not None:
+        where.append(Conversation.updated_at >= _utc_naive(req.status_timestamp_after))
+    if req.context_id:
+        # The contextId is in the stored Task; a task still in flight has no
+        # stored Task yet, so it cannot match (and carries no contextId on the
+        # wire either).
+        where.append(Conversation.result_json["contextId"].as_string() == req.context_id)
+
+    page_where = list(where)
+    if cursor is not None:
+        ts, task_id = cursor
+        page_where.append(
+            or_(
+                Conversation.updated_at < ts,
+                and_(Conversation.updated_at == ts, Conversation.task_id < task_id),
+            )
+        )
+    async with open_session(request.app.state.sessionmaker) as session:
+        total = (
+            await session.execute(select(func.count()).select_from(Conversation).where(*where))
+        ).scalar_one()
+        rows = list(
+            (
+                await session.execute(
+                    select(Conversation)
+                    .where(*page_where)
+                    .order_by(Conversation.updated_at.desc(), Conversation.task_id.desc())
+                    .limit(page_size + 1)
+                )
+            ).scalars()
+        )
+    more = len(rows) > page_size
+    rows = rows[:page_size]
+
+    tasks = []
+    for row in rows:
+        task = conversation_to_v1(
+            task_id=row.task_id,
+            state=row.state,
+            result_json=row.result_json,
+            updated_at=row.updated_at,
+            history_length=req.history_length,
+        )
+        if req.include_artifacts:
+            # Present, even when empty, once the caller asks (spec 3.1.4).
+            task.artifacts = task.artifacts or []
+        else:
+            task.artifacts = None
+        tasks.append(task)
+    response = ListTasksResponseV1(
+        tasks=tasks,
+        next_page_token=_encode_page_token(rows[-1]) if more else "",
+        page_size=page_size,
+        total_size=total,
     )
-    return _result(request_id, v1_task.to_wire())
+    return _result(request_id, response.to_wire())
+
+
+async def _runs_here(request: Request, row: Conversation) -> bool:
+    """Whether the task's dispatch runs in this process, where the
+    AbortCoordinator can reach it: a local handler, not a federated peer."""
+    router = request.app.state.dispatch_router
+    if not router.has_local(row.target_agent):
+        return False
+    async with open_session(request.app.state.sessionmaker) as session:
+        target = await bulletin_store.get_active(session, row.target_agent)
+    return target is None or target.kind != "federated"
+
+
+async def _cancel_task(
+    request: Request, agent_name: str, raw_token: str, request_id: Any, params: Any
+) -> JSONResponse:
+    if not isinstance(params, dict):
+        return _params_error(request_id, "CancelTask params must be an object")
+    try:
+        req = CancelTaskRequestV1.model_validate(params)
+    except ValidationError as exc:
+        return _params_error(request_id, f"invalid CancelTask params: {exc.error_count()} error(s)")
+    if _tenant_mismatch(req.tenant, agent_name):
+        return _params_error(request_id, f"tenant {req.tenant!r} does not match the path")
+
+    claims = verify_caller(request, raw_token)
+    if isinstance(claims, DispatchRefusal):
+        return _refuse(claims, request_id)
+    row = await _load_row(request, req.id)
+    if row is None or not _visible(row, agent_name, claims):
+        return _error(request_id, a2a_error(TASK_NOT_FOUND))
+    if row.state in _TERMINAL_STATES:
+        return _error(
+            request_id, a2a_error(TASK_NOT_CANCELABLE, message=f"the task is already {row.state}")
+        )
+    if not await _runs_here(request, row):
+        # TaskNotCancelableError stretches "not in a cancelable state" to
+        # "not cancelable from here"; #261's baseline is to record it as a
+        # deliberate deviation.
+        return _error(
+            request_id,
+            a2a_error(TASK_NOT_CANCELABLE, message="the task runs outside this process; cancel it there"),
+        )
+    coordinator = request.app.state.dispatch_router.abort_coordinator
+    signalled = coordinator.abort(row.task_id, reason="canceled by the caller (CancelTask)")
+    if signalled == 0 and not coordinator.is_aborted(row.task_id):
+        # Not in flight here: it ended between the read and the abort, or its
+        # dispatch did not survive a restart.
+        return _error(
+            request_id, a2a_error(TASK_NOT_CANCELABLE, message="the task is not running")
+        )
+
+    deadline = asyncio.get_running_loop().time() + CANCEL_WAIT_SECONDS
+    while True:
+        row = await _load_row(request, req.id)
+        if row is None:  # pragma: no cover - rows are not deleted
+            return _error(request_id, a2a_error(TASK_NOT_FOUND))
+        if row.state in _TERMINAL_STATES or asyncio.get_running_loop().time() >= deadline:
+            break
+        await asyncio.sleep(_CANCEL_POLL_SECONDS)
+    return _result(request_id, _row_to_v1(row))
 
 
 def _now() -> datetime:
