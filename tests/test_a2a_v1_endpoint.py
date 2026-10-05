@@ -172,7 +172,7 @@ async def test_send_message_to_an_unknown_agent_is_404(app: FastAPI, client: Asy
 
 
 @pytest.mark.asyncio
-async def test_a_token_without_dispatch_scope_is_403(app: FastAPI, client: AsyncClient) -> None:
+async def test_a_token_without_operator_or_colleague_scope_is_403(app: FastAPI, client: AsyncClient) -> None:
     token = await _colleague_token(app, "agent:narrow", scope=["dispatch"])
     r = await _call(client, token, "SendMessage", {"message": _message()})
     assert r.status_code == 403
