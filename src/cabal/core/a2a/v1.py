@@ -54,6 +54,7 @@ STATE_TO_V1: dict[str, TaskStateV1] = {
     "rejected": "TASK_STATE_REJECTED",
     "auth-required": "TASK_STATE_AUTH_REQUIRED",
 }
+STATE_FROM_V1: dict[TaskStateV1, str] = {v: k for k, v in STATE_TO_V1.items()}
 _ROLE_TO_V1: dict[str, RoleV1] = {"user": "ROLE_USER", "agent": "ROLE_AGENT"}
 _ROLE_FROM_V1 = {v: k for k, v in _ROLE_TO_V1.items()}
 
@@ -194,6 +195,32 @@ class GetTaskRequestV1(_V1):
     tenant: str | None = None
     id: str
     history_length: int | None = Field(default=None, ge=0)
+
+
+class ListTasksRequestV1(_V1):
+    tenant: str | None = None
+    context_id: str | None = None
+    # TASK_STATE_UNSPECIFIED is the proto default: no status filter.
+    status: TaskStateV1 | Literal["TASK_STATE_UNSPECIFIED"] | None = None
+    page_size: int | None = Field(default=None, ge=1, le=100)
+    page_token: str | None = None
+    history_length: int | None = Field(default=None, ge=0)
+    status_timestamp_after: datetime | None = None
+    include_artifacts: bool | None = None
+
+
+class ListTasksResponseV1(_V1):
+    tasks: list[TaskV1]
+    # "" on the final page; always present (spec 3.1.4).
+    next_page_token: str
+    page_size: int
+    total_size: int
+
+
+class CancelTaskRequestV1(_V1):
+    tenant: str | None = None
+    id: str
+    metadata: dict[str, Any] | None = None
 
 
 class SendMessageResponseV1(_V1):
