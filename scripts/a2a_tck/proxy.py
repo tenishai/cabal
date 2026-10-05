@@ -44,7 +44,7 @@ async def forward(request: Request) -> Response:
 
 
 app = Starlette(
-    routes=[Route("/{path:path}", forward, methods=["GET", "POST", "PUT", "DELETE", "PATCH"])]
+    routes=[Route("/{path:path}", forward, methods=["GET", "HEAD", "OPTIONS", "POST", "PUT", "DELETE", "PATCH"])]
 )
 
 if __name__ == "__main__":

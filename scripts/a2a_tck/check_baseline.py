@@ -4,7 +4,8 @@ Reads the kit's report (the path to its `reports/compatibility.json` is the one
 argument) and `baseline.json`, which sits next to this script: a map from
 requirement id to the reason cabal is expected to fail it.
 Exits 1 when a requirement fails that the baseline does not list (a
-regression, or a new gap to fix or record). A listed requirement that now
+regression, or a new gap to fix or record), or when a baseline entry has no
+reason. A listed requirement that now
 passes is reported, so the baseline can shrink, but does not fail the job.
 """
 
@@ -15,6 +16,11 @@ import sys
 from pathlib import Path
 
 BASELINE = Path(__file__).with_name("baseline.json")
+
+
+def unexplained(baseline: dict[str, str]) -> list[str]:
+    """Baseline entries without a reason: each one must say why."""
+    return sorted(rid for rid, reason in baseline.items() if not str(reason).strip())
 
 
 def compare(report: dict, baseline: dict[str, str]) -> tuple[list[str], list[str]]:
@@ -32,6 +38,9 @@ def main(argv: list[str]) -> int:
         return 2
     report = json.loads(Path(argv[1]).read_text())
     baseline = json.loads(BASELINE.read_text())
+    if missing := unexplained(baseline):
+        print(f"baseline entries without a reason: {', '.join(missing)}")
+        return 1
     unexpected, fixed = compare(report, baseline)
     per = report.get("per_requirement", {})
     summary = report.get("summary", {})

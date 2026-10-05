@@ -95,3 +95,13 @@ def test_baseline_compare() -> None:
     unexpected, fixed = _check_baseline().compare(report, {"A": "known", "C": "was failing"})
     assert unexpected == ["B"]
     assert fixed == ["C"]
+
+
+def test_every_baseline_entry_needs_a_reason() -> None:
+    module = _check_baseline()
+    assert module.unexplained({"A": "why", "B": "", "C": "  "}) == ["B", "C"]
+    # The committed baseline itself.
+    import json
+
+    baseline = json.loads(module.BASELINE.read_text())
+    assert module.unexplained(baseline) == []
