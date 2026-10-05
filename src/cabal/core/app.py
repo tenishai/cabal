@@ -30,6 +30,7 @@ from sqlalchemy import select
 
 from cabal import __version__
 from cabal.agents.echo import EchoAgent
+from cabal.agents.tck import TCK_ENV, TckAgent
 from cabal.config.home import resolve_identity_path
 from cabal.config.identity import (
     CabalConfig,
@@ -185,26 +186,44 @@ def _run_migrations(db_url: str) -> None:
     command.upgrade(cfg, "head")
 
 
-async def _ensure_echo_agent(sessionmaker, *, active_kid: str) -> None:
-    """Idempotently seed the echo agent row in the bulletin board."""
+async def _ensure_builtin_agent(
+    sessionmaker, *, name: str, skill_name: str, description: str, active_kid: str
+) -> None:
+    """Idempotently seed a built-in local agent's row in the bulletin board."""
     async with open_session(sessionmaker) as session:
-        result = await session.execute(select(Persona).where(Persona.name == "echo"))
+        result = await session.execute(select(Persona).where(Persona.name == name))
         if result.scalar_one_or_none() is None:
-            session.add(Persona(name="echo", config_json={"builtin": True}))
+            session.add(Persona(name=name, config_json={"builtin": True}))
             await session.flush()
-        existing = await bulletin_store.get_active(session, "echo")
+        existing = await bulletin_store.get_active(session, name)
         if existing is None:
+            skills = [{"id": name, "name": skill_name}]
+            card: dict[str, Any] = {"name": name, "skills": skills}
+            if description:
+                card["description"] = description
             await bulletin_store.register_agent(
                 session,
-                name="echo",
-                persona_name="echo",
+                name=name,
+                persona_name=name,
                 role="builtin",
-                endpoint="local://echo",
-                capabilities={"skills": [{"id": "echo", "name": "Echo"}]},
+                endpoint=f"local://{name}",
+                capabilities={"skills": skills},
                 safety_tier="strict",
-                agent_card_json={"name": "echo", "skills": [{"id": "echo", "name": "Echo"}]},
+                agent_card_json=card,
                 agent_card_kid=active_kid,
             )
+
+
+async def _ensure_echo_agent(sessionmaker, *, active_kid: str) -> None:
+    """Idempotently seed the echo agent row in the bulletin board."""
+    await _ensure_builtin_agent(
+        sessionmaker, name="echo", skill_name="Echo", description="", active_kid=active_kid
+    )
+
+
+def _tck_persona_enabled() -> bool:
+    """The A2A compatibility kit's persona (#261), for the kit's CI job only."""
+    return os.environ.get(TCK_ENV) == "1"
 
 
 def _default_acompletion() -> Callable[..., Any]:
@@ -488,6 +507,14 @@ def create_app(
         _app.state.jwks_provider = jwks_provider
 
         await _ensure_echo_agent(sessionmaker, active_kid=kid)
+        if _tck_persona_enabled():
+            await _ensure_builtin_agent(
+                sessionmaker,
+                name="tck",
+                skill_name="A2A TCK scenarios",
+                description="Acts out the A2A compatibility kit's scenarios (test only).",
+                active_kid=kid,
+            )
 
         # Sync personas declared in identity.toml (if the file exists).
         identity: IdentityConfig | None = None
@@ -604,6 +631,8 @@ def create_app(
             input_guardrails=router_guardrails,
         )
         dispatch_router.register_local(EchoAgent())
+        if _tck_persona_enabled():
+            dispatch_router.register_local(TckAgent())
 
         # Memory store + session tracker (techne if configured, otherwise no-op).
         memory_store: MemoryStore = NoOpMemoryStore()

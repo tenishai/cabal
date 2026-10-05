@@ -1,0 +1,97 @@
+# The A2A compatibility kit (a2aproject/a2a-tck) against cabal's v1.0 interface (#261).
+#
+# The kit is third-party code, so it runs on GitHub-hosted runners only, never
+# on the self-hosted pool, at a pinned commit, with a read-only token.
+# cabal runs with its test-only `tck` persona, which acts out the kit's
+# scenarios. A small proxy adds the bearer token the kit cannot send (#271).
+# The job fails on any requirement the kit fails that
+# scripts/a2a_tck/baseline.json does not list with a reason.
+name: a2a-tck
+
+on:
+  pull_request:
+    paths:
+      - "src/cabal/core/a2a/**"
+      - "src/cabal/core/routes/a2a_v1.py"
+      - "src/cabal/core/routes/well_known.py"
+      - "src/cabal/core/routes/_dispatch_auth.py"
+      - "src/cabal/core/broker/**"
+      - "src/cabal/agents/tck.py"
+      - "scripts/a2a_tck/**"
+      - ".github/workflows/a2a-tck.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TCK_REF: 263b9cfaf16a554bdfb166a7ba5b67716e946349  # a2a-tck, pins A2A v1.0 at 1736957
+
+jobs:
+  tck:
+    # Same-repository pull requests only: no third-party code runs for a fork's PR.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CABAL_DB_URL: sqlite+aiosqlite:///${{ github.workspace }}/tck-state/cabal.db
+      CABAL_OPERATOR_ID: tck-ci
+      CABAL_TCK_PERSONA: "1"
+      CABAL_PUBLIC_URL: http://127.0.0.1:8080
+      TCK_UPSTREAM: http://127.0.0.1:7400
+      TCK_PROXY_PORT: "8080"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install cabal
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -e .
+
+      - name: Start cabal with the tck persona
+        run: |
+          mkdir -p tck-state
+          echo "CABAL_MASTER_KEY=$(.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" >> "$GITHUB_ENV"
+          export CABAL_MASTER_KEY="$(grep CABAL_MASTER_KEY "$GITHUB_ENV" | tail -1 | cut -d= -f2-)"
+          (cd tck-state && nohup ../.venv/bin/cbl daemon up --port 7400 > ../cabal.log 2>&1 &)
+          for i in $(seq 1 60); do curl -fs http://127.0.0.1:7400/healthz && break; sleep 1; done
+          curl -fs http://127.0.0.1:7400/healthz
+
+      - name: Start the token proxy
+        run: |
+          export TCK_TOKEN="$(.venv/bin/python scripts/a2a_tck/mint_token.py)"
+          nohup .venv/bin/python scripts/a2a_tck/proxy.py > proxy.log 2>&1 &
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8080/agents/tck/.well-known/agent-card.json > /dev/null && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8080/agents/tck/.well-known/agent-card.json
+
+      - name: Check out the kit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: a2aproject/a2a-tck
+          ref: ${{ env.TCK_REF }}
+          path: a2a-tck
+          persist-credentials: false
+
+      - name: Run the kit
+        run: |
+          python -m venv a2a-tck/.venv
+          a2a-tck/.venv/bin/pip install -q -e a2a-tck
+          cd a2a-tck
+          .venv/bin/python run_tck.py --sut-host http://127.0.0.1:8080/agents/tck --transport jsonrpc || true
+          test -f reports/compatibility.json
+
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: a2a-tck-reports
+          path: |
+            a2a-tck/reports/
+            cabal.log
+            proxy.log
+
+      - name: Compare with the baseline
+        run: .venv/bin/python scripts/a2a_tck/check_baseline.py a2a-tck/reports/compatibility.json
