@@ -282,5 +282,5 @@ async def _get_task(
 
 
 def _now() -> datetime:
-    """The status timestamp for a finished SendMessage task."""
+    """The status timestamp for the task a SendMessage returns."""
     return datetime.now(UTC)
