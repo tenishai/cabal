@@ -233,8 +233,9 @@ async def v1_agent_card(
 
 
 # A card changes when its persona is re-registered, the signing key rotates,
-# the public URL changes, or cabal's card builder does; rarely, so clients may
-# cache it briefly and revalidate by ETag (spec 8.6; CARD-CACHE-001, -002).
+# the public URL changes, cabal.front_door names another persona (the root
+# card), or cabal's card builder changes; rarely, so clients may cache it
+# briefly and revalidate by ETag (spec 8.6; CARD-CACHE-001, -002).
 CARD_MAX_AGE_SECONDS = 300
 
 
