@@ -91,7 +91,16 @@ from cabal.core.observability.activity_logger import ActivityLogger
 from cabal.core.observability.event_bus import EventBus
 from cabal.core.observability.langfuse_client import LangfuseTraceClient
 from cabal.core.observability.trace_exporter import TraceExporter
-from cabal.core.routes import a2a_jsonrpc, admin, auth, directory, healthz, tasks, well_known
+from cabal.core.routes import (
+    a2a_jsonrpc,
+    a2a_v1,
+    admin,
+    auth,
+    directory,
+    healthz,
+    tasks,
+    well_known,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -744,5 +753,6 @@ def create_app(
     app.include_router(admin.router)
     app.include_router(directory.router)
     app.include_router(a2a_jsonrpc.router)
+    app.include_router(a2a_v1.router)
 
     return app
