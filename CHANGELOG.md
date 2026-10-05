@@ -8,6 +8,11 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **How to admit an outside A2A agent** (issue tenishai/cabal#271). `docs/outside-agents.md`
+  is the operator procedure #271 decided: one `cbl token mint-service` token per persona the
+  outsider may call (`--sub agent:ext-<name> --scope dispatch --aud <agent>`, the persona's bulletin name), handed over with
+  the persona's card URL, and revoked per subject. `tests/test_a2a_v1_outside_agent.py`
+  checks that path end to end.
 - **A2A v1.0 cards declare bearer-JWT auth** (issue tenishai/cabal#271, epic tenishai/cabal#272).
   Every persona card, and so the front-door card, declares one security scheme, `bearer`
   (`httpAuthSecurityScheme`, `scheme: "Bearer"`, `bearerFormat: "JWT"`), and a security
