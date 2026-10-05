@@ -8,6 +8,13 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **A2A v1.0 content types on SendMessage** (issue tenishai/cabal#274, epic tenishai/cabal#272).
+  A message part whose media type is not in the persona card's `defaultInputModes`
+  (`text/plain`, `application/json`) gets `ContentTypeNotSupportedError` (`-32005`). A part's
+  media type is its `mediaType` when set, compared without parameters and case, and otherwise
+  the type its kind implies. `historyLength` on SendMessage and GetTask, the issue's other half,
+  shipped with tenishai/cabal#267 and now has tests for an omitted value, 0, and values smaller
+  and larger than the history.
 - **A2A v1.0 agent cards for each persona** (issue tenishai/cabal#270, epic tenishai/cabal#272).
   `GET /agents/{name}/.well-known/agent-card.json` serves the agent's v1.0 AgentCard with
   one embedded signature: `typ: JOSE`, RS256, by cabal's active signing key, over the card
