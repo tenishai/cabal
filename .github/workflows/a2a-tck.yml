@@ -54,8 +54,11 @@ jobs:
       - name: Start cabal with the tck persona
         run: |
           mkdir -p tck-state
-          echo "CABAL_MASTER_KEY=$(.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" >> "$GITHUB_ENV"
-          export CABAL_MASTER_KEY="$(grep CABAL_MASTER_KEY "$GITHUB_ENV" | tail -1 | cut -d= -f2-)"
+          # A throwaway key for this run's database, masked in the logs.
+          key="$(.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+          echo "::add-mask::$key"
+          echo "CABAL_MASTER_KEY=$key" >> "$GITHUB_ENV"
+          export CABAL_MASTER_KEY="$key"
           (cd tck-state && nohup ../.venv/bin/cbl daemon up --port 7400 > ../cabal.log 2>&1 &)
           for i in $(seq 1 60); do curl -fs http://127.0.0.1:7400/healthz && break; sleep 1; done
           curl -fs http://127.0.0.1:7400/healthz

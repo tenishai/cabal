@@ -422,3 +422,38 @@ async def test_cancel_task_malformed_params(app: FastAPI, client: AsyncClient, p
 async def test_declined_operations(app: FastAPI, client: AsyncClient, method, code) -> None:
     alice = await _token(app, "agent:alice")
     assert _code(await _call(client, alice, method, {})) == code
+
+
+@pytest.mark.asyncio
+async def test_cancel_a_paused_task(app: FastAPI, client: AsyncClient) -> None:
+    """CORE-CANCEL-001: a task waiting on its caller (input-required) has
+    nothing running, and is canceled directly; its conversation is kept."""
+    async with app.state.sessionmaker() as s:
+        echo = await bulletin_store.get_active(s, "echo")
+        assert echo is not None
+        paused = Task(
+            id="t-paused",
+            contextId="ctx-p",
+            status=TaskStatus(
+                state="input-required",
+                message=Message(role="agent", parts=[TextPart(text="which one?")]),
+            ),
+            history=[Message(role="user", parts=[TextPart(text="do it")])],
+        )
+        s.add(
+            Conversation(
+                task_id="t-paused",
+                target_agent="echo",
+                target_generation=echo.generation,
+                caller_agent="agent:alice",
+                state="input-required",
+                result_json=paused.model_dump(by_alias=True, exclude_none=True),
+            )
+        )
+        await s.commit()
+    alice = await _token(app, "agent:alice")
+    canceled = _ok(await _call(client, alice, "CancelTask", {"id": "t-paused"}))
+    assert canceled["status"]["state"] == "TASK_STATE_CANCELED"
+    assert canceled["contextId"] == "ctx-p"
+    assert [m["parts"] for m in canceled["history"]] == [[{"text": "do it"}]]
+    assert _code(await _call(client, alice, "CancelTask", {"id": "t-paused"})) == -32002
