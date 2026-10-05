@@ -11,7 +11,8 @@ which the kit's CI job sets. A real deployment never has it.
 
 What it cannot act out, and why (each is in the kit baseline):
 - `tck-message-response` asks for a direct Message instead of a Task; a
-  persona returns a Task, so it completes with the same text instead.
+  persona returns a Task, so it completes a task whose reply is the text that
+  Message would have carried, "Direct message response".
 """
 
 from __future__ import annotations
