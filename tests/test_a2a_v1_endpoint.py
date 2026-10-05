@@ -272,7 +272,7 @@ async def test_streaming_methods_are_unsupported(app: FastAPI, client: AsyncClie
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["ListTasks", "CancelTask", "message/send"])
+@pytest.mark.parametrize("method", ["message/send", "tasks/get", "NoSuchMethod"])
 async def test_other_methods_are_not_found(app: FastAPI, client: AsyncClient, method) -> None:
     token = await _bootstrap_token(app, client)
     r = await _call(client, token, method, {})
