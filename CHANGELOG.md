@@ -8,6 +8,15 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **The A2A compatibility kit in CI** (issue tenishai/cabal#261, epic tenishai/cabal#272). A new
+  workflow, `a2a-tck`, runs a2aproject/a2a-tck at a pinned commit on a GitHub-hosted runner
+  against a test-only `tck` persona, which acts out the kit's scenarios and exists only when
+  `$CABAL_TCK_PERSONA` is `1`. A proxy adds the token the kit cannot send (tenishai/cabal#271).
+  The job fails on any requirement the kit fails that `scripts/a2a_tck/baseline.json` does not
+  list with a reason. Fixes the first run found: v1.0 agent cards now carry `Cache-Control`
+  and `ETag`; CancelTask cancels a task paused in `input-required` or `auth-required`; and
+  v1.0 task metadata no longer carries cabal's internal `cabal_*` keys, with the reason keys
+  renamed `cabalReasonCode`, `cabalReasonMessage` and `cabalEscalatedFrom`.
 - **A2A v1.0 returnImmediately** (issue tenishai/cabal#277, epic tenishai/cabal#272).
   A SendMessage that starts a new task with `configuration.returnImmediately: true` answers at once with the task in
   `TASK_STATE_SUBMITTED`; the dispatch runs detached and the client polls GetTask, which shows

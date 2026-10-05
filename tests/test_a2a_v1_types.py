@@ -46,6 +46,27 @@ def _task(**kw) -> Task:
 # ---- enums and names -------------------------------------------------------
 
 
+def test_internal_metadata_is_not_on_the_wire() -> None:
+    """DM-SERIAL-001: v1.0 field names are camelCase. cabal's reason keys are
+    renamed; its other bookkeeping keys are left out; a client's own pass."""
+    task = _task(
+        status=TaskStatus(state="failed"),
+        metadata={
+            "cabal_reason_code": 702,
+            "cabal_reason_message": "budget",
+            "cabal_trace_id": "abc",
+            "cabal_delegation_budget": {"used": 3},
+            "clientKey": "kept",
+        },
+    )
+    wire = task_to_v1(task).to_wire()
+    assert wire["metadata"] == {
+        "cabalReasonCode": 702,
+        "cabalReasonMessage": "budget",
+        "clientKey": "kept",
+    }
+
+
 def test_every_internal_state_has_a_v1_name() -> None:
     internal = set(Task.model_fields["status"].annotation.model_fields["state"].annotation.__args__)
     assert set(STATE_TO_V1) == internal
@@ -75,7 +96,7 @@ def test_reason_code_metadata_travels_with_the_mapped_state() -> None:
     task = _task(status=TaskStatus(state="input-required"), metadata={"cabal_reason_code": 700})
     wire = task_to_v1(task).to_wire()
     assert wire["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
-    assert wire["metadata"] == {"cabal_reason_code": 700}
+    assert wire["metadata"] == {"cabalReasonCode": 700}
 
 
 # ---- timestamps ------------------------------------------------------------
