@@ -232,9 +232,9 @@ async def v1_agent_card(
     return card_response(await signed_agent_card(request, agent_name))
 
 
-# Cards change only when a persona is re-registered or the signing key
-# rotates, so clients may cache them briefly and revalidate by ETag (spec 8.6;
-# CARD-CACHE-001, -002).
+# A card changes when its persona is re-registered, the signing key rotates,
+# the public URL changes, or cabal's card builder does; rarely, so clients may
+# cache it briefly and revalidate by ETag (spec 8.6; CARD-CACHE-001, -002).
 CARD_MAX_AGE_SECONDS = 300
 
 
