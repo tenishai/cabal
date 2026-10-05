@@ -71,6 +71,32 @@ class AgentSkillV1(_V1):
     output_modes: list[str] | None = None
 
 
+class HTTPAuthSecuritySchemeV1(_V1):
+    description: str | None = None
+    scheme: str
+    bearer_format: str | None = None
+
+
+class SecuritySchemeV1(_V1):
+    """A proto oneof: exactly one scheme is set. cabal declares only HTTP
+    auth; the other kinds are kept as raw objects for reading foreign cards."""
+
+    api_key_security_scheme: dict[str, Any] | None = None
+    http_auth_security_scheme: HTTPAuthSecuritySchemeV1 | None = None
+    oauth2_security_scheme: dict[str, Any] | None = None
+    open_id_connect_security_scheme: dict[str, Any] | None = None
+    mtls_security_scheme: dict[str, Any] | None = None
+
+
+class StringListV1(_V1):
+    values: list[str] | None = Field(default=None, alias="list")
+
+
+class SecurityRequirementV1(_V1):
+    # Scheme name -> required scopes (empty for a bearer token).
+    schemes: dict[str, StringListV1] | None = None
+
+
 class AgentCardSignatureV1(_V1):
     protected: str
     signature: str
@@ -89,6 +115,8 @@ class AgentCardV1(_V1):
     version: str
     documentation_url: str | None = None
     capabilities: AgentCapabilitiesV1
+    security_schemes: dict[str, SecuritySchemeV1] | None = None
+    security_requirements: list[SecurityRequirementV1] | None = None
     default_input_modes: list[str] = Field(min_length=1)
     default_output_modes: list[str] = Field(min_length=1)
     skills: list[AgentSkillV1]
@@ -100,7 +128,8 @@ class AgentCardV1(_V1):
 
 # R: REQUIRED, always kept. O: `optional` (or a message field, which always
 # has presence), kept when present. P: plain proto3 field, removed at its
-# default. A tuple names the message type of the field's value.
+# default. A tuple names the message type of the field's value; "map:T" is a
+# map whose values are T messages.
 _Kind = Literal["R", "O", "P"]
 _FieldSpec = _Kind | tuple[_Kind, str]
 _FIELDS: dict[str, dict[str, _FieldSpec]] = {
@@ -112,8 +141,8 @@ _FIELDS: dict[str, dict[str, _FieldSpec]] = {
         "version": "R",
         "documentationUrl": "O",
         "capabilities": ("R", "AgentCapabilities"),
-        "securitySchemes": "P",
-        "securityRequirements": "P",
+        "securitySchemes": ("P", "map:SecurityScheme"),
+        "securityRequirements": ("P", "SecurityRequirement"),
         "defaultInputModes": "R",
         "defaultOutputModes": "R",
         "skills": ("R", "AgentSkill"),
@@ -146,8 +175,18 @@ _FIELDS: dict[str, dict[str, _FieldSpec]] = {
         "examples": "P",
         "inputModes": "P",
         "outputModes": "P",
-        "securityRequirements": "P",
+        "securityRequirements": ("P", "SecurityRequirement"),
     },
+    "SecurityScheme": {
+        "apiKeySecurityScheme": "O",
+        "httpAuthSecurityScheme": ("O", "HTTPAuthSecurityScheme"),
+        "oauth2SecurityScheme": "O",
+        "openIdConnectSecurityScheme": "O",
+        "mtlsSecurityScheme": "O",
+    },
+    "HTTPAuthSecurityScheme": {"description": "P", "scheme": "R", "bearerFormat": "P"},
+    "SecurityRequirement": {"schemes": ("P", "map:StringList")},
+    "StringList": {"list": "P"},
 }
 
 
@@ -172,7 +211,11 @@ def _strip(value: Any, message: str) -> Any:
             continue  # JSON null is absence in ProtoJSON
         if kind == "P" and _is_default(item):
             continue
-        if child is not None:
+        if child is not None and child.startswith("map:"):
+            if isinstance(item, dict):
+                value_type = child[len("map:") :]
+                item = {k: _strip(v, value_type) if isinstance(v, dict) else v for k, v in item.items()}
+        elif child is not None:
             if isinstance(item, list):
                 item = [_strip(i, child) if isinstance(i, dict) else i for i in item]
             elif isinstance(item, dict):
@@ -335,6 +378,14 @@ def verify_card(card: dict[str, Any], key_set: KeySet) -> str:
 
 # SendMessage takes text and data parts (`message_from_v1`); a reply carries
 # text, and an artifact that is not in the A2A shape travels as a data part.
+# The v1.0 methods that act on tasks (SendMessage, GetTask, ListTasks,
+# CancelTask) verify the bearer token as a JWT this cabal issued. Outside
+# agents get one from the operator (#271).
+BEARER_SCHEME = "bearer"
+_BEARER_DESCRIPTION = (
+    "A JWT issued by this cabal. Outside agents get one from the cabal's operator."
+)
+
 INPUT_MODES = ("text/plain", "application/json")
 OUTPUT_MODES = ("text/plain", "application/json")
 
@@ -360,7 +411,7 @@ def persona_card(
 
     The one interface is the agent's own v1.0 endpoint under `base_url`. The
     capabilities are all off, matching the operations the endpoint declines
-    (#267, #268). A v1.0 skill needs a description and at least one tag; a
+    (#267, #268). The card requires a cabal-issued bearer JWT (#271). A v1.0 skill needs a description and at least one tag; a
     legacy skill without them takes the card's description (or its name) and
     the persona's name.
     """
@@ -377,6 +428,14 @@ def persona_card(
             )
         )
     return AgentCardV1(
+        security_schemes={
+            BEARER_SCHEME: SecuritySchemeV1(
+                http_auth_security_scheme=HTTPAuthSecuritySchemeV1(
+                    description=_BEARER_DESCRIPTION, scheme="Bearer", bearer_format="JWT"
+                )
+            )
+        },
+        security_requirements=[SecurityRequirementV1(schemes={BEARER_SCHEME: StringListV1()})],
         name=name,
         description=description,
         supported_interfaces=[
