@@ -8,6 +8,15 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **A2A v1.0 version gate** (issue tenishai/cabal#265, epic tenishai/cabal#272). A new
+  per-persona path, `POST /agents/{name}/a2a`, accepts `A2A-Version: 1.0` (header or
+  `A2A-Version` query parameter; a patch number is ignored) and answers any other version,
+  including none, with `VersionNotSupportedError` (`-32009`) once the body parses as a JSON-RPC request. Behind the gate it answers
+  every method with `-32601` until tenishai/cabal#267 adds `SendMessage` and `GetTask`. The
+  legacy routes still accept requests with no `A2A-Version`, which is every current client;
+  a well-formed request with a non-empty `A2A-Version` now gets `-32009` on `/agents/{name}`
+  and `/agents/{name}/stream`, and HTTP 400 on `/a2a/tasks`. A malformed body still gets its
+  parse or validation error first.
 - **A2A v1.0 wire types** (issue tenishai/cabal#266, epic tenishai/cabal#272).
   `cabal.core.a2a.v1` holds the v1.0 data model, the SendMessage and GetTask request models
   and the SendMessage response, serialized per v1.0 (camelCase, ProtoJSON enums such as

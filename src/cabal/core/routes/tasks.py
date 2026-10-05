@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from cabal.core import dispatch_pairs
 from cabal.core.a2a.types import Task
+from cabal.core.a2a.version import requested_version
 from cabal.core.auth.jwt import JWTError, extract_bearer, mint, verify
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.auth.revocations import refusal
@@ -176,6 +177,13 @@ async def submit_task(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> Task:
+    # cabal's own routing envelope, not an A2A interface: a client that asks
+    # for an A2A version is refused rather than silently served (#265).
+    if requested_version(request) is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="this route serves no A2A version; send no A2A-Version header",
+        )
     raw_token = extract_bearer(authorization)
     router_ = request.app.state.dispatch_router
 
