@@ -282,9 +282,8 @@ class DispatchPair(Base):
     """Flat caller -> target allow pair for agent-to-agent dispatch.
 
     Room-owned policy (kobo decides who may call whom); cabal just stores
-    the pairs and enforces them at BOTH dispatch re-mint steps
-    (`routes/tasks.py` and `routes/a2a_jsonrpc.py`, each
-    `_resolve_dispatch_token`). An EMPTY table means
+    the pairs and enforces them in the one dispatch re-mint policy
+    (`routes/_dispatch_auth.dispatch_token`). An EMPTY table means
     every dispatch is allowed -- see CABAL-DECISIONS.md D-018.
     """
 

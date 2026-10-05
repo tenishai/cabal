@@ -107,6 +107,13 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Fixed
 
+- **Dispatch to a federated target through JSON-RPC or the TUI** (tenishai/cabal#234). The
+  legacy JSON-RPC route, the A2A v1.0 route and the TUI's in-process client minted a federated
+  target's dispatch token for its bare name, and the router refused that token. They now mint
+  the target's `federation_audience`, as `POST /a2a/tasks` always did. The REST route now
+  calls the same policy as the JSON-RPC routes (`routes/_dispatch_auth.py`), so the network
+  routes share one copy of it; the REST route's answers are unchanged. A federated target with no `federation_audience` is
+  refused as a server-side error on every network route, and with a `BrokerError` in the TUI.
 - **cabal no longer claims A2A v1.0** (tenishai/cabal#263, refs tenishai/cabal#261). Its
   code and docs said "A2A v1.0". The A2A JSON-RPC route each agent serves uses A2A's
   pre-1.0 method names (`message/send`, `tasks/get`, as in A2A 0.3.0), not v1.0's

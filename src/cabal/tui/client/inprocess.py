@@ -20,6 +20,7 @@ from cabal.core.auth.keys import StoredKey, load_active_signing_key
 from cabal.core.auth.revocations import refusal
 from cabal.core.broker.router import DispatchError, GuardrailBlocked
 from cabal.core.db import open_session
+from cabal.core.routes._dispatch_auth import dispatch_audience
 from cabal.tui.client.base import BrokerError
 
 
@@ -113,9 +114,11 @@ class InProcessBrokerClient:
     async def send_message(self, persona: str, text: str) -> AsyncIterator[str]:  # type: ignore[override]
         """Dispatch ``text`` to ``persona``; yield response text deltas.
 
-        Replicates the ``_resolve_dispatch_token`` logic from
-        ``cabal.core.routes.a2a_jsonrpc``: verifies the operator token then
-        mints a narrow dispatch token scoped to the target persona.
+        Verifies the operator token. A token already aimed at the target
+        persona's audience (``_dispatch_auth.dispatch_audience``) is used as
+        it is; otherwise the token needs operator scope, where the network
+        doors also accept colleague scope, and a narrow dispatch token is
+        minted for that audience.
 
         Raises BrokerError on auth or dispatch failures before the first delta.
         """
@@ -134,8 +137,14 @@ class InProcessBrokerClient:
         if why is not None:
             raise BrokerError(f"operator token invalid: {why}")
 
-        # Step 2: resolve dispatch token (mirror _resolve_dispatch_token).
-        if claims.get("aud") == persona:
+        # Step 2: resolve the dispatch token. Only operator scope may re-mint
+        # here, but the audience is the doors' own (cabal#234): a federated persona's
+        # token carries its sovereign peer's service id, not the bare name.
+        async with open_session(self._app.state.sessionmaker) as session:
+            audience = await dispatch_audience(session, persona)
+        if audience is None:
+            raise BrokerError(f"federated target {persona!r} has no federation_audience")
+        if claims.get("aud") == audience:
             # Already a correctly-scoped dispatch token.
             dispatch_token = self._operator_token
         else:
@@ -158,7 +167,7 @@ class InProcessBrokerClient:
                 dispatch_token = mint(
                     signing_key=self._signing_key,
                     sub=sub,
-                    aud=persona,
+                    aud=audience,
                     persona=claims.get("cabal_persona"),
                     scope=["dispatch"],
                 )

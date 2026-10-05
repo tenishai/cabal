@@ -24,18 +24,22 @@ The unit suite needs no siblings. Tests that exercise techne or liminal want tho
 checked out adjacent (`pip install -e ../techne`), and without them you get import errors
 that look like real failures.
 
-## Two doors, not one — the trap most likely to bite
+## Dispatch-token policy lives in one place
 
-`_resolve_dispatch_token` is implemented **twice**:
+`src/cabal/core/routes/_dispatch_auth.py` decides who may dispatch. `dispatch_token`
+applies the scope, `sub` and `dispatch_pairs` rules (D-018 in `CABAL-DECISIONS.md`), and
+`dispatch_audience` gives a federated target's token its `federation_audience`. The REST
+route (`routes/tasks.py`), the legacy JSON-RPC route (`routes/a2a_jsonrpc.py`) and the
+A2A v1.0 route (`routes/a2a_v1.py`) all call it, and only translate a refusal into their
+own wire form. Change the policy there, not in a route: the doors used to carry their own
+copies, and those drifted (#234).
 
-- `src/cabal/core/routes/tasks.py:59`
-- `src/cabal/core/routes/a2a_jsonrpc.py:62` (whose own comment says it mirrors the other)
+The TUI's in-process client (`tui/client/inprocess.py`) keeps its own check: a token
+already aimed at the persona's audience (from `dispatch_audience`: a federated persona's
+`federation_audience`, otherwise its name) is used as it is, and only operator scope may
+re-mint.
 
-Any change to dispatch-token policy must touch both, or the JSON-RPC door silently keeps
-the old behaviour and reopens whatever the REST door just closed. `routes/directory.py:5`
-points at the same pair. This is recorded as D-018 in `CABAL-DECISIONS.md`.
-
-Related and open: `_resolve_dispatch_token` re-mints with a hard-coded `scope=["dispatch"]`,
+Related and open: the re-mint uses a hard-coded `scope=["dispatch"]`,
 so the caller's `operator` scope does not survive into the router (#164). A router-level
 guardrail cannot ask "is this the operator?" the way the rest of the codebase does.
 
