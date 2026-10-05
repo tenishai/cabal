@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
@@ -45,10 +46,10 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 
 from cabal.config.identity import CabalConfig, resolve_public_url
-from cabal.core.a2a.types import Message, Task, TaskStatus
+from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.a2a.v1 import (
     STATE_FROM_V1,
     CancelTaskRequestV1,
@@ -110,6 +111,8 @@ _PUSH_CONFIG_METHODS = frozenset(
 # operator can still resume a canceled task through /admin when its persona is
 # local and left a checkpoint.)
 _TERMINAL_STATES = frozenset({"completed", "failed", "canceled", "rejected"})
+# States in which a task waits on its caller with nothing running.
+_PAUSED_STATES = frozenset({"input-required", "auth-required"})
 # How long CancelTask waits for the canceled dispatch to record its end.
 # Cancellation is cooperative, so a running persona stops at its next safe
 # boundary; past this, CancelTask returns the task as it stands.
@@ -226,7 +229,29 @@ async def v1_agent_card(
 ) -> JSONResponse:
     """The agent's A2A v1.0 card, signed (#270). The legacy card stays at
     `/agents/{name}/.well-known/agent-card`."""
-    return JSONResponse(await signed_agent_card(request, agent_name), media_type="application/json")
+    return card_response(await signed_agent_card(request, agent_name))
+
+
+# A card changes when its persona is re-registered, the signing key rotates,
+# the public URL changes, cabal.front_door names another persona (the root
+# card), or cabal's card builder changes; rarely, so clients may cache it
+# briefly and revalidate by ETag (spec 8.6; CARD-CACHE-001, -002).
+CARD_MAX_AGE_SECONDS = 300
+
+
+def card_response(card: dict[str, Any]) -> JSONResponse:
+    """A signed card as an HTTP response, with caching headers. The ETag is a
+    hash of the card's content, signatures included, so a re-signed card gets
+    a new one."""
+    digest = hashlib.sha256(json.dumps(card, sort_keys=True).encode("utf-8")).hexdigest()
+    return JSONResponse(
+        card,
+        media_type="application/json",
+        headers={
+            "Cache-Control": f"public, max-age={CARD_MAX_AGE_SECONDS}",
+            "ETag": f'"{digest[:32]}"',
+        },
+    )
 
 
 @router.post("/{agent_name}/a2a")
@@ -651,6 +676,35 @@ async def _list_tasks(
     return _result(request_id, response.to_wire())
 
 
+async def _cancel_paused(request: Request, row: Conversation) -> dict[str, Any]:
+    """Mark a paused task canceled and return it, keeping its stored
+    conversation (history, contextId)."""
+    stored = Task.model_validate(row.result_json) if row.result_json else Task(
+        id=row.task_id, status=TaskStatus(state="submitted")
+    )
+    canceled = stored.model_copy(
+        update={
+            "status": TaskStatus(
+                state="canceled",
+                message=Message(role="agent", parts=[TextPart(text="canceled by the caller")]),
+            )
+        }
+    )
+    async with open_session(request.app.state.sessionmaker) as session:
+        await session.execute(
+            update(Conversation)
+            .where(Conversation.task_id == row.task_id)
+            .values(
+                state="canceled",
+                updated_at=datetime.now(UTC),
+                result_json=canceled.model_dump(by_alias=True, exclude_none=True),
+            )
+        )
+    refreshed = await _load_row(request, row.task_id)
+    assert refreshed is not None
+    return _row_to_v1(refreshed)
+
+
 async def _runs_here(request: Request, row: Conversation) -> bool:
     """Whether the task's dispatch runs in this process, where the
     AbortCoordinator can reach it: a local handler, not a federated peer."""
@@ -684,6 +738,10 @@ async def _cancel_task(
         return _error(
             request_id, a2a_error(TASK_NOT_CANCELABLE, message=f"the task is already {row.state}")
         )
+    if row.state in _PAUSED_STATES:
+        # Paused, waiting on the caller: nothing is running behind it, so it
+        # is canceled here (CORE-CANCEL-001).
+        return _result(request_id, await _cancel_paused(request, row))
     if not await _runs_here(request, row):
         # TaskNotCancelableError stretches "not in a cancelable state" to
         # "not cancelable from here"; #261's baseline is to record it as a

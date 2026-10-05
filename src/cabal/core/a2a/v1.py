@@ -351,6 +351,32 @@ def _artifact_to_v1(artifact: dict[str, Any], *, task_id: str, index: int) -> Ar
     return ArtifactV1(artifact_id=artifact_id, parts=[PartV1(data=artifact)])
 
 
+# cabal's own metadata keys a v1.0 client is told, under their v1.0 names:
+# why the task ended the way it did (codes.py).
+_PUBLIC_CABAL_KEYS = {
+    "cabal_reason_code": "cabalReasonCode",
+    "cabal_reason_message": "cabalReasonMessage",
+    "cabal_escalated_from": "cabalEscalatedFrom",
+}
+
+
+def _public_metadata(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """Task metadata as a v1.0 client sees it. The reason keys are renamed to
+    camelCase, as v1.0 field names are (DM-SERIAL-001). cabal's other
+    `cabal_*` keys (trace and span ids, the delegation budget, session flags,
+    the routed agent) are internal bookkeeping and are left out. The
+    `cabal_` prefix is reserved for cabal: a client's own key with it is
+    dropped or renamed the same way. Every other key passes through as
+    sent."""
+    public: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if key in _PUBLIC_CABAL_KEYS:
+            public[_PUBLIC_CABAL_KEYS[key]] = value
+        elif not key.startswith("cabal_"):
+            public[key] = value
+    return public or None
+
+
 def task_to_v1(
     task: Task, *, timestamp: datetime | None = None, history_length: int | None = None
 ) -> TaskV1:
@@ -386,7 +412,7 @@ def task_to_v1(
             for i, m in enumerate(history)
         ]
         or None,
-        metadata=task.metadata or None,
+        metadata=_public_metadata(task.metadata),
     )
 
 

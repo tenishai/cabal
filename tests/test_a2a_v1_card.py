@@ -509,3 +509,17 @@ async def test_legacy_root_stub_is_unchanged(client: AsyncClient, monkeypatch) -
     r = await client.get("/.well-known/agent-card")
     assert r.status_code == 200
     assert r.json()["stub"] is True
+
+
+@pytest.mark.asyncio
+async def test_cards_carry_caching_headers(client: AsyncClient, monkeypatch) -> None:
+    """CARD-CACHE-001, -002: Cache-Control with max-age, and an ETag that is
+    stable while the card is."""
+    monkeypatch.setenv("CABAL_PUBLIC_URL", "https://cabal.test")
+    monkeypatch.setenv("CABAL_FRONT_DOOR", "echo")
+    for path in ("/agents/echo/.well-known/agent-card.json", "/.well-known/agent-card.json"):
+        first = await client.get(path)
+        second = await client.get(path)
+        assert "max-age=" in first.headers["cache-control"]
+        assert first.headers["etag"].startswith('"')
+        assert first.headers["etag"] == second.headers["etag"]

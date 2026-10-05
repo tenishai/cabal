@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from cabal.config.identity import resolve_front_door
 from cabal.core.auth.keys import list_public_jwks
 from cabal.core.db import open_session
-from cabal.core.routes.a2a_v1 import signed_agent_card
+from cabal.core.routes.a2a_v1 import card_response, signed_agent_card
 
 router = APIRouter()
 
@@ -45,8 +45,7 @@ async def front_door_card(request: Request) -> JSONResponse:
         raise HTTPException(
             status_code=404, detail="no front door is configured (cabal.front_door)"
         )
-    card = await signed_agent_card(request, agent_name, front_door=True)
-    return JSONResponse(card, media_type="application/json")
+    return card_response(await signed_agent_card(request, agent_name, front_door=True))
 
 
 @router.get("/.well-known/jwks.json", tags=["a2a"])
