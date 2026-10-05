@@ -211,7 +211,7 @@ async def test_invalid_operator_token_raises_broker_error(tmp_path: Path) -> Non
         operator_token="not.a.valid.jwt",
     ) as client:
         with pytest.raises(BrokerError, match="operator token invalid"):
-            async for _ in client.send_message("archivist", "hi"):
+            async for _ in client.send_message("peer-archivist", "hi"):
                 pass
 
 
@@ -232,7 +232,7 @@ async def test_a_revoked_operator_token_raises_broker_error(tmp_path: Path) -> N
         sub = verify(client._operator_token, key_set=client._app.state.jwks_provider())["sub"]
         client._app.state.revocations = RevocationList({sub: int(time.time()) + 3600})
         with pytest.raises(BrokerError, match="revoked"):
-            async for _ in client.send_message("archivist", "hi"):
+            async for _ in client.send_message("peer-archivist", "hi"):
                 pass
 
 
@@ -269,3 +269,47 @@ async def test_default_persona_attribute(tmp_path: Path) -> None:
         default_persona="archivist",
     )
     assert client.default_persona == "archivist"
+
+
+@pytest.mark.asyncio
+async def test_send_message_to_a_federated_persona_mints_its_audience(tmp_path: Path) -> None:
+    """cabal#234: the TUI's dispatch token for a federated persona carries the
+    sovereign peer's federation_audience, not the bare persona name."""
+    from cabal.core.auth.jwt import verify
+    from cabal.core.bulletin import store as bulletin_store
+    from cabal.core.models import Persona
+
+    identity_path = _write_identity(tmp_path)
+    async with InProcessBrokerClient(
+        config_path=str(identity_path),
+        acompletion_fn=stub_acompletion,
+        operator_token="placeholder",
+    ) as client:
+        client._operator_token = client._mint_operator_token()
+        # A persona of its own: archivist is already registered as a member at boot.
+        async with client._app.state.sessionmaker() as s:
+            s.add(Persona(name="peer-archivist", config_json={}))
+            await s.flush()
+            await bulletin_store.register_federated(
+                s,
+                name="peer-archivist",
+                persona_name="peer-archivist",
+                endpoint="https://archivist.rd.ts.net",
+                federation_audience="archivist@rd",
+                agent_card_json={"name": "archivist"},
+                agent_card_kid="kid-fed",
+            )
+            await s.commit()
+
+        seen: list[str] = []
+
+        async def capture(**kwargs: Any):
+            seen.append(kwargs["caller_jwt"])
+            yield "ok"
+
+        client._router.dispatch_streaming = capture
+        async for _ in client.send_message("peer-archivist", "hi"):
+            pass
+
+        claims = verify(seen[0], key_set=client._app.state.jwks_provider(), expected_audience=None)
+    assert claims["aud"] == "archivist@rd"

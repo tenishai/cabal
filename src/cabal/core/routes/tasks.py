@@ -27,20 +27,16 @@ from __future__ import annotations
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
-from cabal.core import dispatch_pairs
 from cabal.core.a2a.types import Task
 from cabal.core.a2a.version import requested_version
-from cabal.core.auth.jwt import JWTError, extract_bearer, mint, verify
-from cabal.core.auth.keys import load_active_signing_key
-from cabal.core.auth.revocations import refusal
+from cabal.core.auth.jwt import extract_bearer
 from cabal.core.broker.router import (
     AgentNotFoundError,
     CallerJWTError,
     DispatchError,
     GuardrailBlocked,
 )
-from cabal.core.bulletin import store as bulletin_store
-from cabal.core.db import open_session
+from cabal.core.routes._dispatch_auth import DispatchRefusal, dispatch_token
 
 router = APIRouter(prefix="/a2a", tags=["a2a"])
 
@@ -61,114 +57,15 @@ class TaskRequest(BaseModel):
 async def _resolve_dispatch_token(
     request: Request, raw_token: str, target: str
 ) -> str:
-    """Decide which token to hand the dispatch router.
-
-    Returns the same token if it's already aimed at `target`; else, if the
-    inbound token carries "operator" or "colleague" scope, mints a fresh
-    per-target JWT (sub passed through unchanged, so a colleague's
-    "agent:<name>" sub lands in the re-minted token too). A colleague is
-    additionally subject to the room's dispatch_pairs policy: scope says
-    who may ask for a re-mint at all, the pairs table says who may call
-    whom.
-    Raises HTTPException on any auth failure.
-    """
-    jwks_provider = request.app.state.jwks_provider
-    try:
-        claims = verify(raw_token, key_set=jwks_provider(), expected_audience=None)
-    except JWTError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    if (why := refusal(getattr(request.app.state, "revocations", None), claims)) is not None:
-        raise HTTPException(status_code=401, detail=why)
-
-    # Determine the audience the dispatch token must carry. For a `federated`
-    # target the token is forwarded to the sovereign peer, so its `aud` is the
-    # sovereign service id — not the bare agent name (cabal#45).
-    #
-    # Single session: the bulletin lookup and (only on the operator re-mint
-    # branch) the signing-key fetch share one open_session block. The signing
-    # key is loaded LAZILY so the fast path (token already aimed at `audience`)
-    # and the 403 return exit without Fernet-decrypting the key on every
-    # dispatch.
-    sessionmaker = request.app.state.sessionmaker
-    master_key = request.app.state.master_key
-    async with open_session(sessionmaker) as session:
-        row = await bulletin_store.get_active(session, target)
-
-        if row is not None and row.kind == "federated":
-            if not row.federation_audience:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"federated target {target!r} has no federation_audience",
-                )
-            audience = row.federation_audience
-        else:
-            audience = target
-
-        if claims.get("aud") == audience:
-            return raw_token
-
-        scope = claims.get("cabal_scope") or []
-        sub = claims.get("sub") or ""
-
-        # TWO LAYERS, and they answer different questions. Scope (cabal#124)
-        # decides whether this credential may ask for a re-mint at all;
-        # dispatch_pairs (cabal#127) decides which caller->target pairs the
-        # room permits. An operator clears both by definition and never
-        # reaches the pairs check.
-        if not ({"operator", "colleague"} & set(scope)):
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"token aud={claims.get('aud')!r} cannot dispatch to {target!r} "
-                    "(requires operator or colleague scope)"
-                ),
-            )
-
-        # A token with no sub failed to identify its bearer (cabal#184). Refuse
-        # to re-mint it rather than invent a principal: the old default was the
-        # bare string "operator", the most privileged name in the system.
-        if not sub:
-            raise HTTPException(
-                status_code=401,
-                detail="token carries no sub; refusing to re-mint a dispatch token",
-            )
-
-        if "operator" not in scope:
-            # Room-owned policy: the flat dispatch_pairs table the room syncs
-            # via PUT /admin/dispatch-pairs decides which caller->target pairs
-            # are permitted. An empty table means every request is open --
-            # enforcement starts at the first sync, which is what makes the
-            # migration deploy-safe.
-            #
-            # NO SUB-SHAPE BRANCH. An earlier draft refused any sub that was
-            # not "agent:<name>" outright, which broke that guarantee: with an
-            # empty table, main re-mints such a token and this refused it.
-            # `is_allowed` already answers for any caller string -- open while
-            # the table is empty, room-decided once it is not -- so the shape
-            # of the sub is the table's business, not this gate's.
-            if not await dispatch_pairs.is_allowed(session, caller=sub, target=target):
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        f"{sub} is not a colleague of {target} yet. "
-                        "Ask in the room."
-                    ),
-                )
-
-        # Operator, or a colleague the room allows -> re-mint as a per-target
-        # token aimed at `audience`. Only now do we need the signing key, so
-        # load it lazily within this session.
-        stored = await load_active_signing_key(session, master_key=master_key)
-
-    if stored is None:
-        raise HTTPException(status_code=500, detail="no active signing key")
-    return mint(
-        signing_key=stored,
-        sub=sub,
-        aud=audience,
-        persona=claims.get("cabal_persona"),
-        scope=["dispatch"],
-    )
+    """The token to hand the dispatch router, by the shared policy in
+    `_dispatch_auth.dispatch_token`. Raises HTTPException on a refusal: 401
+    for an invalid or revoked token or one with no sub, 403 for a token the
+    policy refuses, 500 for a server-side fault."""
+    token = await dispatch_token(request, raw_token, target)
+    if isinstance(token, DispatchRefusal):
+        status = {"unauthenticated": 401, "forbidden": 403, "internal": 500}[token.kind]
+        raise HTTPException(status_code=status, detail=token.message)
+    return token
 
 
 @router.post("/tasks", response_model=Task)

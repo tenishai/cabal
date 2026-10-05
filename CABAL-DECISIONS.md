@@ -407,3 +407,7 @@ Linked feedback memory: `feedback-decision-authority`.
   check and the policy was bypassable by dialling the other endpoint; both
   now call `is_allowed`. Anything changing this policy must change both,
   and this list is where to check that.
+- **Update (2026-10-05, #234)**: the copies are gone. Both routes, and the
+  A2A v1.0 route, call `core/routes/_dispatch_auth.py::dispatch_token`,
+  so a policy change is made there once. The TUI's in-process client keeps
+  its own operator-only re-mint check but shares `dispatch_audience`.
