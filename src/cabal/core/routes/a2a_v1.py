@@ -7,7 +7,7 @@ with `WWW-Authenticate: Bearer`). Then:
 
 - `SendMessage` dispatches a new task to the persona named in the path, with
   the same token policy as the legacy `message/send`
-  (`_dispatch_auth.dispatch_token`), and returns the finished task.
+  (`_dispatch_auth.dispatch_token`), and returns the task the persona returns.
 - `GetTask` returns a task the caller may see. A task that does not exist,
   belongs to another caller, or belongs to another persona gets the same
   TaskNotFoundError (-32001), so the answer never reveals that a task exists

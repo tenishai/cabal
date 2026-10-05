@@ -12,7 +12,7 @@ Pull requests and issues are in tenishai/cabal.
   `POST /agents/{name}/a2a` now serves `SendMessage` and `GetTask` in the v1.0 dialect.
   Both need a bearer token; a request without one gets HTTP 401 with `WWW-Authenticate: Bearer`.
   `SendMessage` dispatches to the persona in the path with the same token policy as the
-  legacy `message/send`, and returns the finished task. A `tenant` must name that persona.
+  legacy `message/send`, and returns the task the persona returns. A `tenant` must name that persona.
   Push notification config gets `-32003`; `returnImmediately` (tenishai/cabal#277) and a
   `message.taskId` (tenishai/cabal#276) get `-32004`; `raw` and `url` parts get `-32005`.
   `GetTask` answers a missing task, another caller's task, and another persona's task with
