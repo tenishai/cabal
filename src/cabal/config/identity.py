@@ -15,6 +15,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -51,6 +52,10 @@ class CabalConfig(_Open):
     # Identifies who holds the operator token — used as the `sub` claim in
     # bootstrap JWTs. Required; fails closed at bootstrap if absent.
     operator_id: str | None = None
+    # The base URL clients reach this cabal at, e.g. "https://cabal.example".
+    # A2A v1.0 cards name each persona's interface by it (#270), and are not
+    # served without it. $CABAL_PUBLIC_URL wins over this.
+    public_url: str | None = None
 
 
 #: Keyword names cabal itself binds on the way to the provider. An
@@ -553,6 +558,28 @@ def resolve_data_dir(identity: IdentityConfig | None, config_path: str | Path) -
     if d.is_absolute():
         return d
     return Path(config_path).expanduser().resolve().parent / d
+
+
+#: Overrides `cabal.public_url` (#270).
+PUBLIC_URL_ENV = "CABAL_PUBLIC_URL"
+
+
+def resolve_public_url(identity: IdentityConfig | None) -> str | None:
+    """The configured public base URL, without a trailing slash, or None when
+    none is set. Raises ValueError for a value that is not an absolute http(s)
+    URL, so a typo is not published in a card."""
+    raw = os.environ.get(PUBLIC_URL_ENV) or (
+        identity.cabal.public_url if identity is not None else None
+    )
+    if not raw or not raw.strip():
+        return None
+    url = raw.strip().rstrip("/")
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"cabal.public_url must be an absolute http(s) URL, not {raw!r}")
+    if parsed.query or parsed.fragment:
+        raise ValueError(f"cabal.public_url must not carry a query or fragment: {raw!r}")
+    return url
 
 
 def resolve_under_data_dir(raw: str | Path, data_dir: Path) -> Path:
