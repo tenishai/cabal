@@ -149,7 +149,8 @@ async def test_send_message_malformed_params(app: FastAPI, client: AsyncClient, 
     [
         ({"message": _message(), "configuration": {"taskPushNotificationConfig": {"url": "x"}}}, -32003),
         ({"message": _message(), "configuration": {"returnImmediately": True}}, -32004),
-        ({"message": _message(taskId="t-earlier")}, -32004),
+        # Naming a task that does not exist: TaskNotFoundError (#276).
+        ({"message": _message(taskId="t-earlier")}, -32001),
         (
             {"message": {"messageId": "m-1", "role": "ROLE_USER", "parts": [{"url": "https://x"}]}},
             -32005,

@@ -47,8 +47,8 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select
 
-from cabal.config.identity import resolve_public_url
-from cabal.core.a2a.types import Task, TaskStatus
+from cabal.config.identity import CabalConfig, resolve_public_url
+from cabal.core.a2a.types import Message, Task, TaskStatus
 from cabal.core.a2a.v1 import (
     STATE_FROM_V1,
     CancelTaskRequestV1,
@@ -310,10 +310,7 @@ async def _send_message(
             a2a_error(UNSUPPORTED_OPERATION, message="returnImmediately is not supported yet (#277)"),
         )
     if req.message.task_id:
-        return _error(
-            request_id,
-            a2a_error(UNSUPPORTED_OPERATION, message="continuing an existing task is not supported yet (#276)"),
-        )
+        return await _continue_task(request, agent_name, raw_token, request_id, req)
     # The persona card declares what a message may carry (defaultInputModes,
     # #270); a part of any other media type is refused (CORE-SEND-003, #274).
     for part in req.message.parts:
@@ -335,11 +332,23 @@ async def _send_message(
     if isinstance(token, DispatchRefusal):
         return _refuse(token, request_id)
 
+    # The conversation key: the client's, or one generated here and returned
+    # on the task (spec 3.4.1, CORE-MULTI-001a). A client-provided one also
+    # brings back the conversation so far, as `_replay` reconstructs it (#276).
+    history: list[Message] = []
+    if req.message.context_id:
+        context_id = req.message.context_id
+        claims = verify_caller(request, raw_token)
+        if not isinstance(claims, DispatchRefusal):
+            history = await _replay(request, agent_name, claims.get("sub") or None, context_id)
+    else:
+        context_id = str(uuid.uuid4())
     task = Task(
         **{
             "id": str(uuid.uuid4()),
-            "contextId": req.message.context_id,
+            "contextId": context_id,
             "status": TaskStatus(state="submitted", message=message),
+            "history": history,
             "metadata": req.metadata or {},
         }
     )
@@ -395,6 +404,80 @@ def _row_to_v1(row: Conversation, history_length: int | None = None) -> dict[str
         updated_at=row.updated_at,
         history_length=history_length,
     ).to_wire()
+
+
+async def _replay(
+    request: Request, agent_name: str, sub: str | None, context_id: str
+) -> list[Message]:
+    """The conversation so far in `context_id`, for a new task's history.
+
+    A local persona's reply carries the history it was given plus the
+    incoming message, and the router stores a reply that is no longer than
+    its input (a cancel, a guardrail block on the blocking path, a persona
+    that drops history) with
+    the input history plus that message. So the caller's latest task in the
+    context on this persona with a stored result holds the conversation up to
+    it (a remote peer's longer reply is stored as it came): its history, then its
+    final status message (the reply, or the reason cabal ended the turn). A
+    turn that raised stores no result and is not replayed. Only the caller's
+    own tasks count, so one caller never replays another's conversation. The
+    newest `cabal.context_replay_messages` messages are kept.
+    """
+    identity = getattr(request.app.state, "identity", None)
+    limit = (identity.cabal if identity is not None else CabalConfig()).context_replay_messages
+    if sub is None or limit == 0:
+        return []
+    async with open_session(request.app.state.sessionmaker) as session:
+        row = (
+            await session.execute(
+                select(Conversation)
+                .where(
+                    Conversation.target_agent == agent_name,
+                    Conversation.caller_agent == sub,
+                    Conversation.result_json["contextId"].as_string() == context_id,
+                )
+                .order_by(_STATUS_TIME.desc(), Conversation.task_id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if row is None or not row.result_json:
+        return []
+    earlier = Task.model_validate(row.result_json)
+    turns = list(earlier.history)
+    if earlier.status.message is not None:
+        turns.append(earlier.status.message)
+    return turns[-limit:]
+
+
+async def _continue_task(
+    request: Request, agent_name: str, raw_token: str, request_id: Any, req: SendMessageRequestV1
+) -> JSONResponse:
+    """A SendMessage that names a task (spec 3.4.3). The checks run now; a new
+    turn on a paused task waits until a persona can pause one (#145)."""
+    claims = verify_caller(request, raw_token)
+    if isinstance(claims, DispatchRefusal):
+        return _refuse(claims, request_id)
+    row = await _load_row(request, str(req.message.task_id))
+    if row is None or not _visible(row, agent_name, claims):
+        return _error(request_id, a2a_error(TASK_NOT_FOUND))
+    stored_context = (row.result_json or {}).get("contextId")
+    if req.message.context_id and stored_context and req.message.context_id != stored_context:
+        return _params_error(request_id, "contextId does not match the task's contextId")
+    if row.state in _TERMINAL_STATES:
+        return _error(
+            request_id,
+            a2a_error(
+                UNSUPPORTED_OPERATION,
+                message=f"the task is {row.state}; send a new message in its contextId instead",
+            ),
+        )
+    return _error(
+        request_id,
+        a2a_error(
+            UNSUPPORTED_OPERATION,
+            message=f"the task is {row.state}; a new turn on an unfinished task is not supported until #145",
+        ),
+    )
 
 
 async def _get_task(

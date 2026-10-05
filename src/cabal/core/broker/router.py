@@ -98,6 +98,28 @@ def _ensure_trace(task: Task) -> Task:
     return task
 
 
+def _with_context(task: Task, response: Task) -> Task:
+    """`response` as it is stored, for ListTasks and A2A context replay (#276).
+
+    The dispatched task's contextId goes back on when the reply has none
+    (EchoAgent drops it). And a reply whose history is no longer than the
+    input's is stored with the input history plus the incoming message
+    instead. That covers cabal's own replies (a cancel, a guardrail block),
+    which carry only the earlier history, and any reply that sends no history
+    at all, a remote peer's included. A local persona's reply is one longer
+    (the earlier history plus the incoming message) and is stored as it came,
+    as is any other reply with a longer history. Length, not value equality:
+    the same message can appear twice in one conversation.
+    """
+    update: dict[str, object] = {}
+    if response.context_id is None and task.context_id is not None:
+        update["context_id"] = task.context_id
+    incoming = task.status.message
+    if incoming is not None and len(response.history) <= len(task.history):
+        update["history"] = [*task.history, incoming]
+    return response.model_copy(update=update) if update else response
+
+
 def _canceled(task: Task, reason: str) -> Task:
     """Build a canceled Task for a cooperatively-aborted dispatch (cabal#11)."""
     metadata = dict(task.metadata)
@@ -365,6 +387,7 @@ class DispatchRouter:
             # The invocation is no longer in-flight; drop it from the graph.
             self._abort.complete(task.id)
 
+        response = _with_context(task, response)
         await self._bookkeeper.on_dispatch_success(task, response)
         if is_session_root and response.status.state in {
             "completed",
@@ -522,8 +545,13 @@ class DispatchRouter:
                     parts=[TextPart(kind="text", text=full_text)],
                 ),
             ),
+            # The input history plus the input message, as a persona's own
+            # reply carries them, so the stored task holds the conversation
+            # up to it for A2A context replay (#276).
+            history=[*task.history, *([task.status.message] if task.status.message else [])],
             metadata=task.metadata,
         )
+        final_task = _with_context(task, final_task)
         await self._bookkeeper.on_dispatch_success(task, final_task)
         if is_session_root:
             await self._hooks.fire(
@@ -576,6 +604,7 @@ class DispatchRouter:
         except Exception as exc:
             await self._bookkeeper.on_dispatch_failure(task, exc)
             raise
+        response = _with_context(task, response)
         await self._bookkeeper.on_dispatch_success(task, response)
         return response
 
