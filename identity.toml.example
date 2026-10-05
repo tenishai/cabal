@@ -15,6 +15,10 @@ data_dir = "data"
 # How many messages of a conversation an A2A v1.0 SendMessage replays to the
 # persona when it starts a new task in an existing contextId (newest kept). 0 is off.
 # context_replay_messages = 40
+# A2A v1.0 SendMessage with returnImmediately runs detached: at most this many at once
+# (more are refused), and each gets this many seconds to stop on shutdown.
+# detached_task_limit = 16
+# detached_drain_seconds = 10
 
 # ----- LiteLLM proxy -----
 # api_base points at a running LiteLLM proxy. api_key_env names the env

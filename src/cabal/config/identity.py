@@ -64,6 +64,11 @@ class CabalConfig(_Open):
     # the persona when it starts a new task in an existing contextId (#276):
     # the newest ones are kept. 0 turns replay off.
     context_replay_messages: int = Field(default=40, ge=0)
+    # A2A v1.0 SendMessage with returnImmediately runs detached (#277): at most
+    # this many at once (more are refused), and on shutdown each gets this
+    # long to stop before it is cancelled.
+    detached_task_limit: int = Field(default=16, ge=0)
+    detached_drain_seconds: float = Field(default=10.0, ge=0)
 
 
 #: Keyword names cabal itself binds on the way to the provider. An
