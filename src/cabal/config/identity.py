@@ -56,6 +56,10 @@ class CabalConfig(_Open):
     # A2A v1.0 cards name each persona's interface by it (#270), and are not
     # served without it. $CABAL_PUBLIC_URL wins over this.
     public_url: str | None = None
+    # The persona whose v1.0 card is served at /.well-known/agent-card.json,
+    # the domain's front door (#270), e.g. "mason-primus". Unset: no root card.
+    # $CABAL_FRONT_DOOR wins over this.
+    front_door: str | None = None
 
 
 #: Keyword names cabal itself binds on the way to the provider. An
@@ -560,6 +564,16 @@ def resolve_data_dir(identity: IdentityConfig | None, config_path: str | Path) -
     return Path(config_path).expanduser().resolve().parent / d
 
 
+def _env_or(name: str, configured: str | None) -> str | None:
+    """The environment value when it is set and not blank, else the
+    configured one when that is not blank, else None. A blank variable is
+    unset, so it never hides the identity file's value."""
+    for value in (os.environ.get(name), configured):
+        if value is not None and value.strip():
+            return value
+    return None
+
+
 #: Overrides `cabal.public_url` (#270).
 PUBLIC_URL_ENV = "CABAL_PUBLIC_URL"
 
@@ -568,10 +582,8 @@ def resolve_public_url(identity: IdentityConfig | None) -> str | None:
     """The configured public base URL, without a trailing slash, or None when
     none is set. Raises ValueError for a value that is not an absolute http(s)
     URL, so a typo is not published in a card."""
-    raw = os.environ.get(PUBLIC_URL_ENV) or (
-        identity.cabal.public_url if identity is not None else None
-    )
-    if not raw or not raw.strip():
+    raw = _env_or(PUBLIC_URL_ENV, identity.cabal.public_url if identity is not None else None)
+    if raw is None:
         return None
     url = raw.strip().rstrip("/")
     parsed = urlsplit(url)
@@ -580,6 +592,16 @@ def resolve_public_url(identity: IdentityConfig | None) -> str | None:
     if parsed.query or parsed.fragment:
         raise ValueError(f"cabal.public_url must not carry a query or fragment: {raw!r}")
     return url
+
+
+#: Overrides `cabal.front_door` (#270).
+FRONT_DOOR_ENV = "CABAL_FRONT_DOOR"
+
+
+def resolve_front_door(identity: IdentityConfig | None) -> str | None:
+    """The bulletin agent name configured as the front door, or None."""
+    raw = _env_or(FRONT_DOOR_ENV, identity.cabal.front_door if identity is not None else None)
+    return raw.strip() if raw is not None else None
 
 
 def resolve_under_data_dir(raw: str | Path, data_dir: Path) -> Path:
