@@ -1,10 +1,14 @@
-"""Who may dispatch to an agent: one policy for every door (#267).
+"""Who may dispatch to an agent, for both JSON-RPC routes (#267).
 
 The legacy JSON-RPC route (`routes/a2a_jsonrpc.py`) and the A2A v1.0 route
 (`routes/a2a_v1.py`) both dispatch to a persona on behalf of a bearer token.
-They must agree on who may do that, so the decision lives here once and each
-route only translates a refusal into its own wire form. (The REST twin,
-`routes/tasks._resolve_dispatch_token`, mirrors the same rules.)
+They must agree on who may do that, so their decision lives here once and each
+route only translates a refusal into its own wire form.
+
+The REST route keeps its own copy, `routes/tasks._resolve_dispatch_token`. It
+has the same scope, `sub` and caller-to-target pair rules, but for a federated
+target it matches the token's `aud` against the target's `federation_audience`
+instead of its name, and it refuses scope with HTTP 403.
 """
 
 from __future__ import annotations
