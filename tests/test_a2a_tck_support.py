@@ -99,7 +99,9 @@ def test_baseline_compare() -> None:
 
 def test_every_baseline_entry_needs_a_reason() -> None:
     module = _check_baseline()
-    assert module.unexplained({"A": "why", "B": "", "C": "  "}) == ["B", "C"]
+    assert module.unexplained(
+        {"A": "why", "B": "", "C": "  ", "D": None, "E": 0, "F": []}
+    ) == ["B", "C", "D", "E", "F"]
     # The committed baseline itself.
     import json
 

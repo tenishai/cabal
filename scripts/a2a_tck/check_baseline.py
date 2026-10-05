@@ -19,8 +19,11 @@ BASELINE = Path(__file__).with_name("baseline.json")
 
 
 def unexplained(baseline: dict[str, str]) -> list[str]:
-    """Baseline entries without a reason: each one must say why."""
-    return sorted(rid for rid, reason in baseline.items() if not str(reason).strip())
+    """Baseline entries without a reason: each one must say why, in a
+    non-empty string."""
+    return sorted(
+        rid for rid, reason in baseline.items() if not (isinstance(reason, str) and reason.strip())
+    )
 
 
 def compare(report: dict, baseline: dict[str, str]) -> tuple[list[str], list[str]]:
