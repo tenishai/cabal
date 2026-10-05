@@ -27,7 +27,7 @@ from joserfc import jws
 from joserfc.jwk import KeySet, RSAKey
 from pydantic import Field
 
-from cabal.core.a2a.v1 import _V1
+from cabal.core.a2a.v1 import _V1, PartV1
 from cabal.core.auth.keys import StoredKey
 
 SIGNING_ALG = "RS256"
@@ -335,7 +335,22 @@ def verify_card(card: dict[str, Any], key_set: KeySet) -> str:
 
 # SendMessage takes text and data parts (`message_from_v1`); a reply carries
 # text, and an artifact that is not in the A2A shape travels as a data part.
-_MODES = ["text/plain", "application/json"]
+INPUT_MODES = ("text/plain", "application/json")
+OUTPUT_MODES = ("text/plain", "application/json")
+
+
+def part_media_type(part: PartV1) -> str:
+    """A v1.0 part's media type, lower-cased and without parameters: its
+    `mediaType` when set, otherwise the type its kind implies (text is
+    text/plain, data is application/json, raw and url are
+    application/octet-stream)."""
+    if part.media_type:
+        return part.media_type.split(";", 1)[0].strip().lower()
+    if part.text is not None:
+        return "text/plain"
+    if "data" in part.model_fields_set:
+        return "application/json"
+    return "application/octet-stream"
 
 
 def persona_card(
@@ -375,7 +390,7 @@ def persona_card(
         capabilities=AgentCapabilitiesV1(
             streaming=False, push_notifications=False, extended_agent_card=False
         ),
-        default_input_modes=list(_MODES),
-        default_output_modes=list(_MODES),
+        default_input_modes=list(INPUT_MODES),
+        default_output_modes=list(OUTPUT_MODES),
         skills=skills,
     )

@@ -62,7 +62,7 @@ from cabal.core.a2a.v1 import (
     message_from_v1,
     task_to_v1,
 )
-from cabal.core.a2a.v1_card import persona_card, signed_card
+from cabal.core.a2a.v1_card import INPUT_MODES, part_media_type, persona_card, signed_card
 from cabal.core.a2a.v1_errors import (
     CONTENT_TYPE_NOT_SUPPORTED,
     INTERNAL_ERROR,
@@ -296,6 +296,18 @@ async def _send_message(
             request_id,
             a2a_error(UNSUPPORTED_OPERATION, message="continuing an existing task is not supported yet (#276)"),
         )
+    # The persona card declares what a message may carry (defaultInputModes,
+    # #270); a part of any other media type is refused (CORE-SEND-003, #274).
+    for part in req.message.parts:
+        media_type = part_media_type(part)
+        if media_type not in INPUT_MODES:
+            return _error(
+                request_id,
+                a2a_error(
+                    CONTENT_TYPE_NOT_SUPPORTED,
+                    message=f"media type {media_type!r} is not accepted; send one of {list(INPUT_MODES)}",
+                ),
+            )
     try:
         message = message_from_v1(req.message)
     except UnsupportedPartError as exc:
