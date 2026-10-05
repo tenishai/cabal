@@ -1,8 +1,8 @@
 {
-  "CARD-CACHE-003": "MAY. A card has no stable last-modified time: the bulletin row records no registration time, only a heartbeat. The ETag (CARD-CACHE-002) covers revalidation.",
+  "CARD-CACHE-003": "MAY. A card has no stable last-modified time: the bulletin row records no registration time (its time columns are last_heartbeat and drain_started_at). The ETag (CARD-CACHE-002) covers revalidation.",
   "CORE-EXECUTION-MODE-002": "returnImmediately lands with issue 277 (PR 298). Remove this entry when it merges.",
-  "CORE-HIST-003": "Continuing a task paused in input-required with a new turn waits on issue 145; cabal answers UnsupportedOperationError until a persona can pause a task (issue 276's decision).",
-  "CORE-MULTI-005": "Same as CORE-HIST-003: a new turn on a paused task waits on issue 145.",
+  "CORE-HIST-003": "Running a new turn on a task paused in input-required waits on issue 145; until then cabal answers UnsupportedOperationError (the taskId rules decided on issue 276). The tck persona does pause a task; what is missing is continuing it.",
+  "CORE-MULTI-005": "Same as CORE-HIST-003: running a new turn on a paused task waits on issue 145.",
   "DM-MSG-001": "cabal personas answer with a Task, never a direct Message; the tck persona's tck-message-response completes a task with the same text instead.",
   "CORE-SEND-003": "Kit defect at a2a-tck 263b9cf: the requirement (tck/requirements/core_operations.py, CORE-SEND-003) sets no expected_error, so the generic test expects success and scores cabal's correct ContentTypeNotSupportedError (-32005) as a failure."
 }
