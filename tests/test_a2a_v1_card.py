@@ -329,6 +329,13 @@ async def test_card_route_has_no_card_for_an_unknown_agent_or_a_federated_peer(
         await s.commit()
     assert (await client.get("/agents/peer/.well-known/agent-card.json")).status_code == 404
 
+    # A presence row names an operator's live session (cabal#142); this route
+    # is unauthenticated, so it must not sign a card for one.
+    async with app.state.sessionmaker() as s:
+        await bulletin_store.register_session(s, name="claude-session-1")
+        await s.commit()
+    assert (await client.get("/agents/claude-session-1/.well-known/agent-card.json")).status_code == 404
+
 
 @pytest.mark.asyncio
 async def test_legacy_card_route_is_unchanged(client: AsyncClient, monkeypatch) -> None:
@@ -349,7 +356,22 @@ async def test_directory_lists_the_v1_card_url(
             await s.execute(select(BootstrapCode).where(BootstrapCode.used_at.is_(None)))
         ).scalar_one()
     token = (await client.post("/auth/bootstrap", json={"code": code.code})).json()["access_token"]
+    async with app.state.sessionmaker() as s:
+        s.add(Persona(name="peer", config_json={}))
+        await s.flush()
+        await bulletin_store.register_federated(
+            s,
+            name="peer",
+            persona_name="peer",
+            endpoint="https://peer.example",
+            federation_audience="peer@remote",
+            agent_card_json={"name": "peer"},
+            agent_card_kid="kid-peer",
+        )
+        await s.commit()
     monkeypatch.setenv("CABAL_PUBLIC_URL", "https://cabal.test")
     r = await client.get("/directory", headers={"Authorization": f"Bearer {token}"})
-    echo = next(a for a in r.json()["agents"] if a["name"] == "echo")
-    assert echo["agent_card_url"] == "https://cabal.test/agents/echo/.well-known/agent-card.json"
+    agents = {a["name"]: a for a in r.json()["agents"]}
+    assert agents["echo"]["agent_card_url"] == "https://cabal.test/agents/echo/.well-known/agent-card.json"
+    # A federated peer's card is the peer's own.
+    assert agents["peer"]["agent_card_url"] is None
