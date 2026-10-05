@@ -357,21 +357,32 @@ def _utc_naive(ts: datetime) -> datetime:
     return ts.replace(tzinfo=None)
 
 
-def _encode_page_token(row: Conversation) -> str:
-    raw = json.dumps([_utc_naive(row.updated_at).isoformat(), row.task_id])
+# The conversations table stores `updated_at` as text in two forms: the server
+# default ("2026-10-05 13:35:52", whole seconds) on a row still in flight, and
+# SQLAlchemy's ("2026-10-05 13:35:52.123456") once a dispatch records its end.
+# Compared as text, the two forms of one instant are unequal. Ordering, the
+# cursor and the timestamp filter therefore all compare julianday(updated_at),
+# which reads both forms as the same number.
+_STATUS_TIME = func.julianday(Conversation.updated_at)
+
+
+def _encode_page_token(julian: float, task_id: str) -> str:
+    raw = json.dumps([julian, task_id])
     return base64.urlsafe_b64encode(raw.encode()).decode("ascii")
 
 
-def _decode_page_token(token: str) -> tuple[datetime, str] | None:
-    """The (updated_at, task_id) cursor, or None for a token that does not
-    decode to one. A token is not signed, so a caller can write its own
-    cursor; it only moves where the page starts, inside the caller's own
+def _decode_page_token(token: str) -> tuple[float, str] | None:
+    """The (julianday(updated_at), task_id) cursor, or None for a token that
+    does not decode to one. A token is not signed, so a caller can write its
+    own cursor; it only moves where the page starts, inside the caller's own
     scope."""
     try:
-        ts, task_id = json.loads(base64.urlsafe_b64decode(token.encode("ascii")))
-        return _utc_naive(datetime.fromisoformat(ts)), str(task_id)
+        julian, task_id = json.loads(base64.urlsafe_b64decode(token.encode("ascii")))
     except (binascii.Error, UnicodeError, ValueError, TypeError):
         return None
+    if isinstance(julian, bool) or not isinstance(julian, (int, float)) or not isinstance(task_id, str):
+        return None
+    return float(julian), task_id
 
 
 async def _list_tasks(
@@ -408,7 +419,8 @@ async def _list_tasks(
     if req.status is not None and req.status != "TASK_STATE_UNSPECIFIED":
         where.append(Conversation.state == STATE_FROM_V1[req.status])
     if req.status_timestamp_after is not None:
-        where.append(Conversation.updated_at >= _utc_naive(req.status_timestamp_after))
+        after = _utc_naive(req.status_timestamp_after).isoformat(sep=" ")
+        where.append(_STATUS_TIME >= func.julianday(after))
     if req.context_id:
         # The contextId is in the stored Task; a task still in flight has no
         # stored Task yet, so it cannot match (and carries no contextId on the
@@ -417,32 +429,30 @@ async def _list_tasks(
 
     page_where = list(where)
     if cursor is not None:
-        ts, task_id = cursor
+        julian, task_id = cursor
         page_where.append(
             or_(
-                Conversation.updated_at < ts,
-                and_(Conversation.updated_at == ts, Conversation.task_id < task_id),
+                _STATUS_TIME < julian,
+                and_(_STATUS_TIME == julian, Conversation.task_id < task_id),
             )
         )
     async with open_session(request.app.state.sessionmaker) as session:
         total = (
             await session.execute(select(func.count()).select_from(Conversation).where(*where))
         ).scalar_one()
-        rows = list(
-            (
-                await session.execute(
-                    select(Conversation)
-                    .where(*page_where)
-                    .order_by(Conversation.updated_at.desc(), Conversation.task_id.desc())
-                    .limit(page_size + 1)
-                )
-            ).scalars()
-        )
-    more = len(rows) > page_size
-    rows = rows[:page_size]
+        found = (
+            await session.execute(
+                select(Conversation, _STATUS_TIME)
+                .where(*page_where)
+                .order_by(_STATUS_TIME.desc(), Conversation.task_id.desc())
+                .limit(page_size + 1)
+            )
+        ).all()
+    more = len(found) > page_size
+    found = found[:page_size]
 
     tasks = []
-    for row in rows:
+    for row, _julian in found:
         task = conversation_to_v1(
             task_id=row.task_id,
             state=row.state,
@@ -458,7 +468,7 @@ async def _list_tasks(
         tasks.append(task)
     response = ListTasksResponseV1(
         tasks=tasks,
-        next_page_token=_encode_page_token(rows[-1]) if more else "",
+        next_page_token=_encode_page_token(found[-1][1], found[-1][0].task_id) if more else "",
         page_size=page_size,
         total_size=total,
     )
@@ -510,7 +520,10 @@ async def _cancel_task(
     signalled = coordinator.abort(row.task_id, reason="canceled by the caller (CancelTask)")
     if signalled == 0 and not coordinator.is_aborted(row.task_id):
         # Not in flight here: it ended between the read and the abort, or its
-        # dispatch did not survive a restart.
+        # dispatch did not survive a restart. The first window is wider than
+        # it looks: the router drops the task from the AbortGraph before it
+        # records the terminal state, so a cancel in that gap gets this answer
+        # for a task that is about to read completed.
         return _error(
             request_id, a2a_error(TASK_NOT_CANCELABLE, message="the task is not running")
         )

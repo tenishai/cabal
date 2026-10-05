@@ -135,6 +135,49 @@ async def test_list_tasks_newest_first_and_pages_to_an_empty_token(
 
 
 @pytest.mark.asyncio
+async def test_list_tasks_pages_over_in_flight_rows(app: FastAPI, client: AsyncClient) -> None:
+    """A row still in flight has the server-default updated_at, in whole
+    seconds; a finished one has microseconds. Paging must end and must not
+    repeat a row in either case, or when they are mixed."""
+    for i in range(5):
+        await _in_flight_row(app, f"t-flight-{i}", "echo", "agent:alice")
+    alice = await _token(app, "agent:alice")
+    for i in range(2):
+        await _send(client, alice, f"done{i}")
+
+    seen: list[str] = []
+    token = ""
+    for _ in range(10):
+        params: dict[str, Any] = {"pageSize": 2}
+        if token:
+            params["pageToken"] = token
+        page = await _list(client, alice, **params)
+        seen += [t["id"] for t in page["tasks"]]
+        token = page["nextPageToken"]
+        if token == "":
+            break
+    else:
+        pytest.fail(f"paging did not end; saw {seen}")
+    assert len(seen) == 7
+    assert len(set(seen)) == 7
+
+
+@pytest.mark.asyncio
+async def test_status_timestamp_after_includes_an_in_flight_row_at_the_boundary(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    await _in_flight_row(app, "t-edge", "echo", "agent:alice")
+    async with app.state.sessionmaker() as s:
+        stamp = (
+            await s.execute(select(Conversation.updated_at).where(Conversation.task_id == "t-edge"))
+        ).scalar_one()
+    alice = await _token(app, "agent:alice")
+    after = stamp.replace(tzinfo=None).isoformat() + "Z"
+    listed = await _list(client, alice, statusTimestampAfter=after)
+    assert [t["id"] for t in listed["tasks"]] == ["t-edge"]
+
+
+@pytest.mark.asyncio
 async def test_list_tasks_omits_artifacts_unless_asked(app: FastAPI, client: AsyncClient) -> None:
     class ArtifactEcho:
         name = "echo"
@@ -308,6 +351,18 @@ async def _in_flight_row(app: FastAPI, task_id: str, target: str, caller: str | 
             )
         )
         await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_token_without_sub_does_not_own_a_task_without_caller(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """A missing sub and a NULL caller are not a match: GetTask and CancelTask
+    both answer as for a task that does not exist."""
+    await _in_flight_row(app, "t-no-caller", "echo", None)
+    nobody = await _token(app, None)
+    assert _code(await _call(client, nobody, "GetTask", {"id": "t-no-caller"})) == -32001
+    assert _code(await _call(client, nobody, "CancelTask", {"id": "t-no-caller"})) == -32001
 
 
 @pytest.mark.asyncio
