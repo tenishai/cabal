@@ -8,6 +8,22 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **A2A v1.0 conversations by contextId** (issue tenishai/cabal#276, epic tenishai/cabal#272).
+  SendMessage without a `contextId` now gets one generated and returned on the task. One with
+  a `contextId` starts a new task in that conversation, and the persona sees the conversation
+  so far as the task's history: the caller's latest earlier task in that context on that
+  persona with a stored result, its history plus its reply, newest `cabal.context_replay_messages` messages (40 by
+  default, 0 for none). Only the caller's own tasks are replayed. A turn cabal ended without
+  raising (a cooperative cancel, a router guardrail block on the blocking path, a persona's
+  own budget or policy refusal) is replayed with the caller's message and the reason as the reply.
+  A turn that raised (a guardrail termination such as the router's delegation budget, a block
+  on the streaming path, an error) stores no result and is not replayed. A SendMessage naming a
+  `taskId` now gets `-32001` for an unknown task, `-32602` for a `contextId` that differs from the one stored on the task, and
+  `-32004` for a finished task or, until tenishai/cabal#145, an unfinished one.
+  The router now restores a dispatched task's `contextId` when the persona's reply drops it,
+  on every dispatch path, so the stored task keeps its conversation key, and stores a reply
+  whose history is no longer than its input (cabal's own cancel and block replies) with the
+  input history and the incoming message; the streaming path now stores them too.
 - **How to admit an outside A2A agent** (issue tenishai/cabal#271). `docs/outside-agents.md`
   is the operator procedure #271 decided: one `cbl token mint-service` token per persona the
   outsider may call (`--sub agent:ext-<name> --scope dispatch --aud <agent>`, the persona's bulletin name), handed over with

@@ -1180,6 +1180,39 @@ async def test_streaming_pass_lets_the_stream_through(
 
 
 @pytest.mark.asyncio
+async def test_a_streamed_turn_is_stored_with_its_conversation(
+    sessionmaker, signing_key, jwks_provider, archivist_row
+) -> None:
+    """The streaming path stores the input history plus the input message and
+    the contextId, as the blocking path does with a persona's reply, so A2A
+    context replay (#276) sees a streamed turn too."""
+    router = DispatchRouter(
+        sessionmaker=sessionmaker, bookkeeper=Bookkeeper(sessionmaker), jwks_provider=jwks_provider
+    )
+    router.register_local(FakeStreamingArchivist())
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist")
+    earlier = Message(role="user", parts=[TextPart(text="earlier")])
+    incoming = Message(role="user", parts=[TextPart(text="now")])
+    task = Task(
+        id="t-streamed",
+        contextId="ctx-stream",
+        status=TaskStatus(state="submitted", message=incoming),
+        history=[earlier],
+    )
+    async for _ in router.dispatch_streaming(
+        target_agent="archivist", target_generation=None, task=task, caller_jwt=token
+    ):
+        pass
+
+    async with sessionmaker() as s:
+        row = await s.get(Conversation, "t-streamed")
+    assert row is not None
+    stored = Task.model_validate(row.result_json)
+    assert [m.parts[0].text for m in stored.history] == ["earlier", "now"]
+    assert stored.context_id == "ctx-stream"
+
+
+@pytest.mark.asyncio
 async def test_streaming_guard_sees_the_target_agent_metadata(
     sessionmaker, signing_key, jwks_provider, archivist_row
 ) -> None:
