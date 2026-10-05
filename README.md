@@ -379,7 +379,7 @@ handlers register locally.
 
 ## License
 
-Copyright (C) 2026 tenishai
+Copyright (C) 2026 tenish and the cabal contributors
 
 This program is free software: you can redistribute it and/or modify it under
 the terms of the GNU Affero General Public License as published by the Free
