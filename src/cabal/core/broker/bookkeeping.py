@@ -101,6 +101,65 @@ class Bookkeeper:
             },
         )
 
+    async def on_dispatch_working(self, task: Task) -> None:
+        """The persona is about to be called: `submitted` becomes `working`,
+        so GetTask can tell a started task from a queued one (#277). Only a
+        `submitted` row moves, so this never overwrites an end state."""
+        from sqlalchemy import update
+
+        async with open_session(self._sessionmaker) as session:
+            await session.execute(
+                update(Conversation)
+                .where(Conversation.task_id == task.id, Conversation.state == "submitted")
+                .values(state="working", updated_at=datetime.now(UTC))
+            )
+
+    async def fail_interrupted(self) -> int:
+        """Mark every task still `submitted` or `working` as failed, with the
+        status message "interrupted by a restart". For startup, before
+        serving: nothing in a fresh process is running, so such a row was cut
+        off by a stop or a crash (#277). Assumes one cabal process per
+        database. Returns the number of tasks marked."""
+        from sqlalchemy import select, update
+
+        from cabal.core.a2a.types import Message, TaskStatus, TextPart
+
+        async with open_session(self._sessionmaker) as session:
+            rows = (
+                await session.execute(
+                    select(Conversation).where(Conversation.state.in_(("submitted", "working")))
+                )
+            ).scalars().all()
+            for row in rows:
+                stopped = Task(
+                    id=row.task_id,
+                    status=TaskStatus(
+                        state="failed",
+                        message=Message(
+                            role="agent", parts=[TextPart(text="interrupted by a restart")]
+                        ),
+                    ),
+                )
+                await session.execute(
+                    update(Conversation)
+                    .where(Conversation.task_id == row.task_id)
+                    .values(
+                        state="failed",
+                        updated_at=datetime.now(UTC),
+                        result_json=stopped.model_dump(by_alias=True, exclude_none=True),
+                    )
+                )
+                session.add(
+                    Event(
+                        task_id=row.task_id,
+                        event_type="dispatch_interrupted",
+                        payload_json={"previous_state": row.state},
+                    )
+                )
+        if rows:
+            log.warning("dispatch.interrupted_by_restart", count=len(rows))
+        return len(rows)
+
     async def on_dispatch_success(self, task: Task, response: Task) -> None:
         from sqlalchemy import update
 

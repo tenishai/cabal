@@ -8,6 +8,17 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **A2A v1.0 returnImmediately** (issue tenishai/cabal#277, epic tenishai/cabal#272).
+  A SendMessage that starts a new task with `configuration.returnImmediately: true` answers at once with the task in
+  `TASK_STATE_SUBMITTED`; the dispatch runs detached and the client polls GetTask, which shows
+  `TASK_STATE_WORKING` and then the end state. CancelTask reaches it. At most
+  `cabal.detached_task_limit` (16) run at once; more are refused with `-32004`. On shutdown each
+  gets `cabal.detached_drain_seconds` (10) to stop before it is cancelled.
+  At startup, every task still `submitted` or `working` is marked failed, "interrupted by a
+  restart", which also clears the tasks a crash used to leave stuck; this assumes one cabal
+  process per database, as today. A dispatch, blocking through `router.dispatch` or detached
+  through `start_detached`, now records `working` before the persona is called;
+  the streaming path and operator resume do not yet.
 - **A2A v1.0 conversations by contextId** (issue tenishai/cabal#276, epic tenishai/cabal#272).
   SendMessage without a `contextId` now gets one generated and returned on the task. One with
   a `contextId` starts a new task in that conversation, and the persona sees the conversation

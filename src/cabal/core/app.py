@@ -32,6 +32,7 @@ from cabal import __version__
 from cabal.agents.echo import EchoAgent
 from cabal.config.home import resolve_identity_path
 from cabal.config.identity import (
+    CabalConfig,
     GuardrailsConfig,
     IdentityConfig,
     load_identity,
@@ -64,6 +65,7 @@ from cabal.core.db import (
     sync_db_url,
 )
 from cabal.core.db_pragmas import install_sqlite_pragmas
+from cabal.core.detached import DetachedTasks
 from cabal.core.dispatch_timeout import (
     DISPATCH_CONNECT_TIMEOUT_S,  # noqa: F401  re-exported; imported from app by tests
     dispatch_timeout,
@@ -704,6 +706,14 @@ def create_app(
         _app.state.dispatch_router = dispatch_router
         _app.state.http_client = http_client
 
+        # Detached dispatches (#277): nothing runs yet in this process, so a
+        # task still submitted or working was cut off by a stop or a crash.
+        await bookkeeper.fail_interrupted()
+        cabal_cfg = identity.cabal if identity is not None else CabalConfig()
+        _app.state.detached = DetachedTasks(
+            limit=cabal_cfg.detached_task_limit, abort=dispatch_router.abort_coordinator
+        )
+
         heartbeat = HeartbeatScheduler(sessionmaker)
         heartbeat.watch(registered_persona_names)
         await heartbeat.start()
@@ -723,6 +733,7 @@ def create_app(
         try:
             yield
         finally:
+            await _app.state.detached.drain(cabal_cfg.detached_drain_seconds)
             await heartbeat.stop()
             await http_client.aclose()
             mcp_client = getattr(_app.state, "mcp_http_client", None)

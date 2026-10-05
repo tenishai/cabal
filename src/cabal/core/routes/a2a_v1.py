@@ -304,11 +304,6 @@ async def _send_message(
             request_id,
             a2a_error(PUSH_NOTIFICATION_NOT_SUPPORTED, message="this agent does not send push notifications"),
         )
-    if cfg is not None and cfg.return_immediately:
-        return _error(
-            request_id,
-            a2a_error(UNSUPPORTED_OPERATION, message="returnImmediately is not supported yet (#277)"),
-        )
     if req.message.task_id:
         return await _continue_task(request, agent_name, raw_token, request_id, req)
     # The persona card declares what a message may carry (defaultInputModes,
@@ -352,10 +347,38 @@ async def _send_message(
             "metadata": req.metadata or {},
         }
     )
-    try:
-        response = await request.app.state.dispatch_router.dispatch(
-            target_agent=agent_name, target_generation=None, task=task, caller_jwt=token
+    detach = cfg is not None and bool(cfg.return_immediately)
+    detached = request.app.state.detached
+    if detach and not detached.try_reserve():
+        return _error(
+            request_id,
+            a2a_error(
+                UNSUPPORTED_OPERATION,
+                message=(
+                    "too many tasks are running detached; retry later, "
+                    "or send without returnImmediately"
+                ),
+            ),
         )
+    try:
+        try:
+            if detach:
+                # The start phase runs here, so auth is checked and the task's
+                # row exists before the reply; the run phase goes to the
+                # registry and the client polls GetTask (#277).
+                started, run = await request.app.state.dispatch_router.start_detached(
+                    target_agent=agent_name, target_generation=None, task=task, caller_jwt=token
+                )
+                detached.spawn(started.id, run)
+                response = started
+            else:
+                response = await request.app.state.dispatch_router.dispatch(
+                    target_agent=agent_name, target_generation=None, task=task, caller_jwt=token
+                )
+        except BaseException:
+            if detach:
+                detached.release()  # the reserved slot did not become a run
+            raise
     except (AgentNotFoundError, ConfigurationError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except CallerJWTError as exc:
