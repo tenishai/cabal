@@ -67,12 +67,10 @@ def _version_error(body: dict) -> dict:
     [({"A2A-Version": "1.0"}, ""), ({}, "?A2A-Version=1.0"), ({"A2A-Version": "1.0.2"}, "")],
 )
 async def test_v1_path_passes_1_0_to_the_handler(client: AsyncClient, headers, query) -> None:
+    # Past the version gate, the next check is the bearer token: no token is a 401.
     r = await client.post(V1_PATH + query, json=CALL, headers=headers)
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("application/json")
-    body = r.json()
-    assert body["id"] == 7
-    assert body["error"]["code"] == -32601  # the stub behind the gate, until #267
+    assert r.status_code == 401
+    assert r.headers["www-authenticate"].startswith("Bearer")
 
 
 @pytest.mark.asyncio
@@ -90,8 +88,8 @@ async def test_v1_path_refuses_every_other_version(client: AsyncClient, version)
 @pytest.mark.asyncio
 async def test_v1_path_accepts_a_trailing_slash(client: AsyncClient) -> None:
     r = await client.post(V1_PATH + "/", json=CALL, headers={"A2A-Version": "1.0"})
-    assert r.status_code == 200
-    assert r.json()["error"]["code"] == -32601
+    assert r.status_code == 401
+    assert r.headers["www-authenticate"].startswith("Bearer")
 
 
 @pytest.mark.asyncio
