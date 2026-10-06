@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 import pytest
+from httpx import ASGITransport, AsyncClient, Response
 
 from cabal.config.identity import GuardrailsConfig, IdentityConfig, PersonaConfig
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
-from cabal.core.app import _delegation_edges, build_router_input_guardrails
+from cabal.core.app import (
+    _caller_edges,
+    _delegation_edges,
+    build_router_input_guardrails,
+    create_app,
+)
+from cabal.core.auth.jwt import AGENT_SUB_PREFIX, mint
+from cabal.core.auth.keys import load_active_signing_key
+from cabal.core.db import open_session
 from cabal.core.guardrails import GuardrailContext, VerdictType
 from cabal.core.guardrails_builtin import DelegationEdgeGuardrail
 
@@ -213,3 +227,203 @@ def test_the_edge_guard_is_wired_with_its_configured_edges() -> None:
     ]
     assert len(edge_guards) == 1
     assert edge_guards[0].edges_for("mason") == frozenset({"archivist"})
+
+
+# ---- agent:<name> subs as callers (cabal#189) ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_colleague_with_a_declared_sub_edge_may_delegate() -> None:
+    """A colleague's token carries sub="agent:<name>" and no cabal_persona.
+    Before #189 every such caller was refused once edges were on."""
+    g = DelegationEdgeGuardrail(edges={}, caller_edges={"agent:ward": ["archivist"]})
+    v = await g.check(_task("archivist"), _ctx(None, "agent:ward"))
+    assert v.type is VerdictType.PASS
+
+
+@pytest.mark.asyncio
+async def test_a_colleague_with_no_sub_edge_is_refused_with_the_remedy() -> None:
+    g = DelegationEdgeGuardrail(edges={}, caller_edges={"agent:ward": ["archivist"]})
+    v = await g.check(_task("librarian"), _ctx(None, "agent:ward"))
+    assert v.type is VerdictType.TERMINATE
+    assert v.reason is not None
+    assert "'agent:ward' to 'librarian'" in v.reason
+    assert '"agent:ward" under [guardrails.caller_edges]' in v.reason
+
+
+@pytest.mark.asyncio
+async def test_an_undeclared_sub_may_delegate_to_nobody() -> None:
+    """Same default-deny as a persona with no may_delegate_to."""
+    g = DelegationEdgeGuardrail(edges={}, caller_edges={"agent:ward": ["archivist"]})
+    v = await g.check(_task("archivist"), _ctx(None, "agent:ext-acme"))
+    assert v.type is VerdictType.TERMINATE
+    assert v.reason is not None and "may delegate to: nothing" in v.reason
+
+
+@pytest.mark.asyncio
+async def test_a_sub_named_like_a_persona_does_not_inherit_its_edges() -> None:
+    """THE REASON THE PREFIX IS KEPT. routes/auth.py strips agent: to get a
+    persona name for the liminal exchange; doing that here would hand an
+    outsider or colleague named `archivist` the local archivist's edges."""
+    g = DelegationEdgeGuardrail(edges={"archivist": ["librarian"]}, caller_edges={})
+    v = await g.check(_task("librarian"), _ctx(None, "agent:archivist"))
+    assert v.type is VerdictType.TERMINATE
+
+
+@pytest.mark.asyncio
+async def test_a_persona_claim_is_judged_as_the_persona_whatever_the_sub() -> None:
+    g = DelegationEdgeGuardrail(
+        edges={"mason": ["archivist"]}, caller_edges={"agent:mason": ["librarian"]}
+    )
+    ctx = _ctx("mason", "agent:mason")
+    assert (await g.check(_task("archivist"), ctx)).type is VerdictType.PASS
+    assert (await g.check(_task("librarian"), ctx)).type is VerdictType.TERMINATE
+
+
+@pytest.mark.asyncio
+async def test_a_bare_agent_prefix_is_not_an_identity() -> None:
+    g = DelegationEdgeGuardrail(edges={}, caller_edges={})
+    v = await g.check(_task("archivist"), _ctx(None, "agent:"))
+    assert v.type is VerdictType.TERMINATE
+    assert v.reason is not None
+    assert "neither an identified persona nor the operator" in v.reason
+
+
+@pytest.mark.parametrize("key", ["archivist", "operator:richard", "agent:", "svc:x"])
+def test_caller_edges_keys_must_be_agent_subs(key: str) -> None:
+    """A persona's edges belong in may_delegate_to; a key here that is not a
+    full agent sub is a namespace mix-up, refused at load."""
+    with pytest.raises(ValueError, match="caller_edges keys"):
+        GuardrailsConfig(caller_edges={key: ["archivist"]})
+
+
+def test_the_config_literal_matches_the_jwt_constant() -> None:
+    """config/identity.py cannot import core and repeats "agent:"."""
+    GuardrailsConfig(caller_edges={f"{AGENT_SUB_PREFIX}ward": []})
+    with pytest.raises(ValueError):
+        GuardrailsConfig(caller_edges={AGENT_SUB_PREFIX: []})
+
+
+def test_caller_edge_targets_resolve_like_persona_edges() -> None:
+    ident = IdentityConfig(
+        personas={"mason": PersonaConfig(role="primus")},
+        guardrails=GuardrailsConfig(caller_edges={"agent:ward": ["mason", "far-peer"]}),
+    )
+    assert _caller_edges(ident) == {"agent:ward": frozenset({"mason-primus", "far-peer"})}
+
+
+@pytest.mark.asyncio
+async def test_the_edge_guard_is_wired_with_its_caller_edges() -> None:
+    ident = IdentityConfig(
+        personas=_personas(),
+        guardrails=GuardrailsConfig(
+            delegation_edges=True, caller_edges={"agent:ward": ["archivist"]}
+        ),
+    )
+    (g,) = [
+        g
+        for g in build_router_input_guardrails(ident)
+        if isinstance(g, DelegationEdgeGuardrail)
+    ]
+    assert (await g.check(_task("archivist"), _ctx(None, "agent:ward"))).type is VerdictType.PASS
+
+
+# ---- end to end: real tokens through the real routes and router ---------
+
+
+@asynccontextmanager
+async def _app_with_edges() -> AsyncIterator[tuple[AsyncClient, Callable[..., str]]]:
+    """Boot the app on an identity.toml with edges on and one sub edge each
+    for a room colleague and an outside agent, both to the built-in echo."""
+    Path("identity.toml").write_text(
+        "[guardrails]\n"
+        "delegation_edges = true\n"
+        "[guardrails.caller_edges]\n"
+        '"agent:ward" = ["echo"]\n'
+        '"agent:ext-partner" = ["echo"]\n'
+    )
+    db_url = os.environ["CABAL_DB_URL"].replace("sqlite://", "sqlite+aiosqlite://", 1)
+    app = create_app(agent="all", config_path="identity.toml", db_url=db_url)
+    async with app.router.lifespan_context(app):
+        async with open_session(app.state.sessionmaker) as session:
+            stored = await load_active_signing_key(session, master_key=app.state.master_key)
+        assert stored is not None
+
+        def token(**kw: object) -> str:
+            return mint(signing_key=stored, **kw)  # type: ignore[arg-type]
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client, token
+
+
+async def _colleague_dispatch(sub: str, task_id: str) -> Response:
+    """A colleague pass as the room service mints it: aud=cabal-core,
+    scope=colleague, sub=agent:<name>, no cabal_persona. Re-minted per target."""
+    async with _app_with_edges() as (client, token):
+        bearer = token(sub=sub, aud="cabal-core", scope=["colleague"])
+        return await client.post(
+            "/a2a/tasks",
+            json={
+                "target": "echo",
+                "task": {
+                    "id": task_id,
+                    "status": {
+                        "state": "submitted",
+                        "message": {"role": "user", "parts": [{"kind": "text", "text": "hi"}]},
+                    },
+                },
+            },
+            headers={"Authorization": f"Bearer {bearer}"},
+        )
+
+
+async def _outsider_send(sub: str) -> Response:
+    """An outside agent's per-persona token as docs/outside-agents.md has the
+    operator mint it: aud=<agent>, scope=dispatch, sub=agent:ext-<name>."""
+    async with _app_with_edges() as (client, token):
+        bearer = token(sub=sub, aud="echo", scope=["dispatch"])
+        return await client.post(
+            "/agents/echo/a2a",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "SendMessage",
+                "params": {
+                    "message": {"messageId": "m-1", "role": "ROLE_USER", "parts": [{"text": "hi"}]}
+                },
+            },
+            headers={"A2A-Version": "1.0", "Authorization": f"Bearer {bearer}"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_colleague_with_a_declared_edge_reaches_its_target_end_to_end() -> None:
+    """THE BUG IN #189: with edges on, this colleague dispatch was refused
+    because the router saw caller_persona=None and a non-operator sub."""
+    r = await _colleague_dispatch("agent:ward", "t-189-ok")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"]["state"] == "completed", r.text
+
+
+@pytest.mark.asyncio
+async def test_a_colleague_without_an_edge_is_refused_end_to_end() -> None:
+    r = await _colleague_dispatch("agent:stranger", "t-189-no")
+    assert r.status_code == 403, r.text
+    assert "no declared edge from 'agent:stranger' to 'echo'" in r.json()["detail"], r.text
+
+
+@pytest.mark.asyncio
+async def test_an_outside_agent_with_a_declared_edge_reaches_its_target() -> None:
+    """Same gap, second caller kind: an outsider's token has no persona either."""
+    r = await _outsider_send("agent:ext-partner")
+    body = r.json()
+    assert "result" in body, body
+    assert body["result"]["task"]["status"]["state"] == "TASK_STATE_COMPLETED", body
+
+
+@pytest.mark.asyncio
+async def test_an_outside_agent_without_an_edge_is_refused() -> None:
+    r = await _outsider_send("agent:ext-stranger")
+    assert r.status_code == 403, r.text
+    assert "no declared edge from 'agent:ext-stranger' to 'echo'" in r.json()["detail"], r.text

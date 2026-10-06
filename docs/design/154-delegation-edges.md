@@ -157,3 +157,37 @@ operator is `"operator" in cabal_scope` (`_require_operator_claims`), which is
 the signal this *should* use. `routes/tasks.py` re-mints the dispatch token
 with `scope=["dispatch"]`, so operator scope does not survive to the router and
 the sub prefix is all that reaches the guard.
+
+## Callers that are not personas (cabal#189)
+
+The guard keyed only on `cabal_persona`, and two kinds of caller never carry
+one: room colleagues, whose passes the room service mints with
+`sub="agent:<name>"`, and outside agents, whose per-persona tokens the operator
+mints with `sub="agent:ext-<name>"` (`docs/outside-agents.md`). With
+`delegation_edges = true` both were refused on every dispatch, as "neither an
+identified persona nor the operator". For colleagues the re-mint was not at
+fault: it passes `cabal_persona` through, and there is none to pass. An
+outsider's token is used as it is, with no re-mint, and carries none either.
+
+**SHIPPED:** an `agent:<name>` sub is a caller in its own right. Its edges are
+declared in `[guardrails] caller_edges`, keyed by the full sub with the prefix
+kept, and the guard looks them up by the full sub. Three choices, all Richard's
+call on 2026-10-05:
+
+1. **A separate table, not sub keys in `may_delegate_to`.** Persona names and
+   agent names are two namespaces. Stripping the prefix, as `routes/auth.py`
+   does for the liminal exchange, would give an outsider or colleague named
+   `archivist` the local archivist's edges. Config load refuses any
+   `caller_edges` key that is not a full `agent:<name>` sub.
+2. **Dispatch pairs do not count as edges.** The room syncs the pairs table
+   (cabal#127); an edge must be operator-authored. Which checks run depends
+   on the token's audience. A token aimed at its target, such as an
+   outsider's, skips the re-mint and the pairs table, and only the edge guard
+   applies. A colleague pass aimed at `cabal-core`, the shape the room mints,
+   goes through both checks, and either one can refuse it.
+3. **The porter is out of scope.** A relay persona (cabal#293) is checked as
+   itself, so every outsider it relays shares one edge set. A per-outsider
+   decision on that hop needs a different mechanism.
+
+A token that does carry a persona claim is still judged as that persona,
+whatever its sub.
