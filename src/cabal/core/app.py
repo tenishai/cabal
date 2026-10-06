@@ -329,7 +329,12 @@ def build_router_input_guardrails(
     # exhausted"; one asking a colleague it may not ask hears the edge refusal
     # either way, because the budget guard passes it through.
     if gconf.delegation_edges:
-        guardrails.append(DelegationEdgeGuardrail(edges=_delegation_edges(identity)))
+        guardrails.append(
+            DelegationEdgeGuardrail(
+                edges=_delegation_edges(identity),
+                caller_edges=_caller_edges(identity),
+            )
+        )
     return guardrails
 
 
@@ -356,6 +361,24 @@ def _delegation_edges(identity: IdentityConfig | None) -> dict[str, frozenset[st
     return {
         caller: frozenset(resolved.get(t, t) for t in persona.may_delegate_to)
         for caller, persona in identity.personas.items()
+    }
+
+
+def _caller_edges(identity: IdentityConfig | None) -> dict[str, frozenset[str]]:
+    """``agent:<name>`` sub -> the AGENT names it may dispatch to (cabal#189).
+
+    Targets resolve exactly as `_delegation_edges` resolves them; the keys are
+    subs and stay subs, prefix included, so they never meet a persona name.
+    """
+    if identity is None:
+        return {}
+    resolved = {
+        name: agent_name_for(name, persona)
+        for name, persona in identity.personas.items()
+    }
+    return {
+        sub: frozenset(resolved.get(t, t) for t in targets)
+        for sub, targets in identity.guardrails.caller_edges.items()
     }
 
 

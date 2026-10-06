@@ -81,6 +81,15 @@ jwt_aud = "liminal"
 # first (see [personas.archivist] below), then switch this on.
 # delegation_edges = false
 
+# cabal#189 -- edges for callers that are not personas here: room colleagues
+# and outside agents, whose tokens carry sub = "agent:<name>" and no persona.
+# Keyed by that FULL sub, prefix included; targets are persona names, as in
+# may_delegate_to. A sub with no line here may delegate to nobody once
+# delegation_edges is on. The room's dispatch pairs are a separate check and
+# do not count as edges.
+# [guardrails.caller_edges]
+# "agent:ext-acme" = ["archivist"]
+
 # ----- Singletons (built-in personas) -----
 # Each persona declared here gets a bulletin-board row at daemon startup.
 # Personas named in PERSONA_REGISTRY (archivist, architect, librarian,

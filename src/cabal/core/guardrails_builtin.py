@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from cabal.core.a2a.types import Task
-from cabal.core.auth.jwt import OPERATOR_SUB_PREFIX
+from cabal.core.auth.jwt import AGENT_SUB_PREFIX, OPERATOR_SUB_PREFIX
 from cabal.core.guardrails import GuardrailContext, Verdict
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -787,6 +787,16 @@ class DelegationEdgeGuardrail:
     deliberately-minted service token with an ``operator:`` sub is exempt,
     which requires operator power to create in the first place.
 
+    **AN ``agent:<name>`` SUB IS A CALLER IN ITS OWN RIGHT (cabal#189).** Room
+    colleagues and outside agents normally carry no ``cabal_persona`` -- the
+    room service mints colleague passes without one, and so does the
+    documented outsider admission -- and before this, once edges were on,
+    every such caller was refused. Their edges are declared
+    against the FULL sub in ``[guardrails] caller_edges`` and looked up here by
+    the full sub, so ``agent:archivist`` never inherits the persona
+    ``archivist``'s edges. A token that carries a persona claim is still judged
+    as that persona, whatever its sub.
+
     **AN UNIDENTIFIABLE TARGET IS REFUSED, NOT WAVED THROUGH.** A default-deny
     control that fails open on a missing field is not default-deny.
 
@@ -796,7 +806,11 @@ class DelegationEdgeGuardrail:
     relationships must permit no delegation rather than allowing any-to-any.
     """
 
-    def __init__(self, edges: Mapping[str, Iterable[str]]) -> None:
+    def __init__(
+        self,
+        edges: Mapping[str, Iterable[str]],
+        caller_edges: Mapping[str, Iterable[str]] | None = None,
+    ) -> None:
         #: caller persona -> the AGENT names it may dispatch to. Agent names,
         #: not persona names: identity_sync gives a role="primus" persona the
         #: agent name "<persona>-primus", while an edge is declared against the
@@ -805,6 +819,11 @@ class DelegationEdgeGuardrail:
         #: "x-primus" as though it were the primus of "x".
         self._edges: dict[str, frozenset[str]] = {
             caller: frozenset(targets) for caller, targets in edges.items()
+        }
+        #: ``agent:<name>`` sub -> the agent names it may dispatch to. Kept apart
+        #: from ``_edges`` so a sub and a persona name can never collide.
+        self._caller_edges: dict[str, frozenset[str]] = {
+            sub: frozenset(targets) for sub, targets in (caller_edges or {}).items()
         }
 
     def edges_for(self, caller_persona: str) -> frozenset[str]:
@@ -822,6 +841,8 @@ class DelegationEdgeGuardrail:
             return Verdict.pass_()
 
         caller = ctx.caller_persona
+        edges = self._edges
+        remedy = "adds '{target}' to may_delegate_to under [personas.{caller}]"
         if caller is None:
             # NOT AUTOMATICALLY THE OPERATOR -- see the class docstring. Grant
             # the exemption only on a positive signal, and refuse otherwise, so
@@ -829,14 +850,18 @@ class DelegationEdgeGuardrail:
             sub = ctx.caller_agent or ""
             if sub.startswith(OPERATOR_SUB_PREFIX):
                 return Verdict.pass_()
+            if sub.startswith(AGENT_SUB_PREFIX) and sub != AGENT_SUB_PREFIX:
+                caller, edges = sub, self._caller_edges
+                remedy = "adds '{target}' to \"{caller}\" under [guardrails.caller_edges]"
+        if caller is None:
             return Verdict.terminate(
                 reason=(
                     "Delegation refused: the caller is neither an identified "
                     f"persona nor the operator (sub={sub!r}). Delegation edges "
                     "are checked against a caller persona, so a token carrying "
-                    "no cabal_persona claim cannot be authorized. A service "
-                    "token that needs to delegate should be minted with the "
-                    "persona it acts as."
+                    "neither a cabal_persona claim nor an agent:<name> sub "
+                    "cannot be authorized. A service token that needs to "
+                    "delegate should be minted with the persona it acts as."
                 )
             )
 
@@ -852,10 +877,10 @@ class DelegationEdgeGuardrail:
                 )
             )
 
-        if target_agent in self._edges.get(caller, frozenset()):
+        if target_agent in edges.get(caller, frozenset()):
             return Verdict.pass_()
 
-        declared = sorted(self._edges.get(caller, frozenset()))
+        declared = sorted(edges.get(caller, frozenset()))
         may = ", ".join(declared) if declared else "nothing"
         return Verdict.terminate(
             reason=(
@@ -863,8 +888,8 @@ class DelegationEdgeGuardrail:
                 f"'{target_agent}'. {caller} may delegate to: {may}. Edges are "
                 "operator-authored config, so this will not change by retrying "
                 "or by rewording. If this delegation should be permitted, the "
-                f"operator adds '{target_agent}' to may_delegate_to under "
-                f"[personas.{caller}] in identity.toml."
+                "operator " + remedy.format(target=target_agent, caller=caller)
+                + " in identity.toml."
             )
         )
 
