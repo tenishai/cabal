@@ -82,8 +82,9 @@ async def test_send_message_streams_stub_response(tmp_path: Path) -> None:
     """Happy path: send_message yields deltas containing the echoed text."""
     identity_path = _write_identity(tmp_path)
 
-    # Pass a placeholder operator_token to bypass the None check in __init__.
-    # We replace it with a real minted token after __aenter__.
+    # The placeholder skips the token-file read in __init__ and the boot-time
+    # self-mint check in __aenter__ (cabal#90). The test then assigns a real
+    # minted token, which is the one send_message uses.
     async with InProcessBrokerClient(
         config_path=str(identity_path),
         acompletion_fn=stub_acompletion,
