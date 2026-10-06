@@ -1,8 +1,10 @@
 """In-process BrokerClient: boots a Cabal app in the same asyncio event loop.
 
 Used by the TUI so it can stream responses without a running daemon.
-The operator token is loaded from TokenStore (i.e. the file written by
-`cbl login`) or passed directly for testing.
+The operator token is passed in, or loaded from TokenStore (the file written
+by `cbl login`). With neither, the client mints its own operator token from
+the booted signing key (cabal#90): the TUI never starts a daemon or prints a
+bootstrap code, so `cbl login` cannot be run from here.
 """
 
 from __future__ import annotations
@@ -11,6 +13,8 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
+
+import structlog
 
 from cabal.cli.client import TokenStore
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
@@ -22,6 +26,13 @@ from cabal.core.broker.router import DispatchError, GuardrailBlocked
 from cabal.core.db import open_session
 from cabal.core.routes._dispatch_auth import dispatch_audience
 from cabal.tui.client.base import BrokerError
+
+log = structlog.get_logger(__name__)
+
+#: Lifetime of a self-minted operator token. One is minted per message, so
+#: this only has to outlast a single dispatch; matching `cbl login`'s hour
+#: keeps the two paths alike.
+_SELF_MINTED_TTL_SECONDS = 60 * 60
 
 
 class InProcessBrokerClient:
@@ -57,14 +68,14 @@ class InProcessBrokerClient:
 
         self._acompletion_fn = acompletion_fn
 
-        # Resolve operator token: caller > TokenStore > error.
+        # Resolve operator token: caller > TokenStore > self-minted (cabal#90).
+        # A token that IS present is always used, even one that will fail
+        # verification: minting around it would also mint around a revoked
+        # or wrong-cabal token, which should be reported instead.
         if operator_token is None:
             operator_token = TokenStore().load()
-        if operator_token is None:
-            raise BrokerError(
-                "no operator token found; run `cbl login` first to authenticate"
-            )
-        self._operator_token = operator_token
+        #: None means "mint one per message once booted" (`_self_minted_token`).
+        self._operator_token: str | None = operator_token
 
         # Per-persona in-session conversation history (A2A Messages, user/agent
         # alternating) threaded into each Task so the persona sees prior turns.
@@ -90,12 +101,16 @@ class InProcessBrokerClient:
         await self._lifespan_cm.__aenter__()
         self._router = self._app.state.dispatch_router
 
-        # Pre-load signing key for _mint_operator_token and dispatch-token minting.
+        # Pre-load the signing key for operator and dispatch token minting.
         try:
             async with open_session(self._app.state.sessionmaker) as session:
                 self._signing_key = await load_active_signing_key(
                     session, master_key=self._app.state.master_key
                 )
+            if self._operator_token is None:
+                # Fail at boot, not on the first message, when there is no
+                # token and no operator_id to mint one for.
+                self._self_minted_token()
         except BaseException:
             # A failed __aenter__ gets no __aexit__ -- from `async with`, or
             # from the TUI, which since cabal#36 exits only a broker it entered
@@ -122,10 +137,15 @@ class InProcessBrokerClient:
 
         Raises BrokerError on auth or dispatch failures before the first delta.
         """
+        operator_token = (
+            self._operator_token
+            if self._operator_token is not None
+            else self._self_minted_token()
+        )
         # Step 1: verify operator token (expected_audience=None → no aud check).
         try:
             claims = verify(
-                self._operator_token,
+                operator_token,
                 key_set=self._app.state.jwks_provider(),
                 expected_audience=None,
             )
@@ -146,7 +166,7 @@ class InProcessBrokerClient:
             raise BrokerError(f"federated target {persona!r} has no federation_audience")
         if claims.get("aud") == audience:
             # Already a correctly-scoped dispatch token.
-            dispatch_token = self._operator_token
+            dispatch_token = operator_token
         else:
             scope = claims.get("cabal_scope") or []
             if "operator" not in scope:
@@ -216,6 +236,40 @@ class InProcessBrokerClient:
             history.append(
                 Message(role="agent", parts=[TextPart(text="".join(reply_chunks))])
             )
+
+    def _self_minted_token(self) -> str:
+        """An operator token for a TUI with no token file (cabal#90).
+
+        The same claims `POST /auth/bootstrap` gives the operator --
+        ``sub=operator:<operator_id>``, ``aud=cabal-core``, ``scope=["operator"]``
+        -- signed with the key this process already decrypted. Nothing is
+        granted that the process did not already hold: whoever can boot this
+        cabal in-process has its master key, and so can sign anything.
+
+        Minted for each message (and once at boot, as a check that is then
+        discarded) and never written to disk, so a long session never holds an
+        expired token and `cbl` never picks one up.
+        """
+        if self._signing_key is None:
+            raise BrokerError("no active signing key available after boot")
+        identity = getattr(self._app.state, "identity", None)
+        operator_id = (
+            identity.cabal.operator_id if identity is not None else None
+        ) or os.environ.get("CABAL_OPERATOR_ID")
+        if not operator_id:
+            raise BrokerError(
+                "no operator token found, and none can be minted: operator_id is "
+                "not configured. Set cabal.operator_id in identity.toml or the "
+                "CABAL_OPERATOR_ID environment variable."
+            )
+        log.debug("tui.operator_token.self_minted", operator_id=operator_id)
+        return mint(
+            signing_key=self._signing_key,
+            sub=f"{OPERATOR_SUB_PREFIX}{operator_id}",
+            aud="cabal-core",
+            scope=["operator"],
+            ttl_seconds=_SELF_MINTED_TTL_SECONDS,
+        )
 
     def _mint_operator_token(self) -> str:
         """Mint a short-lived operator token from the booted app's signing key.
