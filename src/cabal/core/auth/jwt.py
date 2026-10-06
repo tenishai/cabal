@@ -31,6 +31,14 @@ from cabal.core.auth.keys import StoredKey
 #: authorization exemption is one copy too many.
 OPERATOR_SUB_PREFIX = "operator:"
 
+#: The ``sub`` prefix a room COLLEAGUE or an OUTSIDE AGENT token carries
+#: (``agent:<name>``). The room service normally mints colleague passes, and
+#: the operator mints outsider tokens with ``mint-service``; neither path sets
+#: a ``cabal_persona`` unless asked to, so the edge guardrail keys on the sub.
+#: ``config/identity.py`` cannot import this module and repeats the literal;
+#: ``tests/test_delegation_edge_guardrail.py`` holds the two together.
+AGENT_SUB_PREFIX = "agent:"
+
 DEFAULT_TTL_SECONDS = 5 * 60
 DEFAULT_ISS = "cabal-core"
 

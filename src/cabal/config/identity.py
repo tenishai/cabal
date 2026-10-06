@@ -380,6 +380,38 @@ class GuardrailsConfig(_Open):
     #: by default would turn all delegation off at upgrade with no warning.
     #: The default-deny lives in the guard; the migration lives here.
     delegation_edges: bool = False
+    #: cabal#189 -- edges for callers that are NOT personas of this cabal: room
+    #: colleagues and outside agents, whose tokens carry ``sub="agent:<name>"``
+    #: and no ``cabal_persona`` claim. Keyed by that FULL sub, prefix included,
+    #: e.g. ``"agent:ext-acme" = ["archivist"]``; targets are persona names,
+    #: resolved like ``may_delegate_to``.
+    #:
+    #: A SEPARATE TABLE, NOT MORE KEYS ON THE PERSONAS, because a persona name
+    #: and an agent name are two namespaces. Stripping the prefix would hand a
+    #: colleague or outsider named ``archivist`` the local archivist persona's
+    #: edges. Keeping ``agent:`` in the key means the two can never meet.
+    #:
+    #: Same default as personas: a sub with no entry may delegate to nobody.
+    #: Inert unless ``delegation_edges = true``. The room's dispatch pairs
+    #: (cabal#127) are a separate check and do not count as edges here: they
+    #: are room-synced, and an edge must be operator-authored.
+    caller_edges: dict[str, list[str]] = Field(default_factory=dict)
+
+    @field_validator("caller_edges")
+    @classmethod
+    def _caller_edges_keyed_by_agent_sub(
+        cls, v: dict[str, list[str]]
+    ) -> dict[str, list[str]]:
+        # "agent:" is AGENT_SUB_PREFIX in core/auth/jwt.py; this module does
+        # not import core, so the literal is repeated and a test pins the two.
+        bad = sorted(k for k in v if not k.startswith("agent:") or k == "agent:")
+        if bad:
+            raise ValueError(
+                f"guardrails.caller_edges keys must be a full token sub of the "
+                f"form 'agent:<name>' (got {bad}). A persona's own edges go in "
+                "may_delegate_to under [personas.<name>]."
+            )
+        return v
     #: cabal#144 — bound how deep a delegation chain runs. Default-on like its
     #: two neighbours; the guard's own ceiling (MAX_DELEGATION_DEPTH) is a hard
     #: backstop a policy can only lower.
