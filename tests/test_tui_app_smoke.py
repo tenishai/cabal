@@ -221,22 +221,24 @@ async def test_a_boot_failure_exits_with_its_message_not_a_traceback(capsys) -> 
     assert "Traceback" not in err, err
 
 
-def test_the_launcher_reports_a_missing_token_and_exits_1(monkeypatch) -> None:
-    """cabal#36: the no-token BrokerError is raised before the app exists, so
-    the launcher, not on_mount, has to turn it into a message."""
+def test_the_launcher_reports_a_construction_error_and_exits_1(monkeypatch) -> None:
+    """cabal#36: a BrokerError raised while the client is constructed comes
+    before the app exists, so the launcher, not on_mount, has to turn it into a
+    message. A missing token was that error until cabal#90, which mints one
+    after boot instead; the launcher keeps the catch for any other."""
     from typer.testing import CliRunner
 
     import cabal.tui.client.inprocess as inprocess
     from cabal.tui.client.base import BrokerError
     from cabal.tui.main import app as tui_cli
 
-    def no_token(**_: object) -> None:
-        raise BrokerError("no operator token found; run `cbl login` first to authenticate")
+    def bad_config(**_: object) -> None:
+        raise BrokerError("bad client configuration")
 
-    monkeypatch.setattr(inprocess, "InProcessBrokerClient", no_token)
+    monkeypatch.setattr(inprocess, "InProcessBrokerClient", bad_config)
     result = CliRunner().invoke(tui_cli, [])
     assert result.exit_code == 1
-    assert "cabal failed to start: no operator token found" in result.output
+    assert "cabal failed to start: bad client configuration" in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
 
 

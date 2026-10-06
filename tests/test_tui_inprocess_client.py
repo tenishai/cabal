@@ -182,22 +182,96 @@ async def test_broker_client_protocol_satisfied(tmp_path: Path) -> None:
     )
 
 
-def test_missing_operator_token_raises_broker_error(tmp_path: Path, monkeypatch) -> None:
-    """BrokerError is raised at construction time when no token can be found."""
-    identity_path = _write_identity(tmp_path)
-
-    # Redirect DEFAULT_TOKEN_PATH to a non-existent file so TokenStore.load()
-    # returns None.
+def _no_token_file(tmp_path: Path, monkeypatch) -> Path:
+    """Point TokenStore at a file that does not exist, so load() returns None."""
     import cabal.cli.client as _cli_client
 
-    monkeypatch.setattr(_cli_client, "DEFAULT_TOKEN_PATH", tmp_path / "no_token_here")
+    path = tmp_path / "no_token_here"
+    monkeypatch.setattr(_cli_client, "DEFAULT_TOKEN_PATH", path)
+    return path
 
-    with pytest.raises(BrokerError, match="cbl login"):
-        InProcessBrokerClient(
-            config_path=str(identity_path),
-            acompletion_fn=stub_acompletion,
-            # operator_token intentionally omitted
+
+@pytest.mark.asyncio
+async def test_with_no_token_file_the_tui_mints_its_own_and_dispatches(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """cabal#90: the TUI never starts a daemon or prints a bootstrap code, so
+    `cbl login` cannot be run from it. With no token file it must still work."""
+    identity_path = _write_identity(tmp_path)
+    token_path = _no_token_file(tmp_path, monkeypatch)
+
+    async with InProcessBrokerClient(
+        config_path=str(identity_path),
+        acompletion_fn=stub_acompletion,
+        # operator_token intentionally omitted
+    ) as client:
+        chunks = [c async for c in client.send_message("archivist", "hello")]
+
+    assert "echo: hello" in "".join(chunks)
+    assert not token_path.exists(), "a self-minted token must not be written to disk"
+
+
+@pytest.mark.asyncio
+async def test_the_self_minted_token_carries_the_bootstrap_operator_claims(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Same claims POST /auth/bootstrap gives the operator, with the operator_id
+    from identity.toml ahead of CABAL_OPERATOR_ID (the bootstrap route's order)."""
+    from cabal.core.auth.jwt import verify
+
+    identity_path = _write_identity(tmp_path)
+    identity_path.write_text(
+        identity_path.read_text().replace("[cabal]\n", '[cabal]\noperator_id = "richard"\n')
+    )
+    _no_token_file(tmp_path, monkeypatch)
+    monkeypatch.setenv("CABAL_OPERATOR_ID", "from-env")
+
+    async with InProcessBrokerClient(
+        config_path=str(identity_path), acompletion_fn=stub_acompletion
+    ) as client:
+        claims = verify(
+            client._self_minted_token(), key_set=client._app.state.jwks_provider()
         )
+    assert claims["sub"] == "operator:richard"
+    assert claims["aud"] == "cabal-core"
+    assert claims["cabal_scope"] == ["operator"]
+    assert claims["exp"] - claims["iat"] == 60 * 60
+
+
+@pytest.mark.asyncio
+async def test_with_no_token_and_no_operator_id_boot_fails_with_the_fix(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Fail at boot, naming both places operator_id can be set, rather than on
+    the first message."""
+    identity_path = _write_identity(tmp_path)
+    _no_token_file(tmp_path, monkeypatch)
+    monkeypatch.delenv("CABAL_OPERATOR_ID", raising=False)
+
+    client = InProcessBrokerClient(
+        config_path=str(identity_path), acompletion_fn=stub_acompletion
+    )
+    with pytest.raises(BrokerError, match="cabal.operator_id in identity.toml") as exc:
+        await client.__aenter__()
+    assert "CABAL_OPERATOR_ID" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_a_token_file_that_fails_verification_is_reported_not_minted_around(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A present token is always used. Minting around a bad one would also mint
+    around a revoked or wrong-cabal token, which the operator should hear about."""
+    identity_path = _write_identity(tmp_path)
+    token_path = _no_token_file(tmp_path, monkeypatch)
+    token_path.write_text("not.a.valid.jwt")
+
+    async with InProcessBrokerClient(
+        config_path=str(identity_path), acompletion_fn=stub_acompletion
+    ) as client:
+        with pytest.raises(BrokerError, match="operator token invalid"):
+            async for _ in client.send_message("peer-archivist", "hi"):
+                pass
 
 
 @pytest.mark.asyncio
