@@ -38,6 +38,8 @@ FROM scratch AS techne
 # and the package lands in the image. Without the context this stage is empty
 # and the image has no liminal: right for an identity with no `[liminal]`
 # block, and a startup error naming the missing package for one that has it.
+# Without a sibling checkout, --build-arg WITH_MCP=1 (with EXTRA_INDEX_URL)
+# fetches the pinned liminal wheel from the index instead.
 FROM scratch AS liminal
 
 # ----- Build stage ----------------------------------------------------------
@@ -72,6 +74,14 @@ ARG TECHNE_WHEEL_SHA256=7fb9ec7163c08ea9ab04a1492f2dcd73afaf8411aeaf877a0ee36fc7
 # (`make build` / `make up` run it). TECHNE_ANY_VERSION=1 skips this check, for
 # building against whatever the sibling has checked out.
 ARG TECHNE_ANY_VERSION=""
+# liminal from the index too, when the image must carry the [mcp] extra
+# (identity.toml sets `[liminal] url`, cabal#126): --build-arg WITH_MCP=1.
+# Fetched from the index ALONE and pinned, for the same name-squatting
+# reason as techne; its own dependencies are public names and come from
+# PyPI. A sibling checkout (--build-context liminal=…) still wins.
+ARG WITH_MCP=""
+ARG LIMINAL_VERSION=0.3.0
+ARG LIMINAL_WHEEL_SHA256=56c60467a308d6e261f7d14cb5795c2732ec0263e4cc4eea8911090f57294076
 
 # Layer-cache: copy pyproject.toml first, install all deps (and a stub package
 # so the build system is satisfied), then copy the real source last so a
@@ -95,6 +105,13 @@ RUN python3 -m venv /venv \
     fi \
  && if [ -f /build/liminal/pyproject.toml ]; then \
       /venv/bin/pip install --no-cache-dir /build/liminal; \
+    elif [ "$WITH_MCP" = "1" ] && [ -n "$EXTRA_INDEX_URL" ]; then \
+      /venv/bin/pip download --no-cache-dir --no-deps --only-binary :all: --index-url "$EXTRA_INDEX_URL" -d /tmp/liminal-dist "tenishai-liminal==${LIMINAL_VERSION}" \
+      && echo "${LIMINAL_WHEEL_SHA256}  /tmp/liminal-dist/tenishai_liminal-${LIMINAL_VERSION}-py3-none-any.whl" | sha256sum -c - \
+      && /venv/bin/pip install --no-cache-dir /tmp/liminal-dist/tenishai_liminal-${LIMINAL_VERSION}-py3-none-any.whl \
+      && rm -rf /tmp/liminal-dist; \
+    elif [ "$WITH_MCP" = "1" ]; then \
+      echo "liminal: WITH_MCP=1 needs --build-context liminal=../liminal or --build-arg EXTRA_INDEX_URL=…" >&2; exit 1; \
     fi \
  && mkdir -p src/cabal && touch src/cabal/__init__.py \
  && /venv/bin/pip install --no-cache-dir . \
