@@ -13,6 +13,7 @@ config_mounts:                # ConfigMaps read as files (key: one entry as that
   - { name: cabal-config, path: /app/identity.toml, key: identity.toml }
 build_args:                   # passed to docker build; in git, so never a secret
   EXTRA_INDEX_URL: "https://us-central1-python.pkg.dev/shaz-learning/tenish/simple/"
+  WITH_MCP: "1"               # identity.toml sets [liminal] url: the image needs the liminal package
 port: 7400
 arch: arm64                  # image platform + node arch; unset: the platform's default
 node_selector:                # added to the pod verbatim (how this cluster provides arm64, a pool, …)
