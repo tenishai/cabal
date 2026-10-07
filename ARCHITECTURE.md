@@ -1,14 +1,14 @@
 ---
 card: repo-card:cabal
 updated: 2026-10-07
-anchor: pyproject.toml sha=45ff9ca88089254324486b671d2aa87c85481798
+anchor: pyproject.toml sha=068e8747784ad13708f9a13bf73fe87e0a045b34
 anchor: src/cabal/core/app.py sha=82459b3efcb0d78b0c0ea025e948fc22ed3da770
 ---
 # cabal — repo card
 
 WHAT: the platform's orchestrator ("Cabal Core"): a self-hosted FastAPI daemon that is the IdP (RS256 JWT mint/verify, JWKS), the A2A dispatch broker between agents, the bulletin board of registered agents, and the encrypted credential store, plus the LLM personas (architect, archivist, librarian, mason, wright) that run inside it.
 STATE: main, v0.2.0 (pyproject; distribution `tenishai-cabal`, import name `cabal`; `cabal.__version__` reads that package's metadata), classifier Pre-Alpha, AGPL-3.0. Recent work (git log): the A2A v1.0 interface at /agents/{name}/a2a, one shared dispatch-auth policy, detached dispatch, exact-match secrets lookups, operator-only handler flags.
-STACK: Python ≥3.12 (CI 3.12/3.13). FastAPI + uvicorn, SQLAlchemy async + aiosqlite (SQLite only), Alembic (revisions under src/cabal/migrations/versions, shipped as package data), pydantic-settings, Typer, cryptography (Fernet), joserfc (JWT/JWS; declared directly), httpx, structlog, litellm (hard dep, lazily imported). Extras: `mcp` (`tenishai-liminal` ≥0.3), `memory` (`techne` ≥0.18.0), `full`, `tui` (textual), `dev`. Install: `pip install -e ".[dev]"`; siblings as editable checkouts `-e ../techne -e ../liminal` (git pins in requirements-sources.txt). Dockerfile CMD = `cbl daemon up --host 0.0.0.0 --port 7400 --config /app/identity.toml`; docker-compose*.yml, k8s/ manifests, Makefile (dev compose stack, `make bootstrap`).
+STACK: Python ≥3.12 (CI 3.12/3.13). FastAPI + uvicorn, SQLAlchemy async + aiosqlite (SQLite only), Alembic (revisions under src/cabal/migrations/versions, shipped as package data), pydantic-settings, Typer, cryptography (Fernet), joserfc (JWT/JWS; declared directly), httpx, structlog, litellm (hard dep, lazily imported). Extras: `mcp` (`tenishai-liminal` ≥0.3), `memory` (`tenish-techne` ≥0.18.2), `full`, `tui` (textual), `dev`. Install: `pip install -e ".[dev]"`; siblings as editable checkouts `-e ../techne -e ../liminal` (git pins in requirements-sources.txt). Dockerfile CMD = `cbl daemon up --host 0.0.0.0 --port 7400 --config /app/identity.toml`; docker-compose*.yml, k8s/ manifests, Makefile (dev compose stack, `make bootstrap`).
 ENTRY:
 - `cbl` → src/cabal/cli/main.py:app (daemon up, login, dispatch, chat, status, secret, token, persona graduate/absorb, primus rotate, reload identity, reset-auth, session, conversations, tail)
 - server → src/cabal/core/app.py:create_app (lifespan: master key → engine → migrations → signing key → JWKS → identity.toml → router + personas → heartbeat → print bootstrap code); default bind 127.0.0.1:7400

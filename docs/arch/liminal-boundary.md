@@ -4,7 +4,7 @@ updated: 2026-10-07
 anchor: src/cabal/core/tools/mcp_proxy.py sha=f2ffe7aa3cccbead1f17c31bab7884ca9f1265e5
 anchor: src/cabal/core/persona_factory.py sha=e1825f818414b99c8b2d60f46f21a6792230f534
 anchor: src/cabal/handlers/__init__.py sha=2e5f64bd92cf389a3ccaffb7bf7c44fdeef49580
-anchor: pyproject.toml sha=45ff9ca88089254324486b671d2aa87c85481798
+anchor: pyproject.toml sha=068e8747784ad13708f9a13bf73fe87e0a045b34
 ---
 # liminal-boundary — cabal ↔ liminal (MCP gateway), three directions
 
