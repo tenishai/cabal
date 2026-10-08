@@ -1,0 +1,47 @@
+---
+card: repo-card:cabal
+updated: 2026-10-07
+anchor: pyproject.toml sha=45ff9ca88089254324486b671d2aa87c85481798
+anchor: src/cabal/core/app.py sha=82459b3efcb0d78b0c0ea025e948fc22ed3da770
+---
+# cabal — repo card
+
+WHAT: the platform's orchestrator ("Cabal Core"): a self-hosted FastAPI daemon that is the IdP (RS256 JWT mint/verify, JWKS), the A2A dispatch broker between agents, the bulletin board of registered agents, and the encrypted credential store, plus the LLM personas (architect, archivist, librarian, mason, wright) that run inside it.
+STATE: main, v0.2.0 (pyproject; distribution `tenishai-cabal`, import name `cabal`; `cabal.__version__` reads that package's metadata), classifier Pre-Alpha, AGPL-3.0. Recent work (git log): the A2A v1.0 interface at /agents/{name}/a2a, one shared dispatch-auth policy, detached dispatch, exact-match secrets lookups, operator-only handler flags.
+STACK: Python ≥3.12 (CI 3.12/3.13). FastAPI + uvicorn, SQLAlchemy async + aiosqlite (SQLite only), Alembic (revisions under src/cabal/migrations/versions, shipped as package data), pydantic-settings, Typer, cryptography (Fernet), joserfc (JWT/JWS; declared directly), httpx, structlog, litellm (hard dep, lazily imported). Extras: `mcp` (`tenishai-liminal` ≥0.3), `memory` (`techne` ≥0.18.0), `full`, `tui` (textual), `dev`. Install: `pip install -e ".[dev]"`; siblings as editable checkouts `-e ../techne -e ../liminal` (git pins in requirements-sources.txt). Dockerfile CMD = `cbl daemon up --host 0.0.0.0 --port 7400 --config /app/identity.toml`; docker-compose*.yml, k8s/ manifests, Makefile (dev compose stack, `make bootstrap`).
+ENTRY:
+- `cbl` → src/cabal/cli/main.py:app (daemon up, login, dispatch, chat, status, secret, token, persona graduate/absorb, primus rotate, reload identity, reset-auth, session, conversations, tail)
+- server → src/cabal/core/app.py:create_app (lifespan: master key → engine → migrations → signing key → JWKS → identity.toml → router + personas → heartbeat → print bootstrap code); default bind 127.0.0.1:7400
+- `cabal` → src/cabal/tui/main.py:app (Textual TUI; in-process client tui/client/inprocess.py boots the app itself)
+- liminal entry points → src/cabal/handlers/{patterns,documents,code,archivist}.py:get_handler
+- routes (src/cabal/core/routes/): /a2a/tasks (tasks.py), /agents/{name} legacy JSON-RPC + agent-card (a2a_jsonrpc.py), /agents/{name}/a2a (A2A v1.0, a2a_v1.py), shared dispatch-token policy (_dispatch_auth.py), /auth/bootstrap + /auth/liminal-token (auth.py), /admin/* (admin.py), /directory, /.well-known/{jwks.json,agent-card,agent-card.json}, /healthz
+SEAMS → card:
+- dispatch-auth  core/routes/_dispatch_auth.py + tasks.py + a2a_jsonrpc.py + auth/jwt.py  (token realms; the one re-mint policy and its doors; dispatch_pairs)  → docs/arch/dispatch-auth.md
+- dispatch-router  core/broker/router.py  (every hop: JWT verify, bookkeeping, trace, guardrails, local vs remote)  → docs/arch/dispatch-router.md
+- secrets  core/secrets_backend.py + secrets.py  (SecretsBackend; Fernet+SQLite; /admin/secrets for liminal)  → docs/arch/secrets.md
+- liminal-boundary  core/tools/mcp_proxy.py + handlers/  (outbound MCP tools, inbound entry-point handlers)  → docs/arch/liminal-boundary.md
+- techne-memory  core/memory/  (MemoryStore / SessionTracker over techne's API)  → docs/arch/techne-memory.md
+- (uncarded) config/identity.py: identity.toml schema (pydantic, `extra="allow"`: unknown keys and misspelled sections are absorbed silently; unknown TOP-level sections only warn)
+- (uncarded) core/persona_factory.py + agents/personas/__init__.py `PERSONA_REGISTRY`: identity.toml persona → LocalHandler; also used by POST /admin/reload/identity. A persona not in the registry gets a bulletin row but no handler.
+- (uncarded) agents/primus.py (PLAN → concurrent legs → review → aggregate), agents/llm_persona.py (LiteLLM + tool-use loop), core/llm/ (LiteLLM client, circuit breaker, budget)
+- (uncarded) core/guardrails.py + guardrails_builtin.py (PASS/BLOCK/TERMINATE/REWRITE verdicts; doom-loop, delegation depth/budget/edges)
+- (uncarded) core/bulletin/store.py (`agents` table by (name, generation); kind member|federated|session), core/identity_sync.py, broker/heartbeat.py, broker/bookkeeping.py (events + event bus)
+- (uncarded) core/abort.py (AbortGraph, cooperative transitive cancel), core/checkpoint.py (resume via /admin/tasks/{id}/resume)
+- (uncarded) archivist/ (own SQLite team memory, dedup pipeline, git sync), librarian/ (filesystem adapter → techne docs), codex/ (file index + git blame)
+DEPS:
+- techne: optional library import (`cabal[memory]`), lazy; persona memory, session tracking, librarian/codex corpora, Architect patterns. See techne-memory.md.
+- liminal: optional (`cabal[mcp]`). cabal calls liminal as an MCP client; liminal loads cabal's four handlers by entry point and fetches credentials from cabal's /admin/secrets; liminal verifies cabal JWTs via /.well-known/jwks.json.
+- kobo ("the room"): mints `colleague` tokens (sub `agent:<name>`) cabal accepts, and syncs PUT /admin/dispatch-pairs (core/dispatch_pairs.py docstring). No import either way.
+- No code reference to ladon, agora, argus, gojira or kaminos in src/ (agora appears only in CI comments); daedalus appears only in two source comments (guardrails_builtin.py, a2a/codes.py).
+HEALTH: 121 test files, 1233 test functions (`pytest -q`; asyncio_mode=auto; `pythonpath=["src"]` so a worktree tests itself). 17 files importorskip techne/liminal/litellm and skip without siblings. CI (.github/workflows/test.yml): `dco` = sign-off check on PRs; `unit` = ruff check src tests + `pytest -m "not integration"` on 3.12/3.13 (self-hosted runner; push to main, same-repo PR, dispatch); `fork-pr` = same on hosted runner for fork PRs; `integration` (full suite with sibling checkouts) and `docker` (image build) are workflow_dispatch ONLY. Only ONE test carries the `integration` marker (`test_cli_login_and_dispatch_against_live_daemon` in tests/test_cli_login_dispatch.py). mypy strict is configured but not run in CI. No branch protection: CI reports, never blocks.
+GOTCHAS:
+- cabal is the orchestrator/IdP/broker, NOT the MCP gateway (that is liminal) and NOT the memory store (that is techne). core/ speaks A2A; handlers/ speak liminal MCP. Dispatch logic in a handler is the wrong layer.
+- Dispatch-token policy lives once in routes/_dispatch_auth.py; the REST, legacy JSON-RPC and v1.0 doors only translate refusals, and the TUI's in-process client keeps an operator-only variant (dispatch-auth.md). Change policy there, not in a door.
+- Master key: `CABAL_MASTER_KEY` encrypts signing keys AND secrets. A changed key fails startup with a specific message; recovery is `cbl reset-auth`, never guessing keys.
+- role="primus" personas register as `<name>-primus` (e.g. mason-primus).
+- `make test-unit` and `make test-integration` run the same `pytest -q` (AGENTS.md).
+- `identity.toml` is gitignored; edit `identity.toml.example`. `[limenal]` (old spelling) is otherwise ignored: the only signal is an `identity.unknown_section` warning in the log.
+- There is no secrets-backend plugin discovery (nothing reads an entry-point group `cabal.secrets_backends`; cabal#235); a new backend means editing app.py.
+- AgentCards are signed but never verified on dispatch (router docstring, #226).
+- STATUS.md is a June 2026 historical record; docs/proposals/ are design notes, several stale.
+RELATED DOCS: AGENTS.md (agent instructions), docs/architecture.md (diagram), CABAL-DECISIONS.md (D-001…D-018), SECURITY.md, k8s/README.md, docs/design/154-delegation-edges.md.
