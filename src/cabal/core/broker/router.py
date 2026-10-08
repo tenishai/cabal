@@ -409,10 +409,13 @@ class DispatchRouter:
                 # factory registers one for every identity.toml persona; the future
                 # `cbl persona graduate` will unregister it, but this guard is the
                 # enforcement regardless). NOTE: the guard keys on the *resolved*
-                # row's kind, and `target_generation` is caller-controllable — so the
-                # mint site (routes/tasks._resolve_dispatch_token) and _prepare must
-                # resolve the SAME row for their audience/kind to agree. Both use
-                # get_active today; keep it that way if you change audience resolution.
+                # row's kind, and `target_generation` is caller-controllable. The
+                # mint site (_dispatch_auth.dispatch_token, via dispatch_audience)
+                # takes the audience from the ACTIVE row; _prepare resolves the
+                # PINNED row when target_generation is set. If those rows disagree,
+                # _prepare's caller-JWT check against its own row's audience refuses
+                # the dispatch (CallerJWTError), so a mismatch fails closed. Keep that
+                # check if you change how either site resolves the row.
                 await self._bookkeeper.on_dispatch_working(task)
                 if ctx.target.name in self._local and ctx.target.kind != "federated":
                     response = await self._dispatch_local(self._local[ctx.target.name], task)
