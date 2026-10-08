@@ -65,6 +65,12 @@ jobs:
         working-directory: cabal
         run: ruff check src tests
 
+      - name: Architecture cards are current
+        # Each card pins the file it describes by blob sha; a seam that changed
+        # without its card fails here (see AGENTS.md).
+        working-directory: cabal
+        run: python scripts/check_arch_cards.py
+
       - name: Pytest (unit — sibling tests auto-skip; live-daemon tests excluded)
         working-directory: cabal
         run: pytest -q -m "not integration"
@@ -267,6 +273,12 @@ jobs:
       - name: Ruff lint
         working-directory: cabal
         run: ruff check src tests
+
+      - name: Architecture cards are current
+        # Each card pins the file it describes by blob sha; a seam that changed
+        # without its card fails here (see AGENTS.md).
+        working-directory: cabal
+        run: python scripts/check_arch_cards.py
 
       - name: Pytest (unit — sibling tests auto-skip; live-daemon tests excluded)
         working-directory: cabal
