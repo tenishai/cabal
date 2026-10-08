@@ -1,0 +1,33 @@
+---
+card: arch-card:cabal-dispatch-auth
+updated: 2026-10-07
+anchor: src/cabal/core/routes/tasks.py sha=a696584f81495c84ae8d00debd347f692c8ff636
+anchor: src/cabal/core/routes/a2a_jsonrpc.py sha=551a98c9e53cbb09ad9f98e96b3a0b75768e1d80
+anchor: src/cabal/core/auth/jwt.py sha=881c1df69514f389ef2f431cc3626f5e0aef0aa2
+anchor: src/cabal/core/dispatch_pairs.py sha=8447422edfa20732c2a26edb1f4a399ef0bddae1
+anchor: src/cabal/core/routes/auth.py sha=337a52d0c0f0958044b05c044de48a687cd42e7b
+anchor: src/cabal/core/routes/_dispatch_auth.py sha=f4b1f3972d56770d2b47865db5a6e92074bc1675
+---
+# dispatch-auth — JWT realms, scopes, and the re-mint doors
+
+WHAT / SEAM: every credential is an RS256 JWT minted by `jwt.mint` (core/auth/jwt.py; iss "cabal-core", claims `cabal_persona`, `cabal_scope`, `cabal_tool_extras`; default TTL 5 min) and checked by `jwt.verify` (alg pinned RS256) against the JWKS served at `/.well-known/jwks.json`. Revocation: `revocations.refusal(...)` by subject+iat, checked at every door.
+TOKEN KINDS (who mints → aud / scope):
+- operator: POST /auth/bootstrap with the one-shot startup code → sub `operator:<operator_id>`, aud "cabal-core", scope [operator], 1h (`routes/auth.py` `bootstrap`).
+- persona bootstrap: same route, persona code → aud=<persona>, scope [dispatch].
+- colleague: minted OUTSIDE cabal by the room (kobo), sub `agent:<name>`, aud "cabal-core", scope [colleague]. Grants GET /directory, dispatch re-mint, and POST /auth/liminal-token (15-min aud=gateway token).
+- service: POST /admin/token/mint-service (operator only; ≤365 days), e.g. scope secrets-fetch for liminal.
+- per-target dispatch: re-minted by the doors below, aud=<target> (or the federated peer's `federation_audience`), scope ["dispatch"].
+- persona→liminal: minted per call in persona_factory.py (aud `[liminal] jwt_aud`), see liminal-boundary.md.
+OPS / FLOW: caller token → door `_resolve_dispatch_token` (a thin wrapper) → `_dispatch_auth.dispatch_token`: verify + revocation, resolve the target's audience (`dispatch_audience`), token already aimed at it? forward as-is : require operator|colleague scope and a non-empty `sub` → (non-operator) `dispatch_pairs.is_allowed(caller=sub, target)` → re-mint per-target token → `DispatchRouter.dispatch` verifies it again (dispatch-router.md).
+INVARIANTS:
+- ONE POLICY, MANY DOORS. The re-mint policy lives once in `routes/_dispatch_auth.dispatch_token` (cabal#234, #285); the REST door (routes/tasks.py `_resolve_dispatch_token`, POST /a2a/tasks), the legacy JSON-RPC door (routes/a2a_jsonrpc.py `_resolve_dispatch_token`, POST /agents/{name}) and the A2A v1.0 door (routes/a2a_v1.py) only translate a `DispatchRefusal` into their own wire form. Change policy there, never in a door: the old per-door copies drifted, and a pairs check once missing from one was a full bypass. The TUI's in-process client (tui/client/inprocess.py `InProcessBrokerClient`) keeps its own operator-only re-mint but takes the audience from `dispatch_audience`.
+- Wire forms differ on purpose: REST raises HTTPException 401/403/500; legacy JSON-RPC maps a pairs refusal to FORBIDDEN, other refusals to UNAUTHORIZED (`legacy_forbidden`), server faults to INTERNAL. A `federated` target's token gets aud=`federation_audience` at every door; a federated row with none is a 500/INTERNAL.
+- A token with no `sub` is refused (401), not re-minted as "operator" (cabal#184).
+- Re-mint hard-codes scope=["dispatch"]; the caller's operator scope does not survive into the router (open, cabal#164). A router-level guard cannot ask "is this the operator?".
+- dispatch_pairs: EMPTY TABLE = OPEN (D-018). Room syncs the whole set atomically with PUT /admin/dispatch-pairs (operator). Operators skip the check. WHY: deploy-safe; cabal stores policy, kobo decides it.
+- 401 = no/bad signature, expired, revoked; 403 = valid token, wrong audience or scope (D-017), uniformly across guards. Admin guards all go through `admin._require_scope`; /auth/liminal-token still inlines its own gate (noted in its docstring as a follow-up).
+- Revocation is subject-wide (`iat < not_before`, core/auth/revocations.py), held in process memory and written through to a table. WHY it matters: correct only for ONE uvicorn worker; adding workers means moving the lookup to the table. aud=gateway tokens are verified by liminal and live out their 15 min after a revoke.
+- Colleague tokens must 403 on every /admin route (routes/directory.py docstring; tests/test_colleague_scope.py).
+- `jwt.AGENT_SUB_PREFIX` ("agent:") is the sub shape of colleague and outside-agent tokens; the delegation-edge guardrail keys on it (`caller_edges`, cabal#189).
+CONSUMERS: cli/client.py (cbl), tui/client, liminal (verifies cabal JWTs via JWKS), kobo (mints colleague tokens, syncs pairs).
+RELATED DOCS: CABAL-DECISIONS.md D-010, D-017, D-018; SECURITY.md.
