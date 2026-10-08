@@ -1,7 +1,7 @@
 ---
 card: arch-card:cabal-dispatch-router
 updated: 2026-10-07
-anchor: src/cabal/core/broker/router.py sha=c7066e435566d01af52c7bf66d9b3544db6b9858
+anchor: src/cabal/core/broker/router.py sha=6ef125e0fcf8bf0532178f4787fa7e2fb81faba7
 ---
 # dispatch-router — the one place every Task hop goes through
 
@@ -13,7 +13,7 @@ INVARIANTS (docstring §6.12; the numbering is the codebase's):
 - (4) `cabal_trace_id` kept if present, fresh `cabal_span_id` per hop, in task.metadata.
 - (1) AgentCard signature verification is NOT enforced: nothing calls `AgentCardVerifier` (core/a2a/card.py). The JWT is the trust (#226). STATUS.md is a historical record; its banner and invariants table both say the verifier has no caller on the dispatch path.
 - GuardrailBlocked must map to 403 / ERROR_FORBIDDEN, never 502 / ERROR_INTERNAL. WHY: clients retry server faults, which feeds the loop the guardrail exists to break. Every caller (routes/tasks.py, a2a_jsonrpc `_message_send`, a2a_v1) catches it BEFORE DispatchError; a new caller must too.
-- Federated rows always go remote even if a local handler exists (persona_factory registers one for every identity.toml persona). The mint site (`_dispatch_auth.dispatch_audience`) always resolves the ACTIVE row, but `_prepare` resolves the pinned row when the caller passes `target_generation` (caller-controlled, e.g. POST /a2a/tasks). The two can disagree; what keeps that fail-closed is `_prepare`'s own aud check against its row (a mismatch is a 401 CallerJWTError). The source comment in `dispatch` saying "both use get_active" is stale. Keep the router's aud check if you change audience resolution.
+- Federated rows always go remote even if a local handler exists (persona_factory registers one for every identity.toml persona). The mint site (`_dispatch_auth.dispatch_token`, which takes the audience from `dispatch_audience`) always resolves the ACTIVE row, but `_prepare` resolves the pinned row when the caller passes `target_generation` (caller-controlled, e.g. POST /a2a/tasks). The two can disagree; what keeps that fail-closed is `_prepare`'s own aud check against its row (a mismatch is a 401 CallerJWTError). Keep the router's aud check if you change audience resolution.
 - Router guardrails are ONE shared instance set (doom-loop, delegation depth/budget/edges; built by app.build_router_input_guardrails). Personas get the router's budget via `input_guardrail_of(DelegationBudgetGuardrail)`. WHY: a second instance doubles a conversation's delegation allowance.
 - A role="primus" persona registers as `<name>-primus`; an unpinned miss suggests the suffix.
 CONSUMERS: routes/tasks.py, routes/a2a_jsonrpc.py (message/send, message/stream, tasks/get), routes/a2a_v1.py (v1.0 SendMessage; `start_detached` for returnImmediately), routes/admin.py (resume, abort, graph, persona graduate, reload/identity), tui/client/inprocess.py, core/persona_factory.py (registration, shared abort/guards), agents/primus.py (shares the router's budget guard; its fan-out legs call Subordinates directly, NOT through the router).
