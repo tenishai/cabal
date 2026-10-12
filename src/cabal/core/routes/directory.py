@@ -5,6 +5,11 @@ like "agent:<name>") grants exactly two things: this read, and dispatch
 re-mint (see `_dispatch_auth.dispatch_token`). Nothing else — a
 colleague token must still get 403 on every /admin route.
 
+A colleague sees only the agents the dispatch-pairs table lets it ask
+(cabal#321), so the directory never advertises a target that re-mint
+would refuse. An empty table is open (D-018) and operators see everyone,
+both matching `dispatch_token`.
+
 Serialization reads the bulletin board's `agent_card_json` tolerantly: it
 may be a bare AgentCard dict, or the `{"jws": ..., "card": {...}}` shape
 `sign_card` produces. Missing metadata fields default to empty rather
@@ -19,6 +24,7 @@ from typing import Any
 from fastapi import APIRouter, Header, Request
 
 from cabal.config.identity import resolve_public_url
+from cabal.core import dispatch_pairs
 from cabal.core.auth.jwt import extract_bearer
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
@@ -32,7 +38,7 @@ async def list_directory(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    _require_scope(
+    claims = _require_scope(
         request,
         extract_bearer(authorization),
         audiences={_AUD_OPERATOR},
@@ -40,6 +46,13 @@ async def list_directory(
     )
     async with open_session(request.app.state.sessionmaker) as session:
         rows = await bulletin_store.list_all(session)
+        # None = everyone: operators are never gated, and an empty pairs
+        # table is open. A colleague is keyed by its `sub`, as in re-mint.
+        allowed: set[str] | None = None
+        if "operator" not in (claims.get("cabal_scope") or []):
+            allowed = await dispatch_pairs.allowed_targets(
+                session, caller=claims.get("sub") or ""
+            )
     try:
         base_url = resolve_public_url(getattr(request.app.state, "identity", None))
     except ValueError:
@@ -54,6 +67,8 @@ async def list_directory(
         if row.kind == "session":
             continue
         if row.status != "active":
+            continue
+        if allowed is not None and row.name not in allowed:
             continue
         card = (row.agent_card_json or {}).get("card", row.agent_card_json or {})
         meta = card.get("metadata") or {}

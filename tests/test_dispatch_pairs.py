@@ -510,3 +510,23 @@ async def test_empty_table_is_open_for_any_sub_shape(
     token = await _mint_token(app, sub="persona:archivist", scope=["colleague"])
     resp = await _dispatch(client, token, task_id="t-any-shape")
     assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_allowed_targets_agrees_with_is_allowed(app: FastAPI) -> None:
+    """`allowed_targets` (the directory's set form, cabal#321) must give the
+    same answer as `is_allowed` per target, including None for an empty table."""
+    from cabal.core import dispatch_pairs
+
+    async with open_session(app.state.sessionmaker) as session:
+        assert await dispatch_pairs.allowed_targets(session, "agent:a") is None
+        await dispatch_pairs.replace_all(
+            session, [("agent:a", "b"), ("agent:a", "c"), ("agent:x", "d")]
+        )
+        allowed = await dispatch_pairs.allowed_targets(session, "agent:a")
+        assert allowed == {"b", "c"}
+        for target in ("b", "c", "d"):
+            assert (target in allowed) == await dispatch_pairs.is_allowed(
+                session, caller="agent:a", target=target
+            )
+        assert await dispatch_pairs.allowed_targets(session, "agent:z") == set()
