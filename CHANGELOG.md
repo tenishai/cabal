@@ -156,6 +156,14 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Changed
 
+- **techne 0.18.2, under its new distribution name `tenish-techne`.** The `memory` and
+  `full` extras need `tenish-techne>=0.18.2`, `requirements-sources.txt` pins the `v0.18.2`
+  tag, and the Dockerfile's index path downloads `tenish-techne==0.18.2` and checks its
+  wheel hash. The import package and the `techne` command are unchanged. Run
+  `pip uninstall techne` before reinstalling: pip treats the two names as unrelated
+  projects and would leave the old one installed beside the new one. A sibling build wants
+  `../techne` at `v0.18.2`.
+
 - **README says which handlers the shipped stacks leave unconfigured** (part of
   tenishai/cabal#129). `archivist`, `documents`, `patterns` and `code` need corpus paths
   that no compose or k8s file sets; the README now names the env vars and the gap.

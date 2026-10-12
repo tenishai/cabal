@@ -62,13 +62,15 @@ WORKDIR /build
 
 # See CABAL-DECISIONS D-008/D-012 for why techne is a build input. When it
 # lands on PyPI, drop the techne stage and the install branch below and add a
-# `techne>=0.18.0` pin to pyproject.toml's dependencies.
+# `tenish-techne>=` pin at the current TECHNE_VERSION to pyproject.toml's
+# dependencies.
 COPY --from=techne / /build/techne
 COPY --from=liminal / /build/liminal
 ARG EXTRA_INDEX_URL=""
-# techne v0.18.0 (tag at 87bdcf1), the py3-none-any wheel.
-ARG TECHNE_VERSION=0.18.0
-ARG TECHNE_WHEEL_SHA256=7fb9ec7163c08ea9ab04a1492f2dcd73afaf8411aeaf877a0ee36fc71cd42433
+# techne v0.18.2 (tag at 96a030d), the py3-none-any wheel. From 0.18.2 the
+# distribution is tenish-techne; the import package is still techne.
+ARG TECHNE_VERSION=0.18.2
+ARG TECHNE_WHEEL_SHA256=43e96409b99a7d9e4bf5f075226b87464db5830e9bdb8323ab4f7f3675c29e51
 # A sibling checkout must report TECHNE_VERSION too. That catches a checkout of
 # another release; it cannot catch techne's main between releases, which reports
 # the last released version. scripts/check-techne-sibling.sh compares commits
@@ -98,9 +100,9 @@ RUN --mount=type=secret,id=ar_token \
       && /venv/bin/pip install --no-cache-dir /build/techne; \
     elif [ -n "$EXTRA_INDEX_URL" ]; then \
       if [ -r /run/secrets/ar_token ] && [ -s /run/secrets/ar_token ]; then AR_TOKEN="$(cat /run/secrets/ar_token)"; EXTRA_INDEX_URL="$(echo "$EXTRA_INDEX_URL" | sed "s#://#://oauth2accesstoken:${AR_TOKEN}@#")"; unset AR_TOKEN; fi; \
-      /venv/bin/pip download --no-cache-dir --no-deps --only-binary :all: --index-url "$EXTRA_INDEX_URL" -d /tmp/techne-dist "techne==${TECHNE_VERSION}" \
-      && echo "${TECHNE_WHEEL_SHA256}  /tmp/techne-dist/techne-${TECHNE_VERSION}-py3-none-any.whl" | sha256sum -c - \
-      && /venv/bin/pip install --no-cache-dir /tmp/techne-dist/techne-${TECHNE_VERSION}-py3-none-any.whl \
+      /venv/bin/pip download --no-cache-dir --no-deps --only-binary :all: --index-url "$EXTRA_INDEX_URL" -d /tmp/techne-dist "tenish-techne==${TECHNE_VERSION}" \
+      && echo "${TECHNE_WHEEL_SHA256}  /tmp/techne-dist/tenish_techne-${TECHNE_VERSION}-py3-none-any.whl" | sha256sum -c - \
+      && /venv/bin/pip install --no-cache-dir /tmp/techne-dist/tenish_techne-${TECHNE_VERSION}-py3-none-any.whl \
       && rm -rf /tmp/techne-dist; \
     else \
       echo "techne: pass --build-context techne=../techne or --build-arg EXTRA_INDEX_URL=… (see the techne stage)" >&2; exit 1; \

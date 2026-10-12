@@ -54,10 +54,10 @@ tui = ["textual>=1.0"]
 # `memory` pulls in techne for the Archivist persona + any persona that
 # binds a TechneMemoryStore. Same shape — cabal runs without it; personas
 # that need it raise a clear error pointing at this extra.
-memory = ["techne>=0.18.0"]
+memory = ["tenish-techne>=0.18.2"]
 
 # Everything wired together, for the canonical platform install.
-full = ["tenishai-liminal>=0.3", "techne>=0.18.0"]
+full = ["tenishai-liminal>=0.3", "tenish-techne>=0.18.2"]
 
 dev = [
     "pytest>=8.3",
