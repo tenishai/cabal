@@ -3,7 +3,7 @@ card: arch-card:cabal-secrets
 updated: 2026-10-07
 anchor: src/cabal/core/secrets_backend.py sha=efab23f140e315ec24c695f392b73a7e80c92b71
 anchor: src/cabal/core/secrets.py sha=d071247288bc276cc285844b863fc3b314f33195
-anchor: src/cabal/core/routes/admin.py sha=43a2a646edac1344843b78bdc32aa2def885ff41
+anchor: src/cabal/core/routes/admin.py sha=a1193d29d4a1512c5b73966e3217cfe814e568da
 ---
 # secrets — the platform's solo credential store (Fernet + SQLite)
 
