@@ -5,8 +5,10 @@
 # Two ways in, same image either way:
 #   --build-context techne=../techne                       (compose, dev: unchanged)
 #   --build-arg EXTRA_INDEX_URL=https://<index>/simple/    (a package index)
-#     [--build-arg AR_TOKEN=…]  for a private Artifact Registry index; the
-#     token Gojira's generated CI passes to every build (2026-09-30).
+#     [--secret id=ar_token,env=AR_TOKEN]  for a private Artifact Registry
+#     index: a BuildKit secret, mounted in the one RUN that needs it. Never a
+#     build arg: those are printed in the build log and kept in the build
+#     stage's metadata and cache (cabal#250).
 # techne itself is fetched from that index ALONE, then installed as a file, so
 # only its dependencies come from PyPI. The name `techne` on PyPI belongs to
 # someone else (0.0.2 as of 2026-10-01); with the index as an *extra* index,
@@ -64,7 +66,6 @@ WORKDIR /build
 COPY --from=techne / /build/techne
 COPY --from=liminal / /build/liminal
 ARG EXTRA_INDEX_URL=""
-ARG AR_TOKEN=""
 # techne v0.18.0 (tag at 87bdcf1), the py3-none-any wheel.
 ARG TECHNE_VERSION=0.18.0
 ARG TECHNE_WHEEL_SHA256=7fb9ec7163c08ea9ab04a1492f2dcd73afaf8411aeaf877a0ee36fc71cd42433
@@ -87,7 +88,8 @@ ARG LIMINAL_WHEEL_SHA256=56c60467a308d6e261f7d14cb5795c2732ec0263e4cc4eea8911090
 # so the build system is satisfied), then copy the real source last so a
 # code-only change doesn't bust the dependency install layer.
 COPY pyproject.toml README.md LICENSE ./
-RUN python3 -m venv /venv \
+RUN --mount=type=secret,id=ar_token \
+    python3 -m venv /venv \
  && if [ -f /build/techne/pyproject.toml ]; then \
       sib="$(sed -n 's/^version = "\(.*\)"/\1/p' /build/techne/pyproject.toml | head -1)"; \
       if [ "$sib" != "$TECHNE_VERSION" ] && [ "$TECHNE_ANY_VERSION" != "1" ]; then \
@@ -95,7 +97,7 @@ RUN python3 -m venv /venv \
       fi \
       && /venv/bin/pip install --no-cache-dir /build/techne; \
     elif [ -n "$EXTRA_INDEX_URL" ]; then \
-      if [ -n "$AR_TOKEN" ]; then EXTRA_INDEX_URL="$(echo "$EXTRA_INDEX_URL" | sed "s#://#://oauth2accesstoken:${AR_TOKEN}@#")"; fi; \
+      if [ -r /run/secrets/ar_token ] && [ -s /run/secrets/ar_token ]; then AR_TOKEN="$(cat /run/secrets/ar_token)"; EXTRA_INDEX_URL="$(echo "$EXTRA_INDEX_URL" | sed "s#://#://oauth2accesstoken:${AR_TOKEN}@#")"; unset AR_TOKEN; fi; \
       /venv/bin/pip download --no-cache-dir --no-deps --only-binary :all: --index-url "$EXTRA_INDEX_URL" -d /tmp/techne-dist "techne==${TECHNE_VERSION}" \
       && echo "${TECHNE_WHEEL_SHA256}  /tmp/techne-dist/techne-${TECHNE_VERSION}-py3-none-any.whl" | sha256sum -c - \
       && /venv/bin/pip install --no-cache-dir /tmp/techne-dist/techne-${TECHNE_VERSION}-py3-none-any.whl \

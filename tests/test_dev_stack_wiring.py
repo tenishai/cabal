@@ -38,3 +38,13 @@ def test_compose_files_pass_a_liminal_context_when_their_identity_sets_a_url():
         compose = yaml.safe_load((ROOT / compose_name).read_text())
         contexts = compose["services"][service]["build"]["additional_contexts"]
         assert contexts.get("liminal") == "../liminal", compose_name
+
+
+def test_dockerfile_takes_the_ar_token_as_a_secret_not_a_build_arg():
+    # A build arg is printed in the build log and kept in the stage's metadata
+    # and cache (cabal#250). A secret mount is neither.
+    text = (ROOT / "Dockerfile").read_text()
+    assert "ARG AR_TOKEN" not in text
+    assert "--mount=type=secret,id=ar_token" in text
+    assert "/run/secrets/ar_token" in text
+    assert "--build-arg AR_TOKEN" not in (ROOT / ".github/workflows/gojira-ci.yaml").read_text()
