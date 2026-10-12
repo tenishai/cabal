@@ -21,6 +21,10 @@ Covers:
        by an interleaved read, shape validation (422), and the sanity cap.
     3. The JSON-RPC door gives the same answer as the REST one for the
        same token, and empty-means-open holds for every caller shape.
+    4. Refusals are recorded server-side (#315): one warning per refusal,
+       an events row only when the caller's token verified, caller, target
+       and reason bounded, a failed audit write still refuses, and syncing an empty
+       table warns.
 
 """
 
@@ -29,6 +33,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+import structlog
 from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -36,7 +41,7 @@ from sqlalchemy import select
 from cabal.core.auth.jwt import mint
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.db import open_session
-from cabal.core.models import BootstrapCode
+from cabal.core.models import BootstrapCode, Event
 
 TARGET = "echo"
 
@@ -530,3 +535,150 @@ async def test_allowed_targets_agrees_with_is_allowed(app: FastAPI) -> None:
                 session, caller="agent:a", target=target
             )
         assert await dispatch_pairs.allowed_targets(session, "agent:z") == set()
+
+
+# ---- 4. refusals are recorded server-side (#315) ---------------------------
+
+
+async def _refusal_events(app: FastAPI) -> list[dict]:
+    async with open_session(app.state.sessionmaker) as session:
+        rows = (
+            await session.execute(select(Event).where(Event.event_type == "dispatch_refused"))
+        ).scalars().all()
+    return [row.payload_json for row in rows]
+
+
+@pytest.mark.asyncio
+async def test_missing_pair_is_logged_and_audited_once(app: FastAPI, client: AsyncClient) -> None:
+    from cabal.core import dispatch_pairs
+
+    async with open_session(app.state.sessionmaker) as session:
+        await dispatch_pairs.replace_all(session, [("agent:sizing-agent", TARGET)])
+    token = await _mint_token(app, sub="agent:rogue", scope=["colleague"])
+    with structlog.testing.capture_logs() as logs:
+        resp = await _dispatch(client, token, task_id="t-logged")
+    assert resp.status_code == 403
+    refused = [e for e in logs if e["event"] == "dispatch.refused"]
+    assert len(refused) == 1, logs
+    entry = refused[0]
+    assert entry["log_level"] == "warning"
+    assert (entry["caller"], entry["target"], entry["check"]) == ("agent:rogue", TARGET, "pair")
+    assert all(token not in str(v) for v in entry.values())
+    events = await _refusal_events(app)
+    assert len(events) == 1
+    assert events[0]["caller"] == "agent:rogue"
+    assert events[0]["target"] == TARGET
+    assert events[0]["check"] == "pair"
+    assert "not a colleague" in events[0]["reason"]
+    assert all(token not in str(v) for v in events[0].values())
+
+
+@pytest.mark.asyncio
+async def test_scope_refusal_names_the_scope_check(app: FastAPI, client: AsyncClient) -> None:
+    token = await _mint_token(app, sub="agent:nobody", scope=[])
+    with structlog.testing.capture_logs() as logs:
+        resp = await _dispatch(client, token, task_id="t-scope")
+    assert resp.status_code in (401, 403)
+    refused = [e for e in logs if e["event"] == "dispatch.refused"]
+    assert [e["check"] for e in refused] == ["scope"]
+    assert [e["check"] for e in await _refusal_events(app)] == ["scope"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_token_refusal_is_logged_but_never_written(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """An unverified caller must not get a durable write: anyone who can reach
+    the port can send a bad token (PR #316 review)."""
+    with structlog.testing.capture_logs() as logs:
+        resp = await _dispatch(client, "not-a-jwt", target="x" * 5000, task_id="t-bad")
+    assert resp.status_code == 401
+    refused = [e for e in logs if e["event"] == "dispatch.refused"]
+    assert len(refused) == 1
+    assert refused[0]["caller"] is None
+    assert refused[0]["check"] == "token"
+    assert len(refused[0]["target"]) < 200
+    assert await _refusal_events(app) == []
+
+
+@pytest.mark.asyncio
+async def test_recorded_fields_are_bounded(app: FastAPI, client: AsyncClient) -> None:
+    token = await _mint_token(app, sub="agent:nobody", scope=[])
+    await _dispatch(client, token, target="y" * 5000, task_id="t-long")
+    events = await _refusal_events(app)
+    assert len(events) == 1
+    assert len(events[0]["target"]) < 200 and events[0]["target"].endswith("[truncated]")
+    assert len(events[0]["reason"]) < 200
+
+
+@pytest.mark.asyncio
+async def test_a_failed_audit_write_still_refuses(
+    app: FastAPI, client: AsyncClient, monkeypatch
+) -> None:
+    from cabal.core import dispatch_pairs
+    from cabal.core.routes import _dispatch_auth
+
+    async with open_session(app.state.sessionmaker) as session:
+        await dispatch_pairs.replace_all(session, [("agent:sizing-agent", TARGET)])
+    token = await _mint_token(app, sub="agent:rogue", scope=["colleague"])
+
+    real = _dispatch_auth.open_session
+    calls = {"n": 0}
+
+    def flaky(sessionmaker):
+        # The policy's own session must work; only the audit write fails.
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("db gone")
+        return real(sessionmaker)
+
+    monkeypatch.setattr(_dispatch_auth, "open_session", flaky)
+    with structlog.testing.capture_logs() as logs:
+        resp = await _dispatch(client, token, task_id="t-flaky")
+    assert resp.status_code == 403
+    assert [e["event"] for e in logs if e["event"].startswith("dispatch.refused")] == [
+        "dispatch.refused",
+        "dispatch.refused_audit_failed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_allowed_dispatch_records_no_refusal(app: FastAPI, client: AsyncClient) -> None:
+    from cabal.core import dispatch_pairs
+
+    async with open_session(app.state.sessionmaker) as session:
+        await dispatch_pairs.replace_all(session, [("agent:sizing-agent", TARGET)])
+    token = await _mint_token(app, sub="agent:sizing-agent", scope=["colleague"])
+    with structlog.testing.capture_logs() as logs:
+        resp = await _dispatch(client, token, task_id="t-ok")
+    assert resp.status_code == 200, resp.text
+    assert not [e for e in logs if e["event"] == "dispatch.refused"]
+    assert await _refusal_events(app) == []
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_refusal_is_recorded_too(app: FastAPI, client: AsyncClient) -> None:
+    from cabal.core import dispatch_pairs
+
+    async with open_session(app.state.sessionmaker) as session:
+        await dispatch_pairs.replace_all(session, [("agent:sizing-agent", TARGET)])
+    token = await _mint_token(app, sub="agent:rogue", scope=["colleague"])
+    await _dispatch_jsonrpc(client, token)
+    assert [e["check"] for e in await _refusal_events(app)] == ["pair"]
+
+
+@pytest.mark.asyncio
+async def test_syncing_an_empty_pairs_table_warns(app: FastAPI, client: AsyncClient) -> None:
+    op = await _operator_token(app, client)
+    headers = {"Authorization": f"Bearer {op}"}
+    with structlog.testing.capture_logs() as logs:
+        r1 = await client.put(
+            "/admin/dispatch-pairs", json={"pairs": [["agent:a", TARGET]]}, headers=headers
+        )
+        r2 = await client.put("/admin/dispatch-pairs", json={"pairs": []}, headers=headers)
+    assert r1.status_code == 200 and r2.status_code == 200
+    events = [(e["event"], e["log_level"], e["count"]) for e in logs if "dispatch_pairs" in e["event"]]
+    assert events == [
+        ("dispatch_pairs.replaced", "info", 1),
+        ("dispatch_pairs.replaced_empty", "warning", 0),
+    ]

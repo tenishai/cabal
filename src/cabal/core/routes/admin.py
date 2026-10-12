@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -32,6 +33,7 @@ from cabal.core.db import open_session
 from cabal.core.models import Agent, Conversation, Event, Persona, TaskCheckpoint
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+log = structlog.get_logger(__name__)
 
 # Audience constants — must match what bootstrap / mint-service produce.
 # Operator tokens: aud="cabal-core" (minted in routes/auth.py bootstrap).
@@ -1175,4 +1177,10 @@ async def put_dispatch_pairs(
                     "check the pairs list for a caller/target mismatch and retry"
                 ),
             ) from exc
+    # An empty table means OPEN (D-018), so an operator must be able to see
+    # when a sync left it that way (#315).
+    if stored:
+        log.info("dispatch_pairs.replaced", count=len(stored))
+    else:
+        log.warning("dispatch_pairs.replaced_empty", count=0, effect="dispatch is open")
     return {"count": len(stored)}

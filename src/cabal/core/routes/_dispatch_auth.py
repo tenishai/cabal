@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+import structlog
 from fastapi import Request
 
 from cabal.core import dispatch_pairs
@@ -24,6 +25,9 @@ from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.auth.revocations import refusal
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
+from cabal.core.models import Event
+
+log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,11 +39,15 @@ class DispatchRefusal:
     or `internal` (a server-side fault). `legacy_forbidden` keeps the legacy
     route's historical split: it answers a scope refusal as unauthorized and
     only a dispatch-pairs refusal as forbidden.
+
+    `check` names which check refused, for the operator's log and audit row
+    (#315): token, revoked, audience, scope, sub, pair or signing_key.
     """
 
     kind: Literal["unauthenticated", "forbidden", "internal"]
     message: str
     legacy_forbidden: bool = False
+    check: str = ""
 
 
 def verify_caller(request: Request, raw_token: str) -> dict[str, Any] | DispatchRefusal:
@@ -47,9 +55,9 @@ def verify_caller(request: Request, raw_token: str) -> dict[str, Any] | Dispatch
     try:
         claims = verify(raw_token, key_set=request.app.state.jwks_provider(), expected_audience=None)
     except JWTError as exc:
-        return DispatchRefusal("unauthenticated", str(exc))
+        return DispatchRefusal("unauthenticated", str(exc), check="token")
     if (why := refusal(getattr(request.app.state, "revocations", None), claims)) is not None:
-        return DispatchRefusal("unauthenticated", why)
+        return DispatchRefusal("unauthenticated", why, check="revoked")
     return claims
 
 
@@ -74,16 +82,76 @@ async def dispatch_token(request: Request, raw_token: str, target: str) -> str |
     Otherwise the caller needs operator or colleague scope, a `sub`, and
     (unless operator) an allowed caller-to-target pair, and gets a fresh
     dispatch token minted for that audience.
+
+    Every refusal is recorded here, once, for all three doors (#315): a
+    warning log line, and for a caller whose token verified, a
+    `dispatch_refused` row in the events table. Before this, the caller saw
+    the reason in its error response (401, 403 or 500) and the server kept
+    nothing.
     """
     claims = verify_caller(request, raw_token)
     if isinstance(claims, DispatchRefusal):
+        # An unverified caller gets a log line, never a database row: anyone
+        # who can reach the port can send a bad token.
+        await _record_refusal(request, claims, caller=None, target=target, audit=False)
         return claims
+    result = await _dispatch_token(request, raw_token, target, claims)
+    if isinstance(result, DispatchRefusal):
+        await _record_refusal(request, result, caller=claims.get("sub") or None, target=target)
+    return result
+
+
+#: Longest caller, target or reason recorded. `target` comes from the request
+#: body and is otherwise unbounded; agent names are at most 64 characters.
+_RECORD_MAX = 128
+
+
+def _bounded(value: str | None) -> str | None:
+    if value is None or len(value) <= _RECORD_MAX:
+        return value
+    return value[:_RECORD_MAX] + "...[truncated]"
+
+
+async def _record_refusal(
+    request: Request,
+    refused: DispatchRefusal,
+    *,
+    caller: str | None,
+    target: str,
+    audit: bool = True,
+) -> None:
+    """Log one refusal and, when `audit`, write its events row. Never the
+    token. caller, target and reason are capped at _RECORD_MAX; kind and
+    check are fixed literals set in this module. An audit write that fails is
+    logged and swallowed: the caller still gets its refusal."""
+    fields = {
+        "caller": _bounded(caller),
+        "target": _bounded(target),
+        "kind": refused.kind,
+        "check": refused.check,
+        "reason": _bounded(refused.message),
+    }
+    log.warning("dispatch.refused", **fields)
+    if not audit:
+        return
+    try:
+        async with open_session(request.app.state.sessionmaker) as session:
+            session.add(Event(task_id=None, event_type="dispatch_refused", payload_json=fields))
+    except Exception as exc:  # noqa: BLE001 -- the refusal must still go out
+        log.warning("dispatch.refused_audit_failed", error=str(exc), **fields)
+
+
+async def _dispatch_token(
+    request: Request, raw_token: str, target: str, claims: dict[str, Any]
+) -> str | DispatchRefusal:
 
     async with open_session(request.app.state.sessionmaker) as session:
         audience = await dispatch_audience(session, target)
         if audience is None:
             return DispatchRefusal(
-                "internal", f"federated target {target!r} has no federation_audience"
+                "internal",
+                f"federated target {target!r} has no federation_audience",
+                check="audience",
             )
         if claims.get("aud") == audience:
             return raw_token
@@ -94,6 +162,7 @@ async def dispatch_token(request: Request, raw_token: str, target: str) -> str |
                 "forbidden",
                 f"token aud={claims.get('aud')!r} cannot dispatch to {target!r} "
                 "(requires operator or colleague scope)",
+                check="scope",
             )
 
         sub = claims.get("sub") or ""
@@ -101,7 +170,9 @@ async def dispatch_token(request: Request, raw_token: str, target: str) -> str |
         # to re-mint it rather than default the principal to "operator".
         if not sub:
             return DispatchRefusal(
-                "unauthenticated", "token carries no sub; refusing to re-mint a dispatch token"
+                "unauthenticated",
+                "token carries no sub; refusing to re-mint a dispatch token",
+                check="sub",
             )
 
         # Scope says who may ask for a re-mint; the pairs table says who may
@@ -113,10 +184,11 @@ async def dispatch_token(request: Request, raw_token: str, target: str) -> str |
                 "forbidden",
                 f"{sub} is not a colleague of {target} yet. Ask in the room.",
                 legacy_forbidden=True,
+                check="pair",
             )
         stored = await load_active_signing_key(session, master_key=request.app.state.master_key)
     if stored is None:
-        return DispatchRefusal("internal", "no active signing key")
+        return DispatchRefusal("internal", "no active signing key", check="signing_key")
     return mint(
         signing_key=stored,
         sub=sub,
