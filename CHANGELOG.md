@@ -18,6 +18,10 @@ Pull requests and issues are in tenishai/cabal.
   2026-09-14 crash-looped on an Alembic problem). Stop cabal, then copy the SQLite file
   with any `-wal` and `-shm` files beside it: the path in `CABAL_DB_URL` when it is set
   (`/data/cabal.db` in the image), otherwise `data/cabal.db` under the state root.
+  **0.2.0 will not start on a database 0.3.0 has migrated**: its startup `alembic upgrade
+  head` cannot find revision `d7e1f3a9b2c4` and stops. To roll back, restore the backup,
+  or run `alembic downgrade c4f0a2b18e77` with 0.3.0 still installed before switching
+  back; the migration's `downgrade()` drops the table.
 - **The distribution is now `tenish-cabal`** (tenishai/cabal#324). 0.2.0 was published as
   `cabal`, and main between the two releases called it `tenishai-cabal`
   (tenishai/cabal#241), a name no release used. The import package and the `cbl` and
@@ -227,8 +231,8 @@ Pull requests and issues are in tenishai/cabal.
   commands and the GitHub URL do not (tenishai/cabal#324). See Upgrading.
 - **liminal 0.4.0, under its new distribution name `tenish-liminal`.** The `mcp` and
   `full` extras need `tenish-liminal>=0.4`, and `requirements-sources.txt` pins the
-  `v0.4.0` tag (tenishai/cabal#324). The Dockerfile's index path is unchanged; see
-  Upgrading.
+  `v0.4.0` tag (tenishai/cabal#324). The Dockerfile's index path pins `tenish-liminal`
+  0.4.0; see Upgrading.
 - **directory lists only the targets a colleague may dispatch to** (tenishai/cabal#323,
   closes tenishai/cabal#321). `GET /directory` filters a non-operator caller's roster
   through the dispatch-pairs table, keyed by the token's `sub`, so it no longer lists
