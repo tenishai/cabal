@@ -1,10 +1,10 @@
 ---
 card: arch-card:cabal-liminal-boundary
 updated: 2026-10-07
-anchor: src/cabal/core/tools/mcp_proxy.py sha=f2ffe7aa3cccbead1f17c31bab7884ca9f1265e5
+anchor: src/cabal/core/tools/mcp_proxy.py sha=4623908dbaddc1f2ba1688ddad9834fa73f1d5a1
 anchor: src/cabal/core/persona_factory.py sha=e1825f818414b99c8b2d60f46f21a6792230f534
 anchor: src/cabal/handlers/__init__.py sha=2e5f64bd92cf389a3ccaffb7bf7c44fdeef49580
-anchor: pyproject.toml sha=068e8747784ad13708f9a13bf73fe87e0a045b34
+anchor: pyproject.toml sha=7f7e38b35e4c8071a025720d2c8754e7bb07dda6
 ---
 # liminal-boundary — cabal ↔ liminal (MCP gateway), three directions
 
@@ -16,7 +16,7 @@ OPS / FLOW (outbound): persona tool-use loop → `list_tools_for_llm()` renames 
 INVARIANTS:
 - Wired ONLY IF `[liminal].url` set AND `[personas.X.mcp].enabled` AND a signing key AND the shared httpx client exist; otherwise run tool-less (logging `personas.mcp_skipped` only when `mcp.enabled` is true). WHY: a stale `[limenal]` section is otherwise ignored; `load_identity` logs `identity.unknown_section` for it and `liminal.url` stays unset, so the log lines are the only signal.
 - `[liminal].url` set but liminal not installed → startup RuntimeError (core/app.py, cabal#126). Fail at boot, not first dispatch.
-- liminal is optional for cabal core (lazy `_require_liminal`; distribution `tenishai-liminal>=0.3`, extra `tenishai-cabal[mcp]`), but `cabal.handlers.*` hard-import it. WHY: they are only ever loaded by liminal.
+- liminal is optional for cabal core (lazy `_require_liminal`; distribution `tenish-liminal>=0.4`, extra `tenish-cabal[mcp]`), but `cabal.handlers.*` hard-import it. WHY: they are only ever loaded by liminal.
 - `allowed_handlers`: None = unrestricted (omitted from the token); [] = forwarded, so liminal refuses everything.
 - Tool names must not already contain `__`, or the reverse mapping breaks (only the first `__` is converted).
 - Handlers lazy-import techne and return `ToolResult.failure("techne not installed…")` instead of raising. Per-call DB path from `ctx.extra["<handler>.db_path"]` rejects `..`; fallbacks from env `CABAL_ARCHITECT_DB`, `CABAL_LIBRARIAN_DB`, `CABAL_ARCHIVIST_DB`.

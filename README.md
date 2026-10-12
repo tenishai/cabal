@@ -4,8 +4,9 @@ Self-hosted personal agent orchestration platform. Cabal Core is the SQLite-back
 control plane and A2A broker; personas (Architect, Archivist, Librarian, ...) and
 the Mason primus run as agent modules registered with the bulletin board.
 
-The distribution is named `tenishai-cabal` (`pip show tenishai-cabal`; extras install as
-`tenishai-cabal[mcp]`); the import package is still `cabal` and the commands are `cbl` and `cabal`.
+The distribution is named `tenish-cabal` (`pip show tenish-cabal`; extras install as
+`tenish-cabal[mcp]`); the import package is still `cabal` and the commands are `cbl` and `cabal`.
+`v0.3.0` is the first tag that builds `tenish-cabal`; `v0.2.0` builds `cabal`.
 
 ## Status
 
@@ -61,7 +62,7 @@ The `handlers/` modules load inside liminal (`liminal serve`), and no shipped
 compose or k8s file sets their corpus paths, so they are not configured out of
 the box (tenishai/cabal#129 tracks the wiring). Each needs a corpus db that you
 point at yourself, and `documents`, `patterns` and `code` also need `techne`
-importable (`pip install tenishai-cabal[memory]`):
+importable (`pip install tenish-cabal[memory]`):
 
 - **`archivist`**: set `CABAL_ARCHIVIST_DB` on the liminal process, or give a
   persona `archivist.db_path` in its `tool_extras`. Without either, every call

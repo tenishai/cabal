@@ -112,7 +112,7 @@ def _migrations_dir() -> Path:
     """Where alembic's scripts live, resolved INSIDE the installed package (#79).
 
     The old resolution walked UP three parents to a repo root. That is correct
-    for an editable checkout and wrong for a non-editable `pip install tenishai-cabal`,
+    for an editable checkout and wrong for a non-editable `pip install tenish-cabal`,
     where it lands in site-packages and finds neither `alembic.ini` nor
     `migrations/`. The escape hatch (`CABAL_ALEMBIC_MIGRATIONS`, which Docker
     sets) meant it failed loudly rather than silently, but a bare install plus
@@ -696,7 +696,7 @@ def create_app(
                 raise RuntimeError(
                     "identity.toml configures `[liminal] url = "
                     f"{identity.liminal.url!r}` but the liminal package "
-                    "is not installed. Run `pip install tenishai-cabal[mcp]` "
+                    "is not installed. Run `pip install tenish-cabal[mcp]` "
                     "(or `pip install -e ../liminal` for the "
                     "sibling-checkout dev layout)."
                 ) from exc

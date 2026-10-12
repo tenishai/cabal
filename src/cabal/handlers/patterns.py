@@ -161,7 +161,7 @@ class PatternsHandler:
         except ImportError as exc:
             return ToolResult.failure(
                 f"techne not installed; patterns handler unavailable ({exc}). "
-                "Install via `pip install tenishai-cabal[memory]` or pip-install techne "
+                "Install via `pip install tenish-cabal[memory]` or pip-install techne "
                 "directly."
             )
 

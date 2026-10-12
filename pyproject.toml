@@ -3,8 +3,8 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tenishai-cabal"
-version = "0.2.0"
+name = "tenish-cabal"
+version = "0.3.0"
 description = "Self-hosted personal agent orchestration platform"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -47,8 +47,8 @@ dependencies = [
 # `mcp` pulls in liminal so personas with `[mcp].enabled = true` in
 # identity.toml can connect to a liminal gateway. Without this extra,
 # cabal still runs — personas without an [mcp] block work fine; personas
-# with one fail at first dispatch with a clear "install tenishai-cabal[mcp]" error.
-mcp = ["tenishai-liminal>=0.3"]
+# with one fail at first dispatch with a clear "install tenish-cabal[mcp]" error.
+mcp = ["tenish-liminal>=0.4"]
 tui = ["textual>=1.0"]
 
 # `memory` pulls in techne for the Archivist persona + any persona that
@@ -57,7 +57,7 @@ tui = ["textual>=1.0"]
 memory = ["tenish-techne>=0.18.2"]
 
 # Everything wired together, for the canonical platform install.
-full = ["tenishai-liminal>=0.3", "tenish-techne>=0.18.2"]
+full = ["tenish-liminal>=0.4", "tenish-techne>=0.18.2"]
 
 dev = [
     "pytest>=8.3",

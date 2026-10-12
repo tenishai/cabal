@@ -83,8 +83,11 @@ ARG TECHNE_ANY_VERSION=""
 # reason as techne; its own dependencies are public names and come from
 # PyPI. A sibling checkout (--build-context liminal=…) still wins.
 ARG WITH_MCP=""
-ARG LIMINAL_VERSION=0.3.0
-ARG LIMINAL_WHEEL_SHA256=56c60467a308d6e261f7d14cb5795c2732ec0263e4cc4eea8911090f57294076
+# liminal v0.4.0 (tag at 9ab2ada), the first release named tenish-liminal. The
+# wheel builds reproducibly from the tag with SOURCE_DATE_EPOCH set to the tag
+# commit's time; this is that build's hash.
+ARG LIMINAL_VERSION=0.4.0
+ARG LIMINAL_WHEEL_SHA256=8b6dd3de140b3ffdd2f9577fa445a88e27d7f3169d19d2a4c823433030a4cb79
 
 # Layer-cache: copy pyproject.toml first, install all deps (and a stub package
 # so the build system is satisfied), then copy the real source last so a
@@ -110,9 +113,9 @@ RUN --mount=type=secret,id=ar_token \
  && if [ -f /build/liminal/pyproject.toml ]; then \
       /venv/bin/pip install --no-cache-dir /build/liminal; \
     elif [ "$WITH_MCP" = "1" ] && [ -n "$EXTRA_INDEX_URL" ]; then \
-      /venv/bin/pip download --no-cache-dir --no-deps --only-binary :all: --index-url "$EXTRA_INDEX_URL" -d /tmp/liminal-dist "tenishai-liminal==${LIMINAL_VERSION}" \
-      && echo "${LIMINAL_WHEEL_SHA256}  /tmp/liminal-dist/tenishai_liminal-${LIMINAL_VERSION}-py3-none-any.whl" | sha256sum -c - \
-      && /venv/bin/pip install --no-cache-dir /tmp/liminal-dist/tenishai_liminal-${LIMINAL_VERSION}-py3-none-any.whl \
+      /venv/bin/pip download --no-cache-dir --no-deps --only-binary :all: --index-url "$EXTRA_INDEX_URL" -d /tmp/liminal-dist "tenish-liminal==${LIMINAL_VERSION}" \
+      && echo "${LIMINAL_WHEEL_SHA256}  /tmp/liminal-dist/tenish_liminal-${LIMINAL_VERSION}-py3-none-any.whl" | sha256sum -c - \
+      && /venv/bin/pip install --no-cache-dir /tmp/liminal-dist/tenish_liminal-${LIMINAL_VERSION}-py3-none-any.whl \
       && rm -rf /tmp/liminal-dist; \
     elif [ "$WITH_MCP" = "1" ]; then \
       echo "liminal: WITH_MCP=1 needs --build-context liminal=../liminal or --build-arg EXTRA_INDEX_URL=…" >&2; exit 1; \
