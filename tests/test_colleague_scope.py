@@ -22,6 +22,7 @@ from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy import select
 
+from cabal.core import dispatch_pairs
 from cabal.core.auth.jwt import mint
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.bulletin import store as bulletin_store
@@ -432,3 +433,66 @@ async def test_colleague_can_dispatch_over_jsonrpc(
     body = r.json()
     assert body["error"] is None, body
     assert body["result"]["status"]["state"] == "completed", body
+
+
+# ---- 6. the directory respects dispatch pairs (cabal#321) ----------------
+
+
+async def _seed_bcd(app: FastAPI) -> None:
+    for name in ("b-agent", "c-agent", "d-agent"):
+        await _seed_agent(app, name=name, agent_card_json={"name": name})
+
+
+async def _set_pairs(app: FastAPI, pairs: list[tuple[str, str]]) -> None:
+    async with open_session(app.state.sessionmaker) as session:
+        await dispatch_pairs.replace_all(session, pairs)
+
+
+async def _directory_names(client: AsyncClient, token: str) -> set[str]:
+    r = await client.get("/directory", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    return {a["name"] for a in r.json()["agents"]}
+
+
+@pytest.mark.asyncio
+async def test_directory_colleague_sees_only_paired_targets(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """With pairs (A,B) and (A,C), A lists B and C, and not D (or echo)."""
+    await _seed_bcd(app)
+    await _set_pairs(app, [("agent:a", "b-agent"), ("agent:a", "c-agent")])
+    token = await _colleague_token(app, sub="agent:a")
+    names = await _directory_names(client, token)
+    assert names == {"b-agent", "c-agent"}
+
+
+@pytest.mark.asyncio
+async def test_directory_unpaired_colleague_sees_nothing(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """A non-empty table with no rows for this caller is enforcing, not open."""
+    await _seed_bcd(app)
+    await _set_pairs(app, [("agent:a", "b-agent")])
+    token = await _colleague_token(app, sub="agent:z")
+    assert await _directory_names(client, token) == set()
+
+
+@pytest.mark.asyncio
+async def test_directory_operator_sees_all_despite_pairs(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    await _seed_bcd(app)
+    await _set_pairs(app, [("agent:a", "b-agent"), ("agent:a", "c-agent")])
+    token = await _operator_token(app, client)
+    names = await _directory_names(client, token)
+    assert {"b-agent", "c-agent", "d-agent", "echo"} <= names
+
+
+@pytest.mark.asyncio
+async def test_directory_empty_pairs_table_is_open(app: FastAPI, client: AsyncClient) -> None:
+    """D-018: before the room syncs any pairs, every caller lists everything."""
+    await _seed_bcd(app)
+    for sub in ("agent:a", "agent:z"):
+        token = await _colleague_token(app, sub=sub)
+        names = await _directory_names(client, token)
+        assert {"b-agent", "c-agent", "d-agent", "echo"} <= names

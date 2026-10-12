@@ -41,6 +41,21 @@ async def is_allowed(session: AsyncSession, caller: str, target: str) -> bool:
     return result.scalar_one_or_none() is not None
 
 
+async def allowed_targets(session: AsyncSession, caller: str) -> set[str] | None:
+    """The targets `caller` may dispatch to, or None if the table is empty.
+
+    None means open (D-018): every target is allowed. Same answer as calling
+    `is_allowed` per target, in two queries instead of two per target.
+    """
+    count = (await session.execute(select(func.count()).select_from(DispatchPair))).scalar_one()
+    if count == 0:
+        return None
+    result = await session.execute(
+        select(DispatchPair.target).where(DispatchPair.caller == caller)
+    )
+    return set(result.scalars())
+
+
 async def list_all(session: AsyncSession) -> list[tuple[str, str]]:
     """All pairs, in no particular order."""
     rows = (await session.execute(select(DispatchPair.caller, DispatchPair.target))).all()

@@ -1,10 +1,10 @@
 ---
 card: arch-card:cabal-dispatch-auth
-updated: 2026-10-07
+updated: 2026-10-12
 anchor: src/cabal/core/routes/tasks.py sha=a696584f81495c84ae8d00debd347f692c8ff636
 anchor: src/cabal/core/routes/a2a_jsonrpc.py sha=551a98c9e53cbb09ad9f98e96b3a0b75768e1d80
 anchor: src/cabal/core/auth/jwt.py sha=881c1df69514f389ef2f431cc3626f5e0aef0aa2
-anchor: src/cabal/core/dispatch_pairs.py sha=8447422edfa20732c2a26edb1f4a399ef0bddae1
+anchor: src/cabal/core/dispatch_pairs.py sha=c580d7a9995a6e97fda673b030f5495cc056e366
 anchor: src/cabal/core/routes/auth.py sha=337a52d0c0f0958044b05c044de48a687cd42e7b
 anchor: src/cabal/core/routes/_dispatch_auth.py sha=f4b1f3972d56770d2b47865db5a6e92074bc1675
 ---
@@ -24,7 +24,7 @@ INVARIANTS:
 - Wire forms differ on purpose: REST raises HTTPException 401/403/500; legacy JSON-RPC maps a pairs refusal to FORBIDDEN, other refusals to UNAUTHORIZED (`legacy_forbidden`), server faults to INTERNAL. A `federated` target's token gets aud=`federation_audience` at every door; a federated row with none is a 500/INTERNAL.
 - A token with no `sub` is refused (401), not re-minted as "operator" (cabal#184).
 - Re-mint hard-codes scope=["dispatch"]; the caller's operator scope does not survive into the router (open, cabal#164). A router-level guard cannot ask "is this the operator?".
-- dispatch_pairs: EMPTY TABLE = OPEN (D-018). Room syncs the whole set atomically with PUT /admin/dispatch-pairs (operator). Operators skip the check. WHY: deploy-safe; cabal stores policy, kobo decides it.
+- dispatch_pairs: EMPTY TABLE = OPEN (D-018). Room syncs the whole set atomically with PUT /admin/dispatch-pairs (operator). Operators skip the check. WHY: deploy-safe; cabal stores policy, kobo decides it. GET /directory applies the same pairs to a colleague via `dispatch_pairs.allowed_targets` (None = empty table = everyone), so it lists only targets re-mint would allow; operators see the full roster (cabal#321).
 - 401 = no/bad signature, expired, revoked; 403 = valid token, wrong audience or scope (D-017), uniformly across guards. Admin guards all go through `admin._require_scope`; /auth/liminal-token still inlines its own gate (noted in its docstring as a follow-up).
 - Revocation is subject-wide (`iat < not_before`, core/auth/revocations.py), held in process memory and written through to a table. WHY it matters: correct only for ONE uvicorn worker; adding workers means moving the lookup to the table. aud=gateway tokens are verified by liminal and live out their 15 min after a revoke.
 - Colleague tokens must 403 on every /admin route (routes/directory.py docstring; tests/test_colleague_scope.py).
