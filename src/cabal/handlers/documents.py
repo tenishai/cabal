@@ -160,7 +160,7 @@ class DocumentsHandler:
         except ImportError as exc:
             return ToolResult.failure(
                 f"techne not installed; documents handler unavailable ({exc}). "
-                "Install via `pip install tenishai-cabal[memory]`."
+                "Install via `pip install tenish-cabal[memory]`."
             )
 
         store = LibrarianStore(

@@ -13,6 +13,20 @@ def test_version_exposed() -> None:
     assert isinstance(cabal.__version__, str)
 
 
+def test_version_lookup_uses_the_distribution_name() -> None:
+    """__version__ reads importlib.metadata by distribution name, and falls
+    back to 0.0.0+unknown when that name isn't installed, so a rename that
+    misses cabal/__init__.py would pass test_version_exposed. Tie the two."""
+    import re
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    name = tomllib.loads((root / "pyproject.toml").read_text())["project"]["name"]
+    source = (root / "src" / "cabal" / "__init__.py").read_text()
+    assert re.search(r'version\(\s*["\']' + re.escape(name) + r'["\']\s*\)', source), name
+
+
 @pytest.mark.asyncio
 async def test_healthz_responds(client: AsyncClient) -> None:
     resp = await client.get("/healthz")

@@ -6,9 +6,76 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-12
+
+### Upgrading
+
+- **This release migrates the database. Back it up before you upgrade.** Alembic revision
+  `d7e1f3a9b2c4_add_token_revocations` adds the `token_revocations` table
+  (tenishai/cabal#221); it is the only revision added since 0.2.0. cabal runs
+  `alembic upgrade head` at startup, so the first 0.3.0 start changes the database before
+  it serves anything, and a failed migration stops the start (the 0.2.0 upgrade on
+  2026-09-14 crash-looped on an Alembic problem). Stop cabal, then copy the SQLite file
+  with any `-wal` and `-shm` files beside it: the path in `CABAL_DB_URL` when it is set
+  (`/data/cabal.db` in the image), otherwise `data/cabal.db` under the state root.
+  **0.2.0 will not start on a database 0.3.0 has migrated**: its startup `alembic upgrade
+  head` cannot find revision `d7e1f3a9b2c4` and stops. To roll back, restore the backup,
+  or run `alembic downgrade c4f0a2b18e77` with 0.3.0 still installed before switching
+  back; the migration's `downgrade()` drops the table.
+- **The distribution is now `tenish-cabal`** (tenishai/cabal#324). 0.2.0 was published as
+  `cabal`, and main between the two releases called it `tenishai-cabal`
+  (tenishai/cabal#241), a name no release used. The import package and the `cbl` and
+  `cabal` commands are unchanged. Run `pip uninstall tenishai-cabal cabal` before
+  installing 0.3.0 (pip skips a name that is not installed): pip treats the names as
+  unrelated projects and would leave two distributions owning the `cabal` package. A
+  dependency on `cabal[...]` or `tenishai-cabal[...]` becomes `tenish-cabal[...]`. An
+  editable checkout must be reinstalled (`pip install -e ".[dev]"`); until then
+  `cbl version` reports `0.0.0+unknown`, because `cabal.__version__` looks up only the new
+  name. `v0.3.0` is the first tag that builds `tenish-cabal`.
+- **liminal 0.4.0 as `tenish-liminal`, and techne 0.18.2 as `tenish-techne`**
+  (tenishai/cabal#305, tenishai/cabal#324). The `mcp` and `full` extras need
+  `tenish-liminal>=0.4`, the `memory` and `full` extras need `tenish-techne>=0.18.2`, and
+  `requirements-sources.txt` pins liminal `v0.4.0` and techne `v0.18.2`. Run
+  `pip uninstall tenishai-liminal liminal techne` first, for the same reason as above.
+  A sibling-checkout build wants `../techne` at `v0.18.2`. The Dockerfile's `WITH_MCP=1`
+  package-index path downloads `tenish-liminal==0.4.0` and checks the sha256 of the wheel
+  built from the `v0.4.0` tag with `SOURCE_DATE_EPOCH` set to the tag commit's time (that
+  build is reproducible). Until that wheel and `tenish-techne` 0.18.2 are uploaded to the
+  index, an index-path image build fails; a sibling-checkout build does not.
+- **Image builds that use the package index pass the token as a BuildKit secret**
+  (tenishai/cabal#322): export `AR_TOKEN` and pass `--secret id=ar_token,env=AR_TOKEN`,
+  not `--build-arg AR_TOKEN=...`. The Dockerfile no longer declares `ARG AR_TOKEN`, so a
+  build that still passes the arg sends no token and a download from a private index
+  fails.
+
 ### Added
 
-- **The A2A compatibility kit in CI** (issue tenishai/cabal#261, epic tenishai/cabal#272). A new
+- **Every refused dispatch is logged and audited** (tenishai/cabal#316, closes
+  tenishai/cabal#315). The shared dispatch policy that the REST, legacy JSON-RPC and A2A
+  v1.0 routes call logs a `dispatch.refused` warning with the caller, target, kind, reason
+  and the check that refused (`token`, `revoked`, `audience`, `scope`, `sub`, `pair` or
+  `signing_key`), never the token. A refusal after the token verifies also writes a
+  `dispatch_refused` row to the `events` table; one before it is logged only, so an
+  unauthenticated request makes no durable write. `PUT /admin/dispatch-pairs` logs
+  `dispatch_pairs.replaced_empty` as a warning when it empties the table, because an empty
+  table means open.
+- **`--build-arg WITH_MCP=1` puts liminal in an image built from the package index**
+  (tenishai/cabal#306). With `EXTRA_INDEX_URL` it downloads the pinned liminal wheel from
+  the index alone, checks `LIMINAL_WHEEL_SHA256` and installs it, as the techne path does.
+  A sibling `--build-context liminal=...` still wins; `WITH_MCP=1` with neither stops the
+  build. `gojira.yaml` passes it.
+- **Gojira deploy config**: `gojira.yaml`, the `/data` PVC and the generated Deployment,
+  Service, PodMonitoring and rules under `k8s/base`, a `dev` overlay, and the generated
+  `.github/workflows/gojira-ci.yaml` (tenishai/cabal#240, tenishai/cabal#256,
+  tenishai/cabal#304, tenishai/cabal#312).
+- **Architecture cards**: `ARCHITECTURE.md`, seam cards under `docs/arch/`, and
+  `scripts/check_arch_cards.py`, which CI runs so a seam that changes without its card
+  fails the build (tenishai/cabal#232).
+- **A2A reason code 703, `CODE_TOOL_BLOCKED`**, mapped to the `failed` state, with the
+  same name and meaning as daedalus's (tenishai/cabal#243, part of tenishai/cabal#237).
+  Nothing emits it yet.
+
+- **The A2A compatibility kit in CI** (tenishai/cabal#299, issue tenishai/cabal#261, epic tenishai/cabal#272). A new
   workflow, `a2a-tck`, runs a2aproject/a2a-tck at a pinned commit on a GitHub-hosted runner
   against a test-only `tck` persona, which acts out the kit's scenarios and exists only when
   `$CABAL_TCK_PERSONA` is `1`. A proxy adds the token the kit cannot send (tenishai/cabal#271).
@@ -17,7 +84,7 @@ Pull requests and issues are in tenishai/cabal.
   and `ETag`; CancelTask cancels a task paused in `input-required` or `auth-required`; and
   v1.0 task metadata no longer carries cabal's internal `cabal_*` keys, with the reason keys
   renamed `cabalReasonCode`, `cabalReasonMessage` and `cabalEscalatedFrom`.
-- **A2A v1.0 returnImmediately** (issue tenishai/cabal#277, epic tenishai/cabal#272).
+- **A2A v1.0 returnImmediately** (tenishai/cabal#298, issue tenishai/cabal#277, epic tenishai/cabal#272).
   A SendMessage that starts a new task with `configuration.returnImmediately: true` answers at once with the task in
   `TASK_STATE_SUBMITTED`; the dispatch runs detached and the client polls GetTask, which shows
   `TASK_STATE_WORKING` and then the end state. CancelTask reaches it. At most
@@ -28,7 +95,7 @@ Pull requests and issues are in tenishai/cabal.
   process per database, as today. A dispatch, blocking through `router.dispatch` or detached
   through `start_detached`, now records `working` before the persona is called;
   the streaming path and operator resume do not yet.
-- **A2A v1.0 conversations by contextId** (issue tenishai/cabal#276, epic tenishai/cabal#272).
+- **A2A v1.0 conversations by contextId** (tenishai/cabal#297, issue tenishai/cabal#276, epic tenishai/cabal#272).
   SendMessage without a `contextId` now gets one generated and returned on the task. One with
   a `contextId` starts a new task in that conversation, and the persona sees the conversation
   so far as the task's history: the caller's latest earlier task in that context on that
@@ -44,26 +111,27 @@ Pull requests and issues are in tenishai/cabal.
   on every dispatch path, so the stored task keeps its conversation key, and stores a reply
   whose history is no longer than its input (cabal's own cancel and block replies) with the
   input history and the incoming message; the streaming path now stores them too.
-- **How to admit an outside A2A agent** (issue tenishai/cabal#271). `docs/outside-agents.md`
+- **How to admit an outside A2A agent** (tenishai/cabal#295, issue tenishai/cabal#271). `docs/outside-agents.md`
   is the operator procedure #271 decided: one `cbl token mint-service` token per persona the
   outsider may call (`--sub agent:ext-<name> --scope dispatch --aud <agent>`, the persona's bulletin name), handed over with
   the persona's card URL, and revoked per subject. `tests/test_a2a_v1_outside_agent.py`
   checks that path end to end.
-- **A2A v1.0 cards declare bearer-JWT auth** (issue tenishai/cabal#271, epic tenishai/cabal#272).
+- **A2A v1.0 cards declare bearer-JWT auth** (tenishai/cabal#294, issue tenishai/cabal#271, epic tenishai/cabal#272).
   Every persona card, and so the front-door card, declares one security scheme, `bearer`
   (`httpAuthSecurityScheme`, `scheme: "Bearer"`, `bearerFormat: "JWT"`), and a security
   requirement naming it. Outside agents get that JWT from the cabal's operator, as #271
   decided. Default-value removal for signing now reaches into these fields, including map
   values, so a verifier that fills an empty scope list or description back in still gets the
   signed content.
-- **A2A v1.0 content types on SendMessage** (issue tenishai/cabal#274, epic tenishai/cabal#272).
+- **A2A v1.0 content types on SendMessage** (tenishai/cabal#291, issue tenishai/cabal#274, epic tenishai/cabal#272).
   A message part whose media type is not in the persona card's `defaultInputModes`
   (`text/plain`, `application/json`) gets `ContentTypeNotSupportedError` (`-32005`). A part's
   media type is its `mediaType` when set, compared without parameters and case, and otherwise
   the type its kind implies. `historyLength` on SendMessage and GetTask, the issue's other half,
   shipped with tenishai/cabal#267 and now has tests for an omitted value, 0, and values smaller
   and larger than the history.
-- **A2A v1.0 agent cards for each persona** (issue tenishai/cabal#270, epic tenishai/cabal#272).
+- **A2A v1.0 agent cards for each persona** (tenishai/cabal#288,
+  tenishai/cabal#292, issue tenishai/cabal#270, epic tenishai/cabal#272).
   `GET /agents/{name}/.well-known/agent-card.json` serves the agent's v1.0 AgentCard with
   one embedded signature: `typ: JOSE`, RS256, by cabal's active signing key, over the card
   with default values and `signatures` removed and the rest in RFC 8785 form (spec 8.4).
@@ -84,7 +152,7 @@ Pull requests and issues are in tenishai/cabal.
   that names an agent without a card here, or without a public URL, 503. cabal-core has no
   endpoint of its own to name, and a well-known card must name one. The legacy stub at
   `/.well-known/agent-card` is unchanged.
-- **A2A v1.0 ListTasks and CancelTask** (issue tenishai/cabal#268, epic tenishai/cabal#272).
+- **A2A v1.0 ListTasks and CancelTask** (tenishai/cabal#286, issue tenishai/cabal#268, epic tenishai/cabal#272).
   `ListTasks` on `POST /agents/{name}/a2a` returns the caller's own tasks on that persona
   (every task on it, for the operator), newest status first, with cursor pagination
   (`pageSize` 1 to 100, default 50; `nextPageToken` is `""` on the last page) and the
@@ -99,7 +167,7 @@ Pull requests and issues are in tenishai/cabal.
   `-32004`, matching what the cards will declare (tenishai/cabal#270).
   A non-operator token with no `sub` now owns no task on this path, so it cannot see a task
   whose caller was not recorded.
-- **A2A v1.0 SendMessage and GetTask** (issue tenishai/cabal#267, epic tenishai/cabal#272).
+- **A2A v1.0 SendMessage and GetTask** (tenishai/cabal#282, issue tenishai/cabal#267, epic tenishai/cabal#272).
   `POST /agents/{name}/a2a` now serves `SendMessage` and `GetTask` in the v1.0 dialect.
   Both need a bearer token; a request without one gets HTTP 401 with `WWW-Authenticate: Bearer`.
   `SendMessage` dispatches to the persona in the path with the same token policy as the
@@ -111,7 +179,7 @@ Pull requests and issues are in tenishai/cabal.
   `SendStreamingMessage` and `SubscribeToTask` get `-32004`; other methods get `-32601`.
   The token policy moved to `routes/_dispatch_auth.py`, shared by both dialects; the legacy
   routes keep their error codes.
-- **A2A v1.0 version gate** (issue tenishai/cabal#265, epic tenishai/cabal#272). A new
+- **A2A v1.0 version gate** (tenishai/cabal#281, issue tenishai/cabal#265, epic tenishai/cabal#272). A new
   per-persona path, `POST /agents/{name}/a2a`, accepts `A2A-Version: 1.0` (header or
   `A2A-Version` query parameter; a patch number is ignored) and answers any other version,
   including none, with `VersionNotSupportedError` (`-32009`) once the body parses as a JSON-RPC request. Behind the gate are
@@ -120,14 +188,14 @@ Pull requests and issues are in tenishai/cabal.
   a well-formed request with a non-empty `A2A-Version` now gets `-32009` on `/agents/{name}`
   and `/agents/{name}/stream`, and HTTP 400 on `/a2a/tasks`. A malformed body still gets its
   parse or validation error first.
-- **A2A v1.0 wire types** (issue tenishai/cabal#266, epic tenishai/cabal#272).
+- **A2A v1.0 wire types** (tenishai/cabal#278, issue tenishai/cabal#266, epic tenishai/cabal#272).
   `cabal.core.a2a.v1` holds the v1.0 data model, the SendMessage and GetTask request models
   and the SendMessage response, serialized per v1.0 (camelCase, ProtoJSON enums such as
   `TASK_STATE_COMPLETED` and `ROLE_USER`, ISO-8601 UTC timestamps). It converts cabal's
   internal Task to v1.0, including tasks still in flight, and inbound v1.0 messages to the
   internal form. Nothing serves them yet; the v1.0 endpoint is tenishai/cabal#267, and the
   legacy dialect is unchanged.
-- **A2A v1.0 errors** (issue tenishai/cabal#269, epic tenishai/cabal#272).
+- **A2A v1.0 errors** (tenishai/cabal#280, issue tenishai/cabal#269, epic tenishai/cabal#272).
   `cabal.core.a2a.v1_errors` defines the nine A2A v1.0 errors with their codes (`-32001` to
   `-32009`) and the `google.rpc.ErrorInfo` that spec 9.5 requires in the error's `data`, plus
   helpers for answering authentication and authorization with HTTP 401 (with
@@ -149,22 +217,44 @@ Pull requests and issues are in tenishai/cabal.
 - **Community files for the public release**: `CONTRIBUTING.md` (including the Developer
   Certificate of Origin), `CODE_OF_CONDUCT.md` (Contributor Covenant 3.0), `SUPPORT.md`,
   issue and pull request templates, and a Dependabot config for pip and GitHub Actions.
-  CI gains a DCO sign-off check on pull requests.
+  CI gains a DCO sign-off check on pull requests (tenishai/cabal#241).
 - **`AGENTS.md`**, a copyright notice in the README, and a Docker quickstart that works
   from a clean clone (tenishai/cabal#207, issues tenishai/cabal#201, tenishai/cabal#203,
   tenishai/cabal#204).
 
 ### Changed
 
-- **techne 0.18.2, under its new distribution name `tenish-techne`.** The `memory` and
+- **The distribution is named `tenish-cabal`**: every released tenish Python distribution
+  is `tenish-<project>`, as techne is `tenish-techne` and liminal `tenish-liminal`.
+  pyproject's `name`, `cabal.__version__`'s lookup, the install hints in error messages,
+  the README and the architecture cards change; the import package, the `cbl` and `cabal`
+  commands and the GitHub URL do not (tenishai/cabal#324). See Upgrading.
+- **liminal 0.4.0, under its new distribution name `tenish-liminal`.** The `mcp` and
+  `full` extras need `tenish-liminal>=0.4`, and `requirements-sources.txt` pins the
+  `v0.4.0` tag (tenishai/cabal#324). The Dockerfile's index path pins `tenish-liminal`
+  0.4.0; see Upgrading.
+- **directory lists only the targets a colleague may dispatch to** (tenishai/cabal#323,
+  closes tenishai/cabal#321). `GET /directory` filters a non-operator caller's roster
+  through the dispatch-pairs table, keyed by the token's `sub`, so it no longer lists
+  agents the dispatch would refuse. An empty table is still open, and an operator still
+  sees every agent.
+- **`pyproject.toml` declares `joserfc`**, which the code imports, instead of `authlib`,
+  which nothing imported; `TechneMemoryStore` degrades without techne instead of raising
+  `ImportError`; the unused `mcp_proxy.build_token_provider` is removed
+  (tenishai/cabal#243, part of tenishai/cabal#235).
+- **The copyright holder is "tenish and the cabal contributors"** in NOTICE and the
+  README, and pyproject's `authors` is `tenish`. The licence (AGPL-3.0-or-later) is
+  unchanged (tenishai/cabal#279).
+- **The README says how cabal was built, and CONTRIBUTING.md gives the policy for
+  AI-assisted contributions** (tenishai/cabal#308).
+- **techne 0.18.2, under its new distribution name `tenish-techne`** (tenishai/cabal#305). The `memory` and
   `full` extras need `tenish-techne>=0.18.2`, `requirements-sources.txt` pins the `v0.18.2`
   tag, and the Dockerfile's index path downloads `tenish-techne==0.18.2` and checks its
   wheel hash. The import package and the `techne` command are unchanged. Run
   `pip uninstall techne` before reinstalling: pip treats the two names as unrelated
   projects and would leave the old one installed beside the new one. A sibling build wants
   `../techne` at `v0.18.2`.
-
-- **README says which handlers the shipped stacks leave unconfigured** (part of
+- **README says which handlers the shipped stacks leave unconfigured** (tenishai/cabal#247, part of
   tenishai/cabal#129). `archivist`, `documents`, `patterns` and `code` need corpus paths
   that no compose or k8s file sets; the README now names the env vars and the gap.
 - **Operator state defaults to `~/.cabal`, not the checkout** (tenishai/cabal#212, issue
@@ -176,8 +266,15 @@ Pull requests and issues are in tenishai/cabal.
   `--build-context techne=...` as before, or `--build-arg EXTRA_INDEX_URL` (and
   `AR_TOKEN` for a private index) and techne installs from that index alone. With
   neither, the build says so and stops.
-- **The distribution is now named `tenishai-cabal`**, because the PyPI name `cabal` belongs
-  to an unrelated project. The import package (`cabal`) and the commands (`cbl`, `cabal`)
+- **techne is pinned by version and wheel hash** (tenishai/cabal#249, tenishai/cabal#251).
+  The index path downloads `TECHNE_VERSION` as a wheel only and stops the build when its
+  sha256 differs from `TECHNE_WHEEL_SHA256`. On the sibling path,
+  `scripts/check-techne-sibling.sh` (run by `make build`, `make rebuild` and `make up`)
+  compares `../techne`'s HEAD with the `v$TECHNE_VERSION` tag, and the Dockerfile refuses a
+  sibling whose version differs. `TECHNE_ANY=1` skips both checks, for developing techne
+  and cabal together.
+- **The distribution was renamed `tenishai-cabal`** (tenishai/cabal#241), because the PyPI
+  name `cabal` belongs to an unrelated project; 0.3.0 ships it as `tenish-cabal`, above. The import package (`cabal`) and the commands (`cbl`, `cabal`)
   are unchanged. Anything that looks cabal up by distribution name must change
   (`pip show tenishai-cabal`, `pip install 'tenishai-cabal[mcp]'`,
   `importlib.metadata.version("tenishai-cabal")`), and existing environments should
@@ -206,7 +303,23 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Fixed
 
-- **Dispatch to a federated target through JSON-RPC or the TUI** (tenishai/cabal#234). The
+- **The delegation-edge guardrail judges `agent:<name>` callers** (tenishai/cabal#301,
+  closes tenishai/cabal#189). With `[guardrails] delegation_edges = true` it refused every
+  room colleague and outside agent, whose tokens carry no persona claim. The new
+  `[guardrails] caller_edges` table, keyed by the full `agent:<name>` sub, says which
+  personas such a caller may reach; a key without the `agent:` prefix fails config load.
+- **The TUI starts without a token file** (tenishai/cabal#302, closes tenishai/cabal#90).
+  `cabal --persona X` boots cabal in-process and printed no bootstrap code, so a first run
+  could not log in. With no token passed and no token file it now mints a one-hour operator
+  token from the signing key for each message and writes nothing to disk. A token that is
+  present but fails verification is still reported.
+- **The heartbeat scheduler survives a failed ping** instead of stopping silently at the
+  first one (tenishai/cabal#243, closes tenishai/cabal#230).
+- **`make up` gives a healthy cabal-dev on a clean clone** (tenishai/cabal#242). The
+  Dockerfile takes an optional `liminal` build context, and both compose files pass
+  `../liminal`, so the `[liminal] url` check from tenishai/cabal#126 finds the package. The
+  README quickstarts run as written.
+- **Dispatch to a federated target through JSON-RPC or the TUI** (tenishai/cabal#285, closes tenishai/cabal#234). The
   legacy JSON-RPC route, the A2A v1.0 route and the TUI's in-process client minted a federated
   target's dispatch token for its bare name, and the router refused that token. They now mint
   the target's `federation_audience`, as `POST /a2a/tasks` always did. The REST route now
@@ -251,6 +364,18 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Security
 
+- **The package-index token is a BuildKit secret, not a build arg** (tenishai/cabal#322,
+  part of tenishai/cabal#250 with tenishai/gojira#109). Docker prints build args in the
+  build log and keeps them in the stage's metadata and cache. The dependency `RUN` now
+  mounts `ar_token` and reads it only on the index branch, and `gojira-ci.yaml` passes
+  `--secret id=ar_token,env=AR_TOKEN`. See Upgrading.
+- **`documents.refresh` and `patterns.record` are operator-only** (tenishai/cabal#245,
+  closes tenishai/cabal#233). Both claimed an operator check and had none; their card
+  entries now set `requires_operator: true`, which liminal enforces from v0.3.0
+  (tenishai/liminal#122).
+- **Dispatch re-mint refuses a token with no `sub`** instead of minting it as `operator`:
+  REST answers 401, JSON-RPC `ERROR_UNAUTHORIZED`, and the in-process client raises
+  `BrokerError` (tenishai/cabal#243, part of tenishai/cabal#184).
 - **Secret lookups match the persona and handler exactly** (tenishai/cabal#258, issue
   tenishai/cabal#252). They used SQL `LIKE`, where `_` and `%` are wildcards and SQLite
   ignores ASCII case, so a request for persona `_lice` or `ALICE` returned alice's secrets

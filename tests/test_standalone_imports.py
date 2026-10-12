@@ -55,7 +55,7 @@ def test_build_proxy_raises_clear_error_without_liminal(block_liminal) -> None:
         if mod.endswith("mcp_proxy"):
             del sys.modules[mod]
     mp = importlib.import_module("cabal.core.tools.mcp_proxy")
-    with pytest.raises(ImportError, match="pip install tenishai-cabal\\[mcp\\]"):
+    with pytest.raises(ImportError, match="pip install tenish-cabal\\[mcp\\]"):
         mp.build_proxy(
             base_url="http://test",
             persona="mason",

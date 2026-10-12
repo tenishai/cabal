@@ -2,9 +2,9 @@
 
 `_run_migrations` located `alembic.ini` and `migrations/` via
 `REPO_ROOT = Path(__file__).parents[3]`, which under a non-editable
-`pip install tenishai-cabal` points into `site-packages`, where neither exists. It was
+`pip install tenish-cabal` points into `site-packages`, where neither exists. It was
 mitigated by `CABAL_ALEMBIC_INI` / `CABAL_ALEMBIC_MIGRATIONS`, which the
-Dockerfile used to set, so a bare `pip install tenishai-cabal` + run-server on a clean
+Dockerfile used to set, so a bare `pip install tenish-cabal` + run-server on a clean
 machine broke unless the operator knew to set env vars nobody documents. The
 Dockerfile no longer sets either: the #79 review found that the override takes
 precedence, so leaving it pointed at /app/migrations kept the container off
