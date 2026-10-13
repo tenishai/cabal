@@ -488,7 +488,8 @@ async def test_jsonrpc_honours_dispatch_pairs(app: FastAPI, client: AsyncClient)
 async def test_missing_pair_names_the_remedy_on_every_door(app: FastAPI, client: AsyncClient) -> None:
     """#329: a refusal for a missing pair says how to fix it, in words and as
     a code a runtime can act on, on all three routes. `detail` stays a
-    string: daedalus reads it as one."""
+    string: daedalus 0.5.0's `_refusal_detail` shows `str(body["detail"])`
+    to the model."""
     from cabal.core import dispatch_pairs
 
     async with open_session(app.state.sessionmaker) as session:
