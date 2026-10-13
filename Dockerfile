@@ -86,8 +86,8 @@ ARG WITH_MCP=""
 # liminal v0.4.0 (tag at 9ab2ada), the first release named tenish-liminal. The
 # wheel builds reproducibly from the tag with SOURCE_DATE_EPOCH set to the tag
 # commit's time; this is that build's hash.
-ARG LIMINAL_VERSION=0.4.0
-ARG LIMINAL_WHEEL_SHA256=8b6dd3de140b3ffdd2f9577fa445a88e27d7f3169d19d2a4c823433030a4cb79
+ARG LIMINAL_VERSION=0.5.0
+ARG LIMINAL_WHEEL_SHA256=91b3d9de484d9b0caa96b8e8b1164be08a26a2ad9c72c5545150e4ee802996d4
 
 # Layer-cache: copy pyproject.toml first, install all deps (and a stub package
 # so the build system is satisfied), then copy the real source last so a
