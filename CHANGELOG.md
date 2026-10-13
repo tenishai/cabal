@@ -13,7 +13,8 @@ Pull requests and issues are in tenishai/cabal.
 - No database migration: the Alembic head is the same as 0.3.0's, so 0.3.0 and 0.3.1 run
   on the same database and you can move between them.
 - Nothing changes unless you set `bootstrap_code`. The default, `log`, keeps writing the
-  code to the log as 0.3.0 does.
+  code to the log as 0.3.0 does. Rolling back to 0.3.0 ignores `bootstrap_code` and
+  `$CABAL_BOOTSTRAP_CODE` and logs the code again.
 
 ### Changed
 
