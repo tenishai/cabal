@@ -69,6 +69,11 @@ class CabalConfig(_Open):
     # long to stop before it is cancelled.
     detached_task_limit: int = Field(default=16, ge=0)
     detached_drain_seconds: float = Field(default=10.0, ge=0)
+    # Where the operator bootstrap code minted at startup goes (#325): "log"
+    # (the warning line `make bootstrap` and the k8s steps read), "file"
+    # ($CABAL_HOME/bootstrap_code, mode 0600, with only its path logged) or
+    # "off" (mint nothing). $CABAL_BOOTSTRAP_CODE wins over this.
+    bootstrap_code: Literal["log", "file", "off"] = "log"
 
 
 #: Keyword names cabal itself binds on the way to the provider. An
@@ -633,6 +638,24 @@ def resolve_public_url(identity: IdentityConfig | None) -> str | None:
     if parsed.query or parsed.fragment:
         raise ValueError(f"cabal.public_url must not carry a query or fragment: {raw!r}")
     return url
+
+
+#: Overrides `cabal.bootstrap_code` (#325).
+BOOTSTRAP_CODE_ENV = "CABAL_BOOTSTRAP_CODE"
+BOOTSTRAP_CODE_MODES = ("log", "file", "off")
+
+
+def resolve_bootstrap_code(identity: IdentityConfig | None) -> str:
+    """Where the startup bootstrap code goes: "log", "file" or "off". Raises
+    ValueError for an unknown $CABAL_BOOTSTRAP_CODE, so a typo can't fall
+    back to writing the code to the log."""
+    raw = _env_or(BOOTSTRAP_CODE_ENV, identity.cabal.bootstrap_code if identity is not None else None)
+    mode = raw.strip().lower() if raw is not None else "log"
+    if mode not in BOOTSTRAP_CODE_MODES:
+        raise ValueError(
+            f"{BOOTSTRAP_CODE_ENV} must be one of {', '.join(BOOTSTRAP_CODE_MODES)}, not {raw!r}"
+        )
+    return mode
 
 
 #: Overrides `cabal.front_door` (#270).

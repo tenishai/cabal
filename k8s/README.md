@@ -29,6 +29,8 @@ kubectl -n cabal rollout status deploy/cabal-core
 
 # 4. Grab the bootstrap code from the logs and trade it for an operator JWT.
 kubectl -n cabal logs deploy/cabal-core | grep bootstrap_code
+# Once you are logged in, set CABAL_BOOTSTRAP_CODE=off (or "file") on the
+# deployment so later starts stop writing a code to the log.
 
 # 5. Port-forward so the cbl CLI can reach the cluster.
 kubectl -n cabal port-forward svc/cabal-core 7400:7400 &

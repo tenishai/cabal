@@ -160,6 +160,8 @@ startup expires after that. If it has, restart cabal for a fresh code
 (`docker compose -f docker-compose.dev.yml restart cabal`) and run it again.
 `make bootstrap` waits for liminal to come back healthy before it returns, so
 `make demo` can follow straight away.
+`make bootstrap` reads the code from cabal's log, so it needs the default
+`bootstrap_code = "log"`; `identity.toml.example` describes `file` and `off`.
 
 **Prerequisites for `make up`**: Docker with the Compose plugin, and `docker buildx`
 (on Ubuntu: `sudo apt update && sudo apt install docker-buildx`). The dev compose file builds the cabal
