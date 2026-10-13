@@ -19,6 +19,12 @@ data_dir = "data"
 # (more are refused), and each gets this many seconds to stop on shutdown.
 # detached_task_limit = 16
 # detached_drain_seconds = 10
+# Where the operator bootstrap code minted at each start goes: "log" (the daemon
+# log, which `make bootstrap` and the k8s steps read), "file" ($CABAL_HOME/bootstrap_code,
+# owner-only, with only its path logged) or "off" (no code). Logs get copied and
+# shipped, so use "file" or "off" once you have an operator. $CABAL_BOOTSTRAP_CODE
+# overrides it.
+# bootstrap_code = "log"
 
 # ----- LiteLLM proxy -----
 # api_base points at a running LiteLLM proxy. api_key_env names the env

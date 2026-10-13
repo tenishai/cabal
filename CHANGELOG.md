@@ -6,6 +6,14 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+### Added
+
+- `cabal.bootstrap_code` (or `$CABAL_BOOTSTRAP_CODE`) sets where the operator bootstrap code
+  minted at each start goes (tenishai/cabal#325). `log` is the default and today's behaviour.
+  `file` writes it to `$CABAL_HOME/bootstrap_code` with mode 0600 and logs only the path.
+  `off` mints no code. The code is a login for five minutes, and logs get copied and
+  shipped, so a cabal that already has its operator can keep it out of them.
+
 ## [0.3.0] — 2026-10-12
 
 ### Upgrading

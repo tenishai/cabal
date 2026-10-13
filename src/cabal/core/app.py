@@ -8,7 +8,9 @@ Startup sequence (in `lifespan`):
     5. Refresh JWKS provider for the router.
     6. Seed a persona row for the built-in echo agent + register it in
        the bulletin board + register its LocalHandler.
-    7. Mint and log a one-shot operator bootstrap code.
+    7. Mint a one-shot operator bootstrap code and deliver it per
+       `cabal.bootstrap_code` (#325): to the log (default), to an owner-only
+       file, or not at all.
     8. Construct the DispatchRouter + register local handlers.
 """
 
@@ -31,12 +33,13 @@ from sqlalchemy import select
 from cabal import __version__
 from cabal.agents.echo import EchoAgent
 from cabal.agents.tck import TCK_ENV, TckAgent
-from cabal.config.home import resolve_identity_path
+from cabal.config.home import cabal_home, resolve_identity_path
 from cabal.config.identity import (
     CabalConfig,
     GuardrailsConfig,
     IdentityConfig,
     load_identity,
+    resolve_bootstrap_code,
     resolve_data_dir,
     resolve_under_data_dir,
 )
@@ -396,6 +399,45 @@ MASTER_KEY_MISMATCH_MSG = (
 )
 
 
+#: The file `bootstrap_code = "file"` writes, under cabal_home() (#325).
+BOOTSTRAP_CODE_FILENAME = "bootstrap_code"
+
+
+async def _issue_bootstrap_code(sessionmaker: Any, mode: str) -> None:
+    """Mint the startup operator code and deliver it the way `mode` says.
+
+    "log" is the original channel: `make bootstrap` and the k8s steps grep the
+    code out of the daemon log. Logs get copied and shipped, though, so "file"
+    keeps the code out of them (#325): it goes to an owner-only file and the log
+    names only the path. "off" mints nothing, for a cabal that already has its
+    operator.
+    """
+    if mode == "off":
+        log.info("cabal.bootstrap_code_off")
+        return
+    async with open_session(sessionmaker) as session:
+        code = await issue_operator_code(session)
+    if mode == "file":
+        path = cabal_home() / BOOTSTRAP_CODE_FILENAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(f"{code}\n")
+        # O_CREAT's mode applies only to a new file; tighten an old one too.
+        path.chmod(0o600)
+        log.warning(
+            "cabal.bootstrap_code_written",
+            path=str(path),
+            msg=f"Operator bootstrap code (valid 5 minutes) written to {path}",
+        )
+        return
+    log.warning(
+        "cabal.bootstrap_code",
+        code=code,
+        msg=f"Operator bootstrap code (valid 5 minutes): {code}",
+    )
+
+
 def create_app(
     *,
     agent: str = "all",
@@ -563,6 +605,10 @@ def create_app(
         # cabal.data_dir anchors at the identity.toml dir (agent root != user home,
         # techne#441). Resolved in core so it holds with or without liminal.
         data_dir = resolve_data_dir(identity, config_path_obj)
+        # Resolved here, before the heartbeat and detached-task machinery
+        # start, so a typo in $CABAL_BOOTSTRAP_CODE fails the start without
+        # leaving those running (#325).
+        bootstrap_mode = resolve_bootstrap_code(identity)
         _app.state.data_dir = data_dir
         log.info("cabal.data_dir", path=str(data_dir))
 
@@ -772,13 +818,7 @@ def create_app(
         _app.state.heartbeat = heartbeat
 
         if print_bootstrap_code:
-            async with open_session(sessionmaker) as session:
-                code = await issue_operator_code(session)
-            log.warning(
-                "cabal.bootstrap_code",
-                code=code,
-                msg=f"Operator bootstrap code (valid 5 minutes): {code}",
-            )
+            await _issue_bootstrap_code(sessionmaker, bootstrap_mode)
 
         log.info("cabal.ready", active_kid=kid)
 
