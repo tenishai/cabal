@@ -1,13 +1,13 @@
 ---
 card: repo-card:cabal
 updated: 2026-10-13
-anchor: pyproject.toml sha=7f7e38b35e4c8071a025720d2c8754e7bb07dda6
+anchor: pyproject.toml sha=35062a79776bdb39a4223dacb1a6c4063800ff8d
 anchor: src/cabal/core/app.py sha=a0548e3ffee91353b569be75cfdbca993954033e
 ---
 # cabal — repo card
 
 WHAT: the platform's orchestrator ("Cabal Core"): a self-hosted FastAPI daemon that is the IdP (RS256 JWT mint/verify, JWKS), the A2A dispatch broker between agents, the bulletin board of registered agents, and the encrypted credential store, plus the LLM personas (architect, archivist, librarian, mason, wright) that run inside it.
-STATE: main, v0.3.0 (pyproject; distribution `tenish-cabal`, import name `cabal`; `cabal.__version__` reads that package's metadata), classifier Pre-Alpha, AGPL-3.0. Recent work (git log): the A2A v1.0 interface at /agents/{name}/a2a, one shared dispatch-auth policy, detached dispatch, exact-match secrets lookups, operator-only handler flags.
+STATE: main, v0.3.1 (pyproject; distribution `tenish-cabal`, import name `cabal`; `cabal.__version__` reads that package's metadata), classifier Pre-Alpha, AGPL-3.0. Recent work (git log): the A2A v1.0 interface at /agents/{name}/a2a, one shared dispatch-auth policy, detached dispatch, exact-match secrets lookups, operator-only handler flags.
 STACK: Python ≥3.12 (CI 3.12/3.13). FastAPI + uvicorn, SQLAlchemy async + aiosqlite (SQLite only), Alembic (revisions under src/cabal/migrations/versions, shipped as package data), pydantic-settings, Typer, cryptography (Fernet), joserfc (JWT/JWS; declared directly), httpx, structlog, litellm (hard dep, lazily imported). Extras: `mcp` (`tenish-liminal` ≥0.4), `memory` (`tenish-techne` ≥0.18.2), `full`, `tui` (textual), `dev`. Install: `pip install -e ".[dev]"`; siblings as editable checkouts `-e ../techne -e ../liminal` (git pins in requirements-sources.txt). Dockerfile CMD = `cbl daemon up --host 0.0.0.0 --port 7400 --config /app/identity.toml`; docker-compose*.yml, k8s/ manifests, Makefile (dev compose stack, `make bootstrap`).
 ENTRY:
 - `cbl` → src/cabal/cli/main.py:app (daemon up, login, dispatch, chat, status, secret, token, persona graduate/absorb, primus rotate, reload identity, reset-auth, session, conversations, tail)
