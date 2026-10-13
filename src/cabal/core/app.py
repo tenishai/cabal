@@ -8,7 +8,9 @@ Startup sequence (in `lifespan`):
     5. Refresh JWKS provider for the router.
     6. Seed a persona row for the built-in echo agent + register it in
        the bulletin board + register its LocalHandler.
-    7. Mint and log a one-shot operator bootstrap code.
+    7. Mint a one-shot operator bootstrap code and deliver it per
+       `cabal.bootstrap_code` (#325): to the log (default), to an owner-only
+       file, or not at all.
     8. Construct the DispatchRouter + register local handlers.
 """
 
@@ -603,6 +605,10 @@ def create_app(
         # cabal.data_dir anchors at the identity.toml dir (agent root != user home,
         # techne#441). Resolved in core so it holds with or without liminal.
         data_dir = resolve_data_dir(identity, config_path_obj)
+        # Resolved here, before the heartbeat and detached-task machinery
+        # start, so a typo in $CABAL_BOOTSTRAP_CODE fails the start without
+        # leaving those running (#325).
+        bootstrap_mode = resolve_bootstrap_code(identity)
         _app.state.data_dir = data_dir
         log.info("cabal.data_dir", path=str(data_dir))
 
@@ -812,7 +818,7 @@ def create_app(
         _app.state.heartbeat = heartbeat
 
         if print_bootstrap_code:
-            await _issue_bootstrap_code(sessionmaker, resolve_bootstrap_code(identity))
+            await _issue_bootstrap_code(sessionmaker, bootstrap_mode)
 
         log.info("cabal.ready", active_kid=kid)
 

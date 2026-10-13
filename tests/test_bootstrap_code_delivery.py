@@ -103,3 +103,12 @@ def test_env_wins_over_identity_and_typos_are_refused(monkeypatch) -> None:
 def test_identity_file_refuses_an_unknown_mode() -> None:
     with pytest.raises(ValueError):
         IdentityConfig.model_validate({"cabal": {"bootstrap_code": "stdout"}})
+
+
+@pytest.mark.asyncio
+async def test_a_bad_env_value_fails_before_the_heartbeat_starts(monkeypatch, tmp_path) -> None:
+    app = await _start(monkeypatch, tmp_path, "stdout")
+    with pytest.raises(ValueError, match="CABAL_BOOTSTRAP_CODE"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert not hasattr(app.state, "heartbeat")

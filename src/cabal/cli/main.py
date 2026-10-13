@@ -104,7 +104,8 @@ def reset_auth_cmd(
 
     Backs the database up, clears the signing keys cabal can no longer decrypt,
     and drops the cached operator token that the deleted key signed. The next
-    `cbl daemon up` mints a fresh key and prints a new bootstrap code.
+    `cbl daemon up` mints a fresh key and a new bootstrap code, delivered per
+    `cabal.bootstrap_code` (#325).
 
     Secrets are LEFT IN PLACE unless --purge-secrets: they are the one thing
     here that cannot be regenerated.
@@ -148,7 +149,12 @@ def reset_auth_cmd(
         )
     if report.token_removed:
         typer.echo("operator token:    removed")
-    typer.echo("next: `cbl daemon up`, then `cbl login --code <CODE>` from its log.")
+    typer.echo(
+        "next: `cbl daemon up`, then `cbl login --code <CODE>`. The code is in the "
+        "daemon log (bootstrap_code = \"log\", the default) or in "
+        "$CABAL_HOME/bootstrap_code (\"file\"). With \"off\" no code is minted: "
+        "start once with CABAL_BOOTSTRAP_CODE=file."
+    )
 
 
 @app.command("login")
@@ -157,7 +163,7 @@ def login(
         None,
         "--code",
         prompt="Bootstrap code",
-        help="6-character code printed in the daemon log on startup.",
+        help="6-character code the daemon mints at startup: in its log, or in $CABAL_HOME/bootstrap_code with bootstrap_code = \"file\".",
     ),
 ) -> None:
     """Trade a bootstrap code for an operator JWT (saved to $CABAL_HOME/token, default ~/.cabal/token)."""
