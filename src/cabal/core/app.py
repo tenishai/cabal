@@ -421,10 +421,11 @@ async def _issue_bootstrap_code(sessionmaker: Any, mode: str) -> None:
         path = cabal_home() / BOOTSTRAP_CODE_FILENAME
         path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        # O_CREAT's mode applies only to a new file. Tighten an old one before
+        # the code is written, so it is never readable under the old mode.
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(f"{code}\n")
-        # O_CREAT's mode applies only to a new file; tighten an old one too.
-        path.chmod(0o600)
         log.warning(
             "cabal.bootstrap_code_written",
             path=str(path),

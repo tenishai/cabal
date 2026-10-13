@@ -73,6 +73,26 @@ async def test_file_mode_tightens_an_existing_file(monkeypatch, tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_file_mode_tightens_an_existing_file_before_writing(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "home" / "bootstrap_code"
+    path.parent.mkdir()
+    path.write_text("OLDOLD\n")
+    path.chmod(0o644)
+    modes: list[int] = []
+    real_fdopen = os.fdopen
+
+    def fdopen(fd, *args, **kwargs):
+        modes.append(stat.S_IMODE(os.fstat(fd).st_mode))
+        return real_fdopen(fd, *args, **kwargs)
+
+    app = await _start(monkeypatch, tmp_path, "file")
+    monkeypatch.setattr(os, "fdopen", fdopen)
+    async with app.router.lifespan_context(app):
+        pass
+    assert modes == [0o600]
+
+
+@pytest.mark.asyncio
 async def test_off_mints_nothing(monkeypatch, tmp_path) -> None:
     from sqlalchemy import func, select
 

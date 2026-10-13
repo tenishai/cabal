@@ -6,6 +6,22 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-10-13
+
+### Upgrading
+
+- No database migration: the Alembic head is the same as 0.3.0's, so 0.3.0 and 0.3.1 run
+  on the same database and you can move between them.
+- Nothing changes unless you set `bootstrap_code`. The default, `log`, keeps writing the
+  code to the log as 0.3.0 does. Rolling back to 0.3.0 ignores `bootstrap_code` and
+  `$CABAL_BOOTSTRAP_CODE` and logs the code again.
+
+### Changed
+
+- The image's optional liminal (`WITH_MCP=1`) is now liminal 0.5.0 instead of 0.4.0, and
+  `requirements-sources.txt` pins `v0.5.0`. The handler API that cabal's handlers build on is
+  unchanged in 0.5.0, and cabal's tests pass against it.
+
 ### Added
 
 - `cabal.bootstrap_code` (or `$CABAL_BOOTSTRAP_CODE`) sets where the operator bootstrap code

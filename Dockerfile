@@ -83,11 +83,14 @@ ARG TECHNE_ANY_VERSION=""
 # reason as techne; its own dependencies are public names and come from
 # PyPI. A sibling checkout (--build-context liminal=…) still wins.
 ARG WITH_MCP=""
-# liminal v0.4.0 (tag at 9ab2ada), the first release named tenish-liminal. The
-# wheel builds reproducibly from the tag with SOURCE_DATE_EPOCH set to the tag
-# commit's time; this is that build's hash.
-ARG LIMINAL_VERSION=0.4.0
-ARG LIMINAL_WHEEL_SHA256=8b6dd3de140b3ffdd2f9577fa445a88e27d7f3169d19d2a4c823433030a4cb79
+# liminal v0.5.0 (tag at ad6872b). The wheel builds reproducibly from the tag
+# with SOURCE_DATE_EPOCH set to the tag commit's time; this is that build's hash,
+# and the wheel attached to the GitHub release has it. Upload that asset to your
+# index rather than rebuilding: a build without SOURCE_DATE_EPOCH has the same
+# contents but a different hash. An index that already holds another build can
+# pass its hash with --build-arg LIMINAL_WHEEL_SHA256=<sha256>.
+ARG LIMINAL_VERSION=0.5.0
+ARG LIMINAL_WHEEL_SHA256=91b3d9de484d9b0caa96b8e8b1164be08a26a2ad9c72c5545150e4ee802996d4
 
 # Layer-cache: copy pyproject.toml first, install all deps (and a stub package
 # so the build system is satisfied), then copy the real source last so a
