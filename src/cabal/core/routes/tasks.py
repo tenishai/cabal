@@ -25,6 +25,7 @@ streaming + tasks/get + resubscribe.
 from __future__ import annotations
 
 from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from cabal.core.a2a.types import Task
@@ -56,14 +57,19 @@ class TaskRequest(BaseModel):
 
 async def _resolve_dispatch_token(
     request: Request, raw_token: str, target: str
-) -> str:
+) -> str | JSONResponse:
     """The token to hand the dispatch router, by the shared policy in
     `_dispatch_auth.dispatch_token`. Raises HTTPException on a refusal: 401
     for an invalid or revoked token or one with no sub, 403 for a token the
-    policy refuses, 500 for a server-side fault."""
+    policy refuses, 500 for a server-side fault. A refusal that names a
+    remedy is returned as a response instead, with `remedy` beside `detail`
+    in the same body shape, because HTTPException can carry only `detail`
+    (#329)."""
     token = await dispatch_token(request, raw_token, target)
     if isinstance(token, DispatchRefusal):
         status = {"unauthenticated": 401, "forbidden": 403, "internal": 500}[token.kind]
+        if token.remedy:
+            return JSONResponse(token.body_fields(), status_code=status)
         raise HTTPException(status_code=status, detail=token.message)
     return token
 
@@ -73,7 +79,7 @@ async def submit_task(
     req: TaskRequest,
     request: Request,
     authorization: str | None = Header(default=None),
-) -> Task:
+) -> Task | JSONResponse:
     # cabal's own routing envelope, not an A2A interface: a client that asks
     # for an A2A version is refused rather than silently served (#265).
     if requested_version(request) is not None:
@@ -108,6 +114,8 @@ async def submit_task(
             )
 
     dispatch_token = await _resolve_dispatch_token(request, raw_token, target)
+    if isinstance(dispatch_token, JSONResponse):
+        return dispatch_token
     try:
         return await router_.dispatch(
             target_agent=target,

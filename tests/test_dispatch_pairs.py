@@ -31,6 +31,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 import structlog
@@ -482,6 +483,62 @@ async def test_jsonrpc_honours_dispatch_pairs(app: FastAPI, client: AsyncClient)
     v1 = await _dispatch_v1(client, rogue, req_id="v1-rogue")
     assert v1.status_code == 403, v1.text
     assert "not a colleague" in v1.text
+
+
+@pytest.mark.asyncio
+async def test_missing_pair_names_the_remedy_on_every_door(app: FastAPI, client: AsyncClient) -> None:
+    """#329: a refusal for a missing pair says how to fix it, in words and as
+    a code a runtime can act on, on all four doors: REST, legacy JSON-RPC
+    send and stream, and v1.0. `detail` stays a string: daedalus 0.5.0's
+    `_refusal_detail` passes it through `str()` into the text the model sees."""
+    from cabal.core import dispatch_pairs
+
+    async with open_session(app.state.sessionmaker) as session:
+        await dispatch_pairs.replace_all(session, [("agent:sizing-agent", TARGET)])
+    rogue = await _mint_token(app, sub="agent:rogue", scope=["colleague"])
+    sentence = (
+        f"agent:rogue is not a colleague of {TARGET} yet: agent:rogue's owner can "
+        f"invite {TARGET} as a colleague, and {TARGET}'s owner accepts."
+    )
+
+    rest = await _dispatch(client, rogue, task_id="t-remedy-rest")
+    assert rest.status_code == 403
+    assert rest.json() == {"detail": sentence, "remedy": "colleague_invite"}
+
+    rpc = (await _dispatch_jsonrpc(client, rogue, req_id="rpc-remedy")).json()
+    assert rpc["error"]["message"] == sentence
+    assert rpc["error"]["data"] == {"remedy": "colleague_invite"}
+
+    v1 = await _dispatch_v1(client, rogue, req_id="v1-remedy")
+    assert v1.status_code == 403
+    assert v1.json() == {"detail": sentence, "remedy": "colleague_invite"}
+
+    stream = await client.post(
+        f"/agents/{TARGET}/stream",
+        json={
+            "jsonrpc": "2.0",
+            "id": "stream-remedy",
+            "method": "message/stream",
+            "params": {"message": {"role": "user", "parts": [{"kind": "text", "text": "hi"}]}},
+        },
+        headers={"Authorization": f"Bearer {rogue}"},
+    )
+    assert stream.status_code == 200
+    [data_line] = [ln for ln in stream.text.splitlines() if ln.startswith("data: ")]
+    error = json.loads(data_line.removeprefix("data: "))["error"]
+    assert error["message"] == sentence
+    assert error["data"] == {"remedy": "colleague_invite"}
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_without_a_remedy_carries_no_remedy_field(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """Only the pair check names a remedy; a scope refusal's body is unchanged."""
+    token = await _mint_token(app, sub="agent:rogue", scope=["dispatch"], aud="cabal-core")
+    rest = await _dispatch(client, token, task_id="t-no-remedy")
+    assert rest.status_code in (401, 403), rest.text
+    assert set(rest.json()) == {"detail"}
 
 
 @pytest.mark.asyncio
