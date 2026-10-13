@@ -165,6 +165,10 @@ def _refuse(refusal: DispatchRefusal, request_id: Any) -> JSONResponse:
     if refusal.kind == "unauthenticated":
         raise unauthenticated(refusal.message)
     if refusal.kind == "forbidden":
+        if refusal.remedy:
+            # `forbidden` can only carry the message; the remedy rides next
+            # to it in the same `{"detail": ...}` shape (#329).
+            return JSONResponse(refusal.body_fields(), status_code=403)
         raise forbidden(refusal.message)
     return _error(request_id, jsonrpc_error(INTERNAL_ERROR, refusal.message))
 

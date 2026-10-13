@@ -42,12 +42,27 @@ class DispatchRefusal:
 
     `check` names which check refused, for the operator's log and audit row
     (#315): token, revoked, audience, scope, sub, pair or signing_key.
+
+    `remedy` is a machine-readable code for the fix, when there is one a
+    person can act on, so a runtime can pass it on without parsing prose
+    (#329). Only the pair check sets one today: `colleague_invite`. Every
+    route puts it in its response body next to the message (`body_fields`).
     """
 
     kind: Literal["unauthenticated", "forbidden", "internal"]
     message: str
     legacy_forbidden: bool = False
     check: str = ""
+    remedy: str = ""
+
+    def body_fields(self) -> dict[str, str]:
+        """`{"detail": message}` plus `remedy` when set: the body the REST and
+        A2A v1.0 routes send. `detail` stays a string because callers read it
+        as one."""
+        fields = {"detail": self.message}
+        if self.remedy:
+            fields["remedy"] = self.remedy
+        return fields
 
 
 def verify_caller(request: Request, raw_token: str) -> dict[str, Any] | DispatchRefusal:
@@ -182,9 +197,11 @@ async def _dispatch_token(
         ):
             return DispatchRefusal(
                 "forbidden",
-                f"{sub} is not a colleague of {target} yet. Ask in the room.",
+                f"{sub} is not a colleague of {target} yet: {sub}'s owner can invite "
+                f"{target} as a colleague, and {target}'s owner accepts.",
                 legacy_forbidden=True,
                 check="pair",
+                remedy="colleague_invite",
             )
         stored = await load_active_signing_key(session, master_key=request.app.state.master_key)
     if stored is None:

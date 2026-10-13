@@ -82,7 +82,8 @@ async def _resolve_dispatch_token(
         code = ERROR_FORBIDDEN
     else:
         code = ERROR_UNAUTHORIZED
-    return None, make_error_response(id=None, code=code, message=result.message)
+    data = {"remedy": result.remedy} if result.remedy else None
+    return None, make_error_response(id=None, code=code, message=result.message, data=data)
 
 
 @router.get("/{agent_name}/.well-known/agent-card")
