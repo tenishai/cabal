@@ -13,8 +13,9 @@ Pull requests and issues are in tenishai/cabal.
   a colleague, and B's owner accepts." in place of "... Ask in the room.", and the body
   carries `"remedy": "colleague_invite"` so a runtime can act on it without parsing the
   sentence: beside `detail` on `POST /a2a/tasks` and the A2A v1.0 route, and in the error's
-  `data` on the legacy JSON-RPC route. Status codes and error codes are unchanged, and
-  `detail` is still a string. Refusals of every other kind carry no `remedy`.
+  `data` on both legacy JSON-RPC doors (`POST /agents/{name}` and its `/stream` SSE error
+  event). Status codes and error codes are unchanged, and `detail` is still a string.
+  Refusals of every other kind carry no `remedy`.
 
 ## [0.3.1] — 2026-10-13
 

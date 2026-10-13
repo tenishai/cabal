@@ -47,7 +47,7 @@ class DispatchRefusal:
     person can act on, so a runtime can pass it on without parsing prose
     (#329). Only the pair check sets one today: `colleague_invite`. Every
     route sends it next to the message: REST and v1.0 through `body_fields`,
-    legacy JSON-RPC as the error's `data`.
+    legacy JSON-RPC (send and stream) as the error's `data`.
     """
 
     kind: Literal["unauthenticated", "forbidden", "internal"]

@@ -31,6 +31,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 import structlog
@@ -487,9 +488,9 @@ async def test_jsonrpc_honours_dispatch_pairs(app: FastAPI, client: AsyncClient)
 @pytest.mark.asyncio
 async def test_missing_pair_names_the_remedy_on_every_door(app: FastAPI, client: AsyncClient) -> None:
     """#329: a refusal for a missing pair says how to fix it, in words and as
-    a code a runtime can act on, on all three routes. `detail` stays a
-    string: daedalus 0.5.0's `_refusal_detail` shows `str(body.get("detail"))`
-    to the model."""
+    a code a runtime can act on, on all four doors: REST, legacy JSON-RPC
+    send and stream, and v1.0. `detail` stays a string: daedalus 0.5.0's
+    `_refusal_detail` shows `str(body.get("detail"))` to the model."""
     from cabal.core import dispatch_pairs
 
     async with open_session(app.state.sessionmaker) as session:
@@ -511,6 +512,22 @@ async def test_missing_pair_names_the_remedy_on_every_door(app: FastAPI, client:
     v1 = await _dispatch_v1(client, rogue, req_id="v1-remedy")
     assert v1.status_code == 403
     assert v1.json() == {"detail": sentence, "remedy": "colleague_invite"}
+
+    stream = await client.post(
+        f"/agents/{TARGET}/stream",
+        json={
+            "jsonrpc": "2.0",
+            "id": "stream-remedy",
+            "method": "message/stream",
+            "params": {"message": {"role": "user", "parts": [{"kind": "text", "text": "hi"}]}},
+        },
+        headers={"Authorization": f"Bearer {rogue}"},
+    )
+    assert stream.status_code == 200
+    [data_line] = [ln for ln in stream.text.splitlines() if ln.startswith("data: ")]
+    error = json.loads(data_line.removeprefix("data: "))["error"]
+    assert error["message"] == sentence
+    assert error["data"] == {"remedy": "colleague_invite"}
 
 
 @pytest.mark.asyncio

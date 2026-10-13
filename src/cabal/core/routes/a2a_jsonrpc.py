@@ -246,7 +246,7 @@ async def per_agent_stream(
     dispatch_token, err = await _resolve_dispatch_token(request, raw_token, agent_name)
     if err is not None:
         return StreamingResponse(
-            _sse_error_only(err.error.code, err.error.message),
+            _sse_error_only(err.error.code, err.error.message, err.error.data),
             media_type="text/event-stream",
         )
 
@@ -371,11 +371,14 @@ def _sse_event(event_name: str, payload: dict[str, Any]) -> bytes:
     return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n".encode()
 
 
-async def _sse_error_only(code: int, message: str) -> AsyncIterator[bytes]:
-    yield _sse_event(
-        "error",
-        {"jsonrpc": "2.0", "error": {"code": code, "message": message}},
-    )
+async def _sse_error_only(
+    code: int, message: str, data: Any | None = None
+) -> AsyncIterator[bytes]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        # A dispatch refusal's remedy (#329), as on the non-streaming door.
+        error["data"] = data
+    yield _sse_event("error", {"jsonrpc": "2.0", "error": error})
 
 
 async def _message_send(
