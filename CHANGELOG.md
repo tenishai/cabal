@@ -6,6 +6,15 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-10-13
+
+### Upgrading
+
+- No database migration since 0.3.1, so rolling back to 0.3.1 is safe for the database.
+- A missing-pair refusal carries a new `remedy` field (in `error.data` on the legacy
+  JSON-RPC doors), and its message text changes. A client matching the old sentence needs
+  updating. Status codes, error codes and the type of `detail` don't change.
+
 ### Changed
 
 - A refused ask for a missing colleague pair says how to fix it (tenishai/cabal#329). The
