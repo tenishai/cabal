@@ -46,7 +46,8 @@ class DispatchRefusal:
     `remedy` is a machine-readable code for the fix, when there is one a
     person can act on, so a runtime can pass it on without parsing prose
     (#329). Only the pair check sets one today: `colleague_invite`. Every
-    route puts it in its response body next to the message (`body_fields`).
+    route sends it next to the message: REST and v1.0 through `body_fields`,
+    legacy JSON-RPC as the error's `data`.
     """
 
     kind: Literal["unauthenticated", "forbidden", "internal"]
