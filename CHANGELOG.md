@@ -11,8 +11,9 @@ Pull requests and issues are in tenishai/cabal.
 ### Upgrading
 
 - No database migration since 0.3.1, so rolling back to 0.3.1 is safe for the database.
-- A client that parses refusal bodies sees a new `remedy` field on a missing-pair refusal.
-  Nothing else in the body changes.
+- A missing-pair refusal carries a new `remedy` field (in `error.data` on the legacy
+  JSON-RPC doors), and its message text changes. A client matching the old sentence needs
+  updating. Status codes, error codes and the type of `detail` don't change.
 
 ### Changed
 
