@@ -84,7 +84,11 @@ ARG TECHNE_ANY_VERSION=""
 # PyPI. A sibling checkout (--build-context liminal=…) still wins.
 ARG WITH_MCP=""
 # liminal v0.5.0 (tag at ad6872b). The wheel builds reproducibly from the tag
-# with SOURCE_DATE_EPOCH set to the tag commit's time; this is that build's hash.
+# with SOURCE_DATE_EPOCH set to the tag commit's time; this is that build's hash,
+# and the wheel attached to the GitHub release has it. Upload that asset to your
+# index rather than rebuilding: a build without SOURCE_DATE_EPOCH has the same
+# contents but a different hash. An index that already holds another build can
+# pass its hash with --build-arg LIMINAL_WHEEL_SHA256=<sha256>.
 ARG LIMINAL_VERSION=0.5.0
 ARG LIMINAL_WHEEL_SHA256=91b3d9de484d9b0caa96b8e8b1164be08a26a2ad9c72c5545150e4ee802996d4
 
