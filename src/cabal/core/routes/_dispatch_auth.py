@@ -58,7 +58,7 @@ class DispatchRefusal:
     def body_fields(self) -> dict[str, str]:
         """`{"detail": message}` plus `remedy` when set: the body the REST and
         A2A v1.0 routes send. `detail` stays a string: daedalus 0.5.0's
-        `_refusal_detail` shows `str(body["detail"])` to the model."""
+        `_refusal_detail` shows `str(body.get("detail"))` to the model."""
         fields = {"detail": self.message}
         if self.remedy:
             fields["remedy"] = self.remedy
