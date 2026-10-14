@@ -17,7 +17,7 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Changed
 
-- A refused ask for a missing colleague pair says how to fix it (tenishai/cabal#329). The
+- A refused ask for a missing colleague pair says how to fix it (tenishai/cabal#330, closes tenishai/cabal#329). The
   message now reads "agent:A is not a colleague of B yet: agent:A's owner can invite B as
   a colleague, and B's owner accepts." in place of "... Ask in the room.", and the body
   carries `"remedy": "colleague_invite"` so a runtime can act on it without parsing the
@@ -39,13 +39,13 @@ Pull requests and issues are in tenishai/cabal.
 ### Changed
 
 - The image's optional liminal (`WITH_MCP=1`) is now liminal 0.5.0 instead of 0.4.0, and
-  `requirements-sources.txt` pins `v0.5.0`. The handler API that cabal's handlers build on is
+  `requirements-sources.txt` pins `v0.5.0` (tenishai/cabal#327). The handler API that cabal's handlers build on is
   unchanged in 0.5.0, and cabal's tests pass against it.
 
 ### Added
 
 - `cabal.bootstrap_code` (or `$CABAL_BOOTSTRAP_CODE`) sets where the operator bootstrap code
-  minted at each start goes (tenishai/cabal#325). `log` is the default and today's behaviour.
+  minted at each start goes (tenishai/cabal#326, closes tenishai/cabal#325). `log` is the default and today's behaviour.
   `file` writes it to `$CABAL_HOME/bootstrap_code` with mode 0600 and logs only the path.
   `off` mints no code. The code is a login for five minutes, and logs get copied and
   shipped, so a cabal that already has its operator can keep it out of them.

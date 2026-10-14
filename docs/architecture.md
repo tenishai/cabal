@@ -133,7 +133,10 @@ without one. Discovery differs from both 0.3.0 and v1.0, which serve the AgentCa
 `/.well-known/agent-card.json` with signatures in a `signatures` array inside it: the
 card cabal serves at `/agents/{name}/.well-known/agent-card` is the stored card,
 `{"jws": ..., "card": ...}` for a persona cabal signs, and the root
-`/.well-known/agent-card` is an unsigned stub (#261). The router collapses local hops
+`/.well-known/agent-card` is an unsigned stub (#261). Those are the legacy routes. Since
+0.3.0 each persona also serves the A2A v1.0 interface at `POST /agents/{name}/a2a` and a
+signed v1.0 card at `/agents/{name}/.well-known/agent-card.json`, and
+`/.well-known/agent-card.json` serves the card of the `front_door` persona (#270; epic #272). The router collapses local hops
 to direct Python calls when target and caller share a process. The caller's bearer JWT
 is verified on every hop regardless (`router._prepare`), so the security model is
 uniform across solo and per-pod deployments. The router does **not** verify AgentCards

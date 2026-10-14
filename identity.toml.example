@@ -5,6 +5,7 @@
 [cabal]
 host = "127.0.0.1"
 port = 7400
+# $CABAL_DATA_DIR overrides data_dir; the image sets it to /data.
 data_dir = "data"
 # The URL clients reach this cabal at. A2A v1.0 agent cards name each persona's
 # interface by it and are not served without it. $CABAL_PUBLIC_URL overrides it.

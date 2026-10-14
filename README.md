@@ -32,6 +32,27 @@ hygiene pass. The end-to-end demo (`make demo`) runs cleanly with Docker Compose
   persona reload, agent status.
 - **Docker Compose dev stack** — `make up / bootstrap / demo` runs the full
   cabal + liminal stack; `make demo` is a 6-step smoke test that passes reliably.
+- **A2A v1.0 interface** — `POST /agents/{name}/a2a` (with `A2A-Version: 1.0`)
+  serves SendMessage, GetTask, ListTasks and CancelTask, including
+  `returnImmediately` and conversations by `contextId`. Each persona has a signed
+  v1.0 card at `/agents/{name}/.well-known/agent-card.json` once `public_url` is
+  set. The legacy routes (`/agents/{name}`, its `/stream`, `/a2a/tasks`) still
+  serve clients that send no `A2A-Version`; a request that sends one gets `-32009`
+  (HTTP 400 on `/a2a/tasks`).
+  `docs/outside-agents.md` says how to admit an outside agent.
+- **Colleagues and dispatch pairs** — the room (kobo) mints colleague tokens and
+  syncs who may call whom with `PUT /admin/dispatch-pairs`. An empty table means
+  open, and emptying it logs `dispatch_pairs.replaced_empty`. `GET /directory`
+  lists only the agents a colleague may dispatch to, with each one's
+  `agent_card_url` (null until `public_url` is set).
+- **Refusals are logged, audited and actionable** — every refused dispatch logs
+  `dispatch.refused` (never the token), and one whose token verified also writes a
+  `dispatch_refused` event row. A refusal for a missing colleague pair carries
+  `"remedy": "colleague_invite"` and says which owner invites and which accepts.
+- **Token revocation** — `POST /admin/token/revoke` (operator) refuses every token
+  a subject was issued before the cutoff, and the cutoff survives a restart.
+- **Bootstrap code delivery** — `cabal.bootstrap_code` (`log`, `file` or `off`)
+  lets a cabal that already has its operator keep the startup code out of the log.
 
 ## Layout
 
@@ -247,6 +268,34 @@ host = "https://cloud.langfuse.com"
 public_key_env = "LANGFUSE_PUBLIC_KEY"
 secret_key_env = "LANGFUSE_SECRET_KEY"
 ```
+
+### Where cabal keeps its state
+
+Since 0.3.0, cabal reads `--config` if you pass it. Otherwise it picks a state
+root and reads `identity.toml` from there. The state root is the working
+directory if it already holds `identity.toml`, `data/cabal.db` or
+`data/.master_key`, so older installs keep working in place; otherwise it is
+`$CABAL_HOME`, which defaults to `~/.cabal`. The database and the dev master key
+live under the state root, and `CABAL_DB_URL` overrides the database path. The
+CLI token is always `$CABAL_HOME/token`.
+
+### Settings added in 0.3
+
+Each `[cabal]` setting below is described in `identity.toml.example`. Where an
+environment variable is listed, it wins over the file.
+
+| Setting | Env var | Default | What it does |
+|---|---|---|---|
+| `data_dir` | `CABAL_DATA_DIR` (new in 0.3) | `"data"` | Anchors relative `[techne]` paths such as `db_path`. It does not set the database path (see `CABAL_DB_URL`). The image sets the env var to `/data`. |
+| `public_url` | `CABAL_PUBLIC_URL` | unset | The URL clients reach cabal at. A2A v1.0 cards answer 503 without it. |
+| `front_door` | `CABAL_FRONT_DOOR` | unset | The persona whose v1.0 card `/.well-known/agent-card.json` serves; 404 when unset. |
+| `context_replay_messages` | | `40` | How many earlier messages a v1.0 SendMessage with a `contextId` replays; 0 for none. |
+| `detached_task_limit` | | `16` | Most `returnImmediately` tasks running at once; more get `-32004`. |
+| `detached_drain_seconds` | | `10` | How long each detached task gets to stop at shutdown before it is cancelled. |
+| `bootstrap_code` | `CABAL_BOOTSTRAP_CODE` | `"log"` | `file` writes the code to `$CABAL_HOME/bootstrap_code` (mode 0600) and logs only the path; `off` mints none. An unknown value stops the start. |
+
+`[guardrails] caller_edges` says which personas an `agent:<name>` caller may reach
+when `delegation_edges = true`; see `docs/outside-agents.md`.
 
 ### `CABAL_DISPATCH_TIMEOUT_S`
 
