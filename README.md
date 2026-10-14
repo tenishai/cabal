@@ -271,13 +271,13 @@ secret_key_env = "LANGFUSE_SECRET_KEY"
 
 ### Where cabal keeps its state
 
-Since 0.3.0, cabal reads `--config` if you pass it, then `./identity.toml` if
-it exists, then `$CABAL_HOME/identity.toml`. `CABAL_HOME` defaults to `~/.cabal`.
-A working directory that already holds `identity.toml`, `data/cabal.db` or
-`data/.master_key` stays the state root, so older installs keep working in
-place. Otherwise the database and the dev master key live under `$CABAL_HOME`.
-`CABAL_DB_URL` overrides the database path. The CLI token is always
-`$CABAL_HOME/token`.
+Since 0.3.0, cabal reads `--config` if you pass it. Otherwise it picks a state
+root and reads `identity.toml` from there. The state root is the working
+directory if it already holds `identity.toml`, `data/cabal.db` or
+`data/.master_key`, so older installs keep working in place; otherwise it is
+`$CABAL_HOME`, which defaults to `~/.cabal`. The database and the dev master key
+live under the state root, and `CABAL_DB_URL` overrides the database path. The
+CLI token is always `$CABAL_HOME/token`.
 
 ### Settings added in 0.3
 
