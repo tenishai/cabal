@@ -36,7 +36,9 @@ hygiene pass. The end-to-end demo (`make demo`) runs cleanly with Docker Compose
   serves SendMessage, GetTask, ListTasks and CancelTask, including
   `returnImmediately` and conversations by `contextId`. Each persona has a signed
   v1.0 card at `/agents/{name}/.well-known/agent-card.json` once `public_url` is
-  set. The legacy `/agents/{name}` JSON-RPC route is unchanged.
+  set. The legacy routes (`/agents/{name}`, its `/stream`, `/a2a/tasks`) still
+  serve clients that send no `A2A-Version`; a request that sends one gets `-32009`
+  (HTTP 400 on `/a2a/tasks`).
   `docs/outside-agents.md` says how to admit an outside agent.
 - **Colleagues and dispatch pairs** — the room (kobo) mints colleague tokens and
   syncs who may call whom with `PUT /admin/dispatch-pairs`. An empty table means
@@ -267,6 +269,16 @@ public_key_env = "LANGFUSE_PUBLIC_KEY"
 secret_key_env = "LANGFUSE_SECRET_KEY"
 ```
 
+### Where cabal keeps its state
+
+Since 0.3.0, cabal reads `--config` if you pass it, then `./identity.toml` if
+it exists, then `$CABAL_HOME/identity.toml`. `CABAL_HOME` defaults to `~/.cabal`.
+A working directory that already holds `identity.toml`, `data/cabal.db` or
+`data/.master_key` stays the state root, so older installs keep working in
+place. Otherwise the database and the dev master key live under `$CABAL_HOME`.
+`CABAL_DB_URL` overrides the database path. The CLI token is always
+`$CABAL_HOME/token`.
+
 ### Settings added in 0.3
 
 Each `[cabal]` setting below is described in `identity.toml.example`. Where an
@@ -274,7 +286,7 @@ environment variable is listed, it wins over the file.
 
 | Setting | Env var | Default | What it does |
 |---|---|---|---|
-| `data_dir` | `CABAL_DATA_DIR` | `"data"` | Root for agent state. The image sets the env var to `/data`. |
+| `data_dir` | `CABAL_DATA_DIR` (new in 0.3) | `"data"` | Anchors relative `[techne]` paths such as `db_path`. It does not set the database path (see `CABAL_DB_URL`). The image sets the env var to `/data`. |
 | `public_url` | `CABAL_PUBLIC_URL` | unset | The URL clients reach cabal at. A2A v1.0 cards answer 503 without it. |
 | `front_door` | `CABAL_FRONT_DOOR` | unset | The persona whose v1.0 card `/.well-known/agent-card.json` serves; 404 when unset. |
 | `context_replay_messages` | | `40` | How many earlier messages a v1.0 SendMessage with a `contextId` replays; 0 for none. |
