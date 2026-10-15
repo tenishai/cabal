@@ -3,7 +3,7 @@
 |  |  |
 | --- | --- |
 | **Status** | Proposal |
-| **Authors** | Richard DiMartino + Raven (AI) |
+| **Authors** | Richard DiMartino + AI |
 | **Created** | 2026-07-02 |
 | **Extends** | Singleton personas and the two deployment modes. NOTE: this line cited the original Cabal design document, which is not in this repo (#202). The surviving description of singleton personas is [architecture.md](../architecture.md); the deployment-mode discussion was never carried over. |
 | **Relates to** | techne#507 (federated fleets), liminal (JWKS verify + scope), the team-scale open question — originally §735 of the original Cabal design document, which this repo does not have (#202) — (team-scale bootstrap creds) |

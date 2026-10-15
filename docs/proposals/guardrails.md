@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Draft (foundation, pre-implementation) |
-| **Authors** | Richard DiMartino + Raven (AI) |
+| **Authors** | Richard DiMartino + AI |
 | **Date** | 2026-07-04 |
 | **Issues** | #39 (foundation), #52, #43, #42 |
 | **Sources** | OpenAI Agents SDK `Guardrail` (#39); SWE-agent validate-before-edit (#43); opencode doom-loop (#42) |
