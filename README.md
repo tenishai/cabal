@@ -252,10 +252,11 @@ main from the tag.
 operator_id = "alice"
 
 [personas.archivist]
-role = "LLM"
-model = "claude-haiku-4-5-20251001"
-system_prompt = "You are an archivist."
-budget_tokens = 20000
+description = "Memory and search"
+role = "singleton"                # "singleton" or "primus"
+safety_tier = "moderate"
+model_override = "claude-haiku-4-5-20251001"   # optional
+system_prompt_override = "You are an archivist."  # optional
 
 [personas.archivist.mcp]
 enabled = true

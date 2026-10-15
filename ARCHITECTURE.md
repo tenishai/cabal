@@ -40,7 +40,7 @@ GOTCHAS:
 - Master key: `CABAL_MASTER_KEY` encrypts signing keys AND secrets. A changed key fails startup with a specific message; recovery is `cbl reset-auth`, never guessing keys.
 - role="primus" personas register as `<name>-primus` (e.g. mason-primus).
 - `make test-unit` and `make test-integration` run the same `pytest -q` (AGENTS.md).
-- `identity.toml` is gitignored; edit `identity.toml.example`. `[limenal]` (old spelling) is otherwise ignored: the only signal is an `identity.unknown_section` warning in the log.
+- `identity.toml` is gitignored; edit `identity.toml.example`. `[limenal]` (old spelling) is otherwise ignored. It logs `identity.unknown_section` at config load; then, because `[liminal].url` stays unset, each MCP-enabled persona logs `personas.mcp_skipped` at startup (a warning that also fires when the signing key or HTTP client is missing, and records which one).
 - There is no secrets-backend plugin discovery (nothing reads an entry-point group `cabal.secrets_backends`; cabal#235); a new backend means editing app.py.
 - AgentCards are signed but never verified on dispatch (router docstring, #226).
 - STATUS.md is a June 2026 historical record; docs/proposals/ are design notes, several stale.
