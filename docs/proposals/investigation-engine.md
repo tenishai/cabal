@@ -146,7 +146,7 @@ Today: one `mason-primus` in the bulletin board, addressable by `(name="mason-pr
 
 **Workflow 1: Multiple conversational threads in parallel.** Richard is debugging staging while also planning a feature. Both need Mason-level orchestration. Today he runs two `cbl chat mason-primus` sessions which fight over the same conversation history.
 
-**Workflow 2: Specialization within a persona type.** A `mason-secundus` configured for code-review work (different sub-agents, different toolset) running alongside `mason-primus` configured for general engineering. Same persona type; different specialization.
+**Workflow 2: Specialization within a persona type.** A `wright-secundus` configured for code-review work (different sub-agents, different toolset) running alongside `wright-primus` configured for general engineering. Same persona type; different specialization.
 
 **The extension:**
 
