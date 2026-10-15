@@ -29,7 +29,7 @@ graph TB
         direction TB
         MASON["mason-primus<br/>(lead · opus)"]
         MASONSUB["mason-implementer<br/>(worker · sonnet)"]
-        RAVEN["raven-primus"]
+        WRIGHT["wright-primus"]
     end
 
     subgraph Single["Singleton Personas (front data stores)"]
@@ -67,7 +67,7 @@ graph TB
     DB <-. WAL replicate .-> LITS
 
     A2A --> MASON
-    A2A --> RAVEN
+    A2A --> WRIGHT
     A2A --> ARCH
     A2A --> ARCHV
     A2A --> LIB
@@ -75,9 +75,9 @@ graph TB
     MASON -. subordinate fan-out .-> MASONSUB
 
     %% every persona wires through the per-agent substrate
-    MASON & RAVEN & MASONSUB & ARCH & ARCHV & LIB --> LIM
-    MASON & RAVEN & MASONSUB & ARCH & ARCHV & LIB --> TEC
-    MASON & RAVEN & MASONSUB & ARCH & ARCHV & LIB --> LLMCLI
+    MASON & WRIGHT & MASONSUB & ARCH & ARCHV & LIB --> LIM
+    MASON & WRIGHT & MASONSUB & ARCH & ARCHV & LIB --> TEC
+    MASON & WRIGHT & MASONSUB & ARCH & ARCHV & LIB --> LLMCLI
 
     %% MCP shallow retrieval bypasses A2A for the singleton data backends
     LIM -. shallow MCP .-> ARCH
@@ -89,7 +89,7 @@ graph TB
 
     %% lifecycle hooks feed the bus
     MASON -. lifecycle hooks .-> EB
-    RAVEN -. lifecycle hooks .-> EB
+    WRIGHT -. lifecycle hooks .-> EB
     ARCH -. lifecycle hooks .-> EB
 
     %% styling
@@ -100,7 +100,7 @@ graph TB
     classDef ext fill:#7c2d12,stroke:#9a3412,color:#f9fafb
     classDef wire fill:#facc15,stroke:#ca8a04,color:#1f2937
     class IDP,BROK,BB,EB,PROJ core
-    class MASON,MASONSUB,RAVEN persona
+    class MASON,MASONSUB,WRIGHT persona
     class ARCH,ARCHV,LIB singleton
     class LIM,TEC,LLMCLI sub
     class LITE,PROV,LITS ext
@@ -144,7 +144,7 @@ when it dispatches: `_dispatch_remote` forwards the caller's JWT, and that JWT i
 trust. `AgentCardVerifier` (`core/a2a/card.py`) exists and is tested, but nothing on
 the dispatch path calls it (#226).
 
-**Personas.** Project personas (mason, raven, …) own the work. Primus agents own
+**Personas.** Project personas (mason, wright) own the work. Primus agents own
 plan/dispatch/aggregate; subordinates fan out under them. Singleton personas
 (Architect; Archivist + Librarian in v2) front shared data stores and expose two
 faces: A2A for synthesis dispatches and MCP for cheap shallow retrieval that

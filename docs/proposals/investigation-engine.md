@@ -28,7 +28,7 @@ A short tour of cabal's current state, citing actual file paths. This is the bas
 | Circuit breaker (HALF_OPEN single-probe) | **Built** | `cabal/core/llm/circuit_breaker.py` |
 | LLMPersona base class (the agent loop) | **Built** | `cabal/agents/llm_persona.py` |
 | Subordinate sub-agent pattern (implementer/reviewer) | **Built** | `cabal/agents/subordinate.py` — *this is the existing sub-agent infrastructure* |
-| RookPrimusPersona (plan → dispatch → aggregate) | **Built** | `cabal/agents/personas/rook.py` |
+| MasonPrimusPersona (plan → dispatch → aggregate) | **Built** | `cabal/agents/personas/mason.py` |
 | Architect, Archivist, Librarian | **Built** | `cabal/agents/personas/` |
 | MCP tool proxy + per-persona tool surface | **Built** | `cabal/core/tools/mcp_proxy.py` |
 | A2A types: AgentCard, Task, TaskStatus, Message | **Built** | `cabal/core/a2a/types.py` |
@@ -59,8 +59,8 @@ Five additions, in dependency order:
 
 1. **A2A spec streaming types** — `TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`, `MessageSendConfiguration`. Pure-additive type changes to `cabal/core/a2a/types.py`. Tracked at [cabal#12](https://github.com/tenishai/cabal/issues/12).
 2. **`message/stream` + `tasks/resubscribe` endpoints** — A2A-spec-compliant streaming, distinct from cabal's existing non-spec `POST /agents/{name}/stream`. Cursor-based resubscribe (Last-Event-ID). The existing stream stays as-is for `cbl chat`; the spec stream is what external A2A clients (other operators' platforms, the TUI) will use.
-3. **Multi-instance personas** — today one `rook-primus`. Net-new: `rook-primus`, `rook-secundus`, `rook-tertius` etc., all sharing the same persona type but with independent conversations + checkpoints + AgentCards.
-4. **Sub-agent role library extension** — today only `implementer` + `reviewer` (Rook's subordinates). Net-new: `investigator`, `researcher`, `verifier`, `planner`, `documenter` as registered Subordinate roles any primus can spawn for a specific task.
+3. **Multi-instance personas** — today one `mason-primus`. Net-new: `mason-primus`, `mason-secundus`, `mason-tertius` etc., all sharing the same persona type but with independent conversations + checkpoints + AgentCards.
+4. **Sub-agent role library extension** — today only `implementer` + `reviewer` (Mason's subordinates). Net-new: `investigator`, `researcher`, `verifier`, `planner`, `documenter` as registered Subordinate roles any primus can spawn for a specific task.
 5. **Mailbox-as-tag-slice on Archivist** — sub-agents need a durable place to drop findings when the spawner isn't listening, *and* those findings should land as collective knowledge, not as a second-class side table. Net-new: a `deposit_finding(addressee, sender, raw_content, parent_task)` tool that the Archivist receives, distills via its own cheap-model LLM (the producer stays dumb), and publishes through the existing dedup pipeline. "Mailbox" is a tag-filtered view of the corpus, not a separate kind.
 
 ---
@@ -136,33 +136,33 @@ SUBORDINATE_PROMPTS = {
 
 Identity.toml gains optional `[personas.<persona>.subordinates.<role>]` blocks beyond the existing `implementer` / `reviewer`. The persona_factory already builds Subordinates from this config; the change is one line in the iteration (line ~62 of `persona_factory.py`).
 
-A persona that wants to spawn a sub-agent uses its existing `_dispatch_subordinate` method (in `rook.py`). To make this available to any future primus persona, lift the dispatch helper from `rook.py` into a mixin on `LLMPersona`. ~30 lines.
+A persona that wants to spawn a sub-agent uses its existing `_dispatch_subordinate` method (in `primus.py`, on the shared `PrimusPersona` base). To make this available to any future primus persona, lift the dispatch helper from `primus.py` into a mixin on `LLMPersona`. ~30 lines.
 
 ---
 
 ## Multi-instance personas (stacks)
 
-Today: one `rook-primus` in the bulletin board, addressable by `(name="rook-primus", generation=N)`. Two operator workflows want more.
+Today: one `mason-primus` in the bulletin board, addressable by `(name="mason-primus", generation=N)`. Two operator workflows want more.
 
-**Workflow 1: Multiple conversational threads in parallel.** Richard is debugging staging while also planning a feature. Both need Rook-level orchestration. Today he runs two `cbl chat rook-primus` sessions which fight over the same conversation history.
+**Workflow 1: Multiple conversational threads in parallel.** Richard is debugging staging while also planning a feature. Both need Mason-level orchestration. Today he runs two `cbl chat mason-primus` sessions which fight over the same conversation history.
 
-**Workflow 2: Specialization within a persona type.** A `rook-secundus` configured for code-review work (different sub-agents, different toolset) running alongside `rook-primus` configured for general engineering. Same persona type; different specialization.
+**Workflow 2: Specialization within a persona type.** A `mason-secundus` configured for code-review work (different sub-agents, different toolset) running alongside `mason-primus` configured for general engineering. Same persona type; different specialization.
 
 **The extension:**
 
 - New dimension on identity.toml: `[personas.<persona>.instances]` block, defaulting to `["primus"]`. Multi-instance setup adds `["primus", "secundus", "tertius"]`.
-- The persona_factory loop registers one bulletin-board entry per ordinal: `rook-primus`, `rook-secundus`, `rook-tertius`. Each has its own AgentCard (signed), own endpoint, own conversation table, own checkpoints.
-- Per-instance overrides in identity.toml: `[personas.rook.instances.secundus]` can override `model`, `system_prompt_override`, `subordinates`, `commit_to_memory`, etc. Defaults inherit from the persona-type block.
-- The `(name, generation)` key in the agents table becomes `(name, generation)` where name is the *instance* (`rook-secundus`). Primus rotation still works per-instance.
-- Endpoint convention: `/agents/rook-primus`, `/agents/rook-secundus`, etc. A2A clients route by name.
+- The persona_factory loop registers one bulletin-board entry per ordinal: `mason-primus`, `mason-secundus`, `mason-tertius`. Each has its own AgentCard (signed), own endpoint, own conversation table, own checkpoints.
+- Per-instance overrides in identity.toml: `[personas.mason.instances.secundus]` can override `model`, `system_prompt_override`, `subordinates`, `commit_to_memory`, etc. Defaults inherit from the persona-type block.
+- The `(name, generation)` key in the agents table becomes `(name, generation)` where name is the *instance* (`mason-secundus`). Primus rotation still works per-instance.
+- Endpoint convention: `/agents/mason-primus`, `/agents/mason-secundus`, etc. A2A clients route by name.
 
-The existing `RookPrimusPersona` class is renamed (mentally — keep the class name for the rotation system that already exists) to `RookInstance` semantically — the same code runs each instance.
+The existing `MasonPrimusPersona` class is renamed (mentally — keep the class name for the rotation system that already exists) to `MasonInstance` semantically — the same code runs each instance.
 
 Concrete additions:
 - `cabal/config/identity.py` — parse `instances` list and per-instance overrides
 - `cabal/core/persona_factory.py` — outer loop over instances per persona
-- `cabal/cli/main.py` — `cbl personas add rook secundus` and `cbl personas remove rook secundus` admin commands
-- Tests: hot-reload preserves per-instance state; spawning rook-tertius after startup works
+- `cabal/cli/main.py` — `cbl personas add mason secundus` and `cbl personas remove mason secundus` admin commands
+- Tests: hot-reload preserves per-instance state; spawning mason-tertius after startup works
 
 ---
 
@@ -183,7 +183,7 @@ techne.outbox.enqueue(
     db_path=techne_db,
     target="archivist",                  # registered sink; UnknownSinkError otherwise
     data={
-        "addressee": ["rook-primus"],    # one or many; tag-based fan-out
+        "addressee": ["mason-primus"],    # one or many; tag-based fan-out
         "sender": "investigator",         # subordinate role or persona name
         "raw_content": "<freeform>",      # whatever the sub-agent produced
         "parent_task": "<task-id>",       # for cross-linking
@@ -231,9 +231,9 @@ If the producer wants to skip the LLM entirely (e.g. already-structured outputs 
 The "mailbox" of an addressee is just a search against the corpus:
 
 ```python
-archivist.mailbox_list(addressee="rook-primus", status="unread")
+archivist.mailbox_list(addressee="mason-primus", status="unread")
 # thin wrapper over:
-archivist.search(tags=[f"addressee:rook-primus", "status:unread"])
+archivist.search(tags=[f"addressee:mason-primus", "status:unread"])
 ```
 
 `mark_read(entry_id)` / `mark_acted(entry_id, action_taken)` mutate the `status:` tag on the entry. The entry itself stays in the corpus — it never moves between tables, never gets "demoted", never expires unless an operator explicitly archives it.
@@ -282,7 +282,7 @@ In cabal:
 
 ## Inter-Primus meta-channel
 
-Today the EventBus broadcasts everything to every subscriber. For inter-Primus chatter (Rook-Primus negotiating with Raven-Primus about a hand-off), we want a *named channel* the operator can subscribe to without drinking from the firehose.
+Today the EventBus broadcasts everything to every subscriber. For inter-Primus chatter (Mason-Primus negotiating with Wright-Primus about a hand-off), we want a *named channel* the operator can subscribe to without drinking from the firehose.
 
 Net-new: a thin extension to `EventBus` for named channels.
 
@@ -301,7 +301,7 @@ The default channel preserves existing behavior. The `"meta"` channel carries in
 Concrete additions:
 - `cabal/core/observability/event_bus.py` — channel parameter
 - `cabal/core/routes/admin.py` — `/admin/events/stream?channel=meta` filter
-- `cabal/agents/llm_persona.py` — `talk_to` skill (lift the dispatch helper from rook.py)
+- `cabal/agents/llm_persona.py` — `talk_to` skill (lift the dispatch helper from primus.py)
 - Tests: subscribe-by-channel; multi-channel fan-out
 
 ---
@@ -331,13 +331,13 @@ After a sub-agent finishes its task and deposits a finding, does the Subordinate
 
 ### 2. Instance ordinal vs. arbitrary name
 
-Latin ordinals (`primus`, `secundus`, `tertius`) match the existing `RookPrimusPersona` naming. Should multi-instance always use ordinals, or allow named instances (`rook-bugs`, `rook-features`)?
+Latin ordinals (`primus`, `secundus`, `tertius`) match the existing `MasonPrimusPersona` naming. Should multi-instance always use ordinals, or allow named instances (`mason-bugs`, `mason-features`)?
 
 **Recommendation**: ordinals only for V1. Named instances can come later if a real workflow needs them. Ordinals keep the bulletin-board key predictable.
 
 ### 3. Mailbox-addressee scope
 
-Can a sub-agent address its finding to multiple recipients (e.g. `["rook-primus", "operator"]`)? Or one per deposit?
+Can a sub-agent address its finding to multiple recipients (e.g. `["mason-primus", "operator"]`)? Or one per deposit?
 
 **Recommendation**: list of recipients. The Archivist entry carries N `addressee:<name>` tags. Subscribers query by their own name via `mailbox_list`. Cheap, expressive, no fan-out logic — and dedup still works because the entry is stored once.
 

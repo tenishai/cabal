@@ -14,7 +14,7 @@
 
 ## 1. Why now
 
-Richard's current workflow opens 4 Claude Code tabs, each running a different Rook persona. Context-switching between them is painful. He wants:
+Richard's current workflow opens 4 Claude Code tabs, each running a different agent persona. Context-switching between them is painful. He wants:
 
 1. One terminal window showing all stacks at once
 2. A persistent **Primus** voice per stack he can talk to
@@ -49,7 +49,7 @@ The TUI doesn't introduce a "new aggregation protocol." It subscribes to the exi
 
 - **Named channels on `EventBus`** (PR-F in investigation-engine.md) — today the bus is single-channel; the TUI wants `meta` channel filtering separate from the default fleet stream
 - **Mailbox subscription** (PR-E) — the TUI's mailbox pane needs the Archivist mailbox-kind support
-- **Multi-instance personas** (PR-D) — `rook-primus` + `rook-secundus` + `rook-tertius` as concurrent subscriptions in separate panes
+- **Multi-instance personas** (PR-D) — `mason-primus` + `mason-secundus` + `mason-tertius` as concurrent subscriptions in separate panes
 - **A2A-spec streaming** (PR-A + PR-B) — useful when the TUI is run remotely (`cabal connect`); the existing non-spec SSE is fine for in-process
 
 All five are covered in the sibling proposal; this proposal assumes they land.
@@ -68,7 +68,7 @@ All five are covered in the sibling proposal; this proposal assumes they land.
 | `cabal serve` / `cbl daemon up` | Run the daemon explicitly (no TUI) — already exists |
 | `cabal connect <ws-url>` | TUI against a remote daemon (e.g. SSH'd-to server) |
 | `cabal dispatch <persona> "..."` / `cbl dispatch` | Non-TUI one-shot dispatch — already exists |
-| `cabal personas add rook secundus` | Spawn a new persona instance — see investigation-engine.md PR-D |
+| `cabal personas add mason secundus` | Spawn a new persona instance — see investigation-engine.md PR-D |
 | `cabal personas list` / `cbl status` | List personas — already exists |
 | `cabal tail` / `cbl tail` | Non-TUI event stream (existing) |
 
@@ -89,9 +89,9 @@ The TUI is one client of the Operator Channel. It maintains a **layout** of pane
 
 | Pane type | Subscribes to | Content |
 |---|---|---|
-| **Primus pane** | One `persona` (e.g. `rook-primus`) | Streamed raw text deltas (`event: chunk`) rendered incrementally; a final `event: status-update` delivers the completed Task. No structured tool/thought events exist yet. Input line at the bottom forwards to `send_message` |
+| **Primus pane** | One `persona` (e.g. `mason-primus`) | Streamed raw text deltas (`event: chunk`) rendered incrementally; a final `event: status-update` delivers the completed Task. No structured tool/thought events exist yet. Input line at the bottom forwards to `send_message` |
 | **Meta pane** | Meta-channel | Cross-Primus chatter; operator interjects via `send_meta` |
-| **Mailbox pane** | One mailbox (operator's or a Primus's) | List of items with unread badges, sender persona, summary; opening an item shows full content + lets operator route ("acknowledge to Rook-Primus"). See **"Mailbox: two systems"** note below. |
+| **Mailbox pane** | One mailbox (operator's or a Primus's) | List of items with unread badges, sender persona, summary; opening an item shows full content + lets operator route ("acknowledge to Mason-Primus"). See **"Mailbox: two systems"** note below. |
 | **Roster pane** | `personas_changed` events | Live list of all known personas with status (active / idle / retired); double-click opens a Primus pane for that persona |
 | **Status bar** | Aggregate | Connection state, token usage today, active sub-agent count, mailbox unread count |
 
@@ -112,18 +112,18 @@ The TUI's **Mailbox pane** means **(a)** — the Archivist mailbox. It has nothi
 ┌─────────────────────────────────────────────────────────┐
 │ Status bar: connected ● 13.4k tokens today ● 2 unread   │
 ├──────────────┬──────────────┬───────────────────────────┤
-│ Rook-Primus  │ Raven-Primus │ Meta-channel              │
+│ Mason-Primus │ Wright-Primus│ Meta-channel              │
 │              │              │                            │
-│ ...chat...   │ ...chat...   │ Rook: "Raven, I'm…"        │
-│              │              │ Raven: "Got it."           │
+│ ...chat...   │ ...chat...   │ Mason: "Wright, I'm…"      │
+│              │              │ Wright: "Got it."          │
 │              │              │ Operator: "wait, focus…"   │
 │              │              │                            │
 │ > _          │ > _          │ > _                        │
 ├──────────────┴──────────────┼───────────────────────────┤
 │ Mailbox (operator)          │ Roster                     │
-│ ● Sherlock-Quintus (3min)   │ Rook-Primus    [active]    │
-│ ● Documenter-7 (12min)      │ Rook-Secundus  [idle]      │
-│   Investigator-3 (1h)       │ Raven-Primus   [active]    │
+│ ● Sherlock-Quintus (3min)   │ Mason-Primus   [active]    │
+│ ● Documenter-7 (12min)      │ Mason-Secundus [idle]      │
+│   Investigator-3 (1h)       │ Wright-Primus  [active]    │
 │                              │ Sub-agents     [4 running] │
 └──────────────────────────────┴────────────────────────────┘
 ```
@@ -144,7 +144,7 @@ The layout is configurable per-session and persisted to `~/.cbl/tui/layout.toml`
 When a Primus spawns a sub-agent (Sherlock investigation, documenter pass, verifier run), the Primus pane shows a *collapsed* status line:
 
 ```
-Rook-Primus
+Mason-Primus
   > investigating staging slowdown... ● Sherlock-Quintus [running, 32s]
 ```
 
@@ -205,7 +205,7 @@ Three PRs. Dependencies on investigation-engine.md noted.
 
 - `src/cabal/tui/` package skeleton (`app.py`, `panes/primus.py`, `client/inprocess.py`, basic CSS)
 - Adds `cabal = "cabal.tui.main:app"` to `pyproject.toml [project.scripts]` (currently only `cbl = "cabal.cli.main:app"` exists); spawns daemon if not running
-- **Single Primus-pane default layout** (default subscription: `rook-primus`) — Mailbox pane is deferred (see below)
+- **Single Primus-pane default layout** (default subscription: `mason-primus`) — Mailbox pane is deferred (see below)
 - Ctrl-Tab focus rotation; type → `send_message` to the focused pane's persona
 - v4 Markdown streaming for LLM output: renders raw `event: chunk` text deltas incrementally; handles final `event: status-update` completed Task
 - Reuses existing `EventBus` (in-process) + `astream_task` (per-persona); loads operator token from `~/.cabal/token` and mints per-target dispatch JWT for every call
@@ -215,7 +215,7 @@ Three PRs. Dependencies on investigation-engine.md noted.
 ### PR-T2 — Multi-instance Primus panes + Meta pane
 
 - Roster pane (live persona list — reads `/admin/agents` + reacts to bulletin-board updates)
-- Multiple Primus panes simultaneously: `rook-primus`, `rook-secundus`, `raven-primus` — each its own `astream_task` subscription
+- Multiple Primus panes simultaneously: `mason-primus`, `mason-secundus`, `wright-primus` — each its own `astream_task` subscription
 - Meta pane subscribed to the `meta` channel of `EventBus`
 - Type in Meta pane → `send_meta` (broadcasts to all subscribed Primuses' next turn)
 - **Dependency**: investigation-engine.md PR-D (multi-instance personas) + PR-F (named channels on EventBus)
@@ -238,7 +238,7 @@ Once the TUI is shipping, the same back-end (existing SSE + EventBus + per-perso
 
 | Future UI | Notes |
 |---|---|
-| **VSCode / VSCodium plugin** | Sidebar showing one or two Primus panes; operator types in the sidebar to `POST /agents/{name}` (existing). Activity bar badge for mailbox unread count via `/admin/events/stream`. Useful for "I'm coding; let me ask Rook-Primus a quick thing without leaving the IDE." |
+| **VSCode / VSCodium plugin** | Sidebar showing one or two Primus panes; operator types in the sidebar to `POST /agents/{name}` (existing). Activity bar badge for mailbox unread count via `/admin/events/stream`. Useful for "I'm coding; let me ask Mason-Primus a quick thing without leaving the IDE." |
 | **openwebui-style web UI** | Browser app consuming the same SSE endpoints. Operator picks a persona per chat, can split-view multiple chats. |
 | **iPhone Claude.app via MCP** | Liminal bridges MCP → cabal personas (already wired via `MCPToolProxy`). iPhone gets one Primus at a time. Push notifications for mailbox additions via APNs. |
 | **Home Assistant dashboard widget** | Subscribe-only; reads `/admin/events/stream` + the mailbox MCP tools (PR-E). Ambient awareness of the colony. |
@@ -262,7 +262,7 @@ When the operator types in the Meta pane, every subscribed Primus sees the opera
 
 Per investigation-engine.md, sub-agents (Subordinate instances) have no persistent identity — they're owned by their primus, no bulletin-board entry. But the UI needs *some* label so the operator can track "investigator-1 is checking the slowdown" vs. "verifier-3 is reviewing a config diff."
 
-**Recommendation**: ephemeral identity tuple `(parent_primus, role, ordinal)` rendered as `investigator-1 [under Rook-Primus]`. The ordinal increments per spawn within a primus session.
+**Recommendation**: ephemeral identity tuple `(parent_primus, role, ordinal)` rendered as `investigator-1 [under Mason-Primus]`. The ordinal increments per spawn within a primus session.
 
 ### 3. First-run experience
 

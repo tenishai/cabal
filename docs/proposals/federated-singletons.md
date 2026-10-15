@@ -140,7 +140,7 @@ authz, owned by no cabal:
 
 ```
 alice-cabal / *          → mem:query, mem:append, mem:synthesize, admin:*     (parent, seeded)
-bob-cabal    / rook       → mem:query, mem:append
+bob-cabal    / mason      → mem:query, mem:append
 carol-cabal    / *          → mem:query
 ```
 
@@ -260,21 +260,21 @@ at the endpoint; its agents then dispatch normally. Its Cabal Core must publish
 
 ---
 
-## Worked example — bob's rook deposits a finding into alice's Archivist
+## Worked example — bob's mason deposits a finding into alice's Archivist
 
 ```
 1. alice: cbl persona graduate archivist --endpoint https://archivist.alice.example --as-parent
 2. alice: cbl federation grant archivist bob-cabal --scope mem:query,mem:append
 3. bob adds a `federated` archivist entry (endpoint + service jwks) to their bulletin board.
-4. bob-rook dispatches deposit_finding → bob Cabal Core mints JWT
-   { iss: bob-cabal, sub: rook-primus, aud: [archivist.alice], scope:[...], persona: rook }
+4. bob-mason dispatches deposit_finding → bob Cabal Core mints JWT
+   { iss: bob-cabal, sub: mason-primus, aud: [archivist.alice], scope:[...], persona: mason }
 5. Sovereign Archivist gate: iss=bob-cabal → fetch bob JWKS → verify sig+aud+exp
-   → policy (bob-cabal, rook) has mem:append → ALLOW → deposit into federated memory.
-6. alice (parent) later: cbl federation audit archivist  → sees bob-rook's deposit.
+   → policy (bob-cabal, mason) has mem:append → ALLOW → deposit into federated memory.
+6. alice (parent) later: cbl federation audit archivist  → sees bob-mason's deposit.
 7. If bob misbehaves: alice: cbl federation revoke archivist bob-cabal  → done, no bob involvement.
 ```
 
-alice's own rook uses the identical path (home JWT, scoped), plus the separate
+alice's own mason uses the identical path (home JWT, scoped), plus the separate
 `admin:*` channel for management.
 
 ---
