@@ -136,7 +136,7 @@ SUBORDINATE_PROMPTS = {
 
 Identity.toml gains optional `[personas.<persona>.subordinates.<role>]` blocks beyond the existing `implementer` / `reviewer`. The persona_factory already builds Subordinates from this config; the change is one line in the iteration (line ~62 of `persona_factory.py`).
 
-A persona that wants to spawn a sub-agent uses its existing `_dispatch_subordinate` method (in `mason.py`). To make this available to any future primus persona, lift the dispatch helper from `mason.py` into a mixin on `LLMPersona`. ~30 lines.
+A persona that wants to spawn a sub-agent uses its existing `_dispatch_subordinate` method (in `primus.py`, on the shared `PrimusPersona` base). To make this available to any future primus persona, lift the dispatch helper from `primus.py` into a mixin on `LLMPersona`. ~30 lines.
 
 ---
 
@@ -156,7 +156,7 @@ Today: one `mason-primus` in the bulletin board, addressable by `(name="mason-pr
 - The `(name, generation)` key in the agents table becomes `(name, generation)` where name is the *instance* (`mason-secundus`). Primus rotation still works per-instance.
 - Endpoint convention: `/agents/mason-primus`, `/agents/mason-secundus`, etc. A2A clients route by name.
 
-The existing `MasonPrimusPersona` class is renamed (mentally — keep the class name for the rotation system that already exists) to `RookInstance` semantically — the same code runs each instance.
+The existing `MasonPrimusPersona` class is renamed (mentally — keep the class name for the rotation system that already exists) to `MasonInstance` semantically — the same code runs each instance.
 
 Concrete additions:
 - `cabal/config/identity.py` — parse `instances` list and per-instance overrides
@@ -301,7 +301,7 @@ The default channel preserves existing behavior. The `"meta"` channel carries in
 Concrete additions:
 - `cabal/core/observability/event_bus.py` — channel parameter
 - `cabal/core/routes/admin.py` — `/admin/events/stream?channel=meta` filter
-- `cabal/agents/llm_persona.py` — `talk_to` skill (lift the dispatch helper from mason.py)
+- `cabal/agents/llm_persona.py` — `talk_to` skill (lift the dispatch helper from primus.py)
 - Tests: subscribe-by-channel; multi-channel fan-out
 
 ---

@@ -112,7 +112,7 @@ The TUI's **Mailbox pane** means **(a)** — the Archivist mailbox. It has nothi
 ┌─────────────────────────────────────────────────────────┐
 │ Status bar: connected ● 13.4k tokens today ● 2 unread   │
 ├──────────────┬──────────────┬───────────────────────────┤
-│ Mason-Primus │Wright-Primus │ Meta-channel              │
+│ Mason-Primus │ Wright-Primus│ Meta-channel              │
 │              │              │                            │
 │ ...chat...   │ ...chat...   │ Mason: "Wright, I'm…"      │
 │              │              │ Wright: "Got it."          │
