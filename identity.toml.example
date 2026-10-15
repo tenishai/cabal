@@ -71,15 +71,16 @@ jwt_aud = "liminal"
 # in-process Mason doom-loop guard fires at the subordinate boundary only and
 # never reaches a remote hop.
 #
-# NOTE none of them sees a primus fan-out: _dispatch_subordinate calls
-# handle_task directly and bypasses the router (cabal#158).
+# NOTE a primus fan-out bypasses the router (_dispatch_subordinate calls
+# handle_task directly), so doom_loop, delegation_budget and delegation_depth
+# also run at the subordinate boundary there (cabal#158, #171).
 
 [guardrails]
 # doom_loop = true             # sameness counter; threshold below
 # doom_loop_threshold = 5
 # delegation_budget = true     # payload-independent per-conversation cap
 # doom_loop_ttl_s = 600.0       # widened to 2x CABAL_DISPATCH_TIMEOUT_S if that is larger
-# delegation_depth = true       # refuse an ARRIVING chain that declares a depth above the limit (cabal#144, #171)
+# delegation_depth = true       # refuse a chain deeper than the limit, arriving or fanned out (cabal#144, #171)
 # delegation_depth_limit = 8
 # delegation_budget_limit = 40
 # delegation_budget_caller_window_seconds = 3600.0
