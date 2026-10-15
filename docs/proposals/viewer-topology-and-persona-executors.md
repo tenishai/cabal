@@ -18,7 +18,7 @@
 
 **Status**: superseded — see above
 **Date**: 2026-08-02
-**Author**: session notes (Richard + Poe)
+**Author**: session notes (Richard DiMartino + AI)
 
 Reference notation: `gh:cabal#N` / `gh:techne#N` = GitHub issue in that repo.
 `kn:N` = entry in the personal techne knowledge store. Bare `techne#N` is

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Draft (patterns-lift, pre-implementation) |
-| **Authors** | Richard DiMartino + Raven (AI) |
+| **Authors** | Richard DiMartino + AI |
 | **Date** | 2026-07-04 |
 | **Sources** | `earendil-works/pi` (read at source); cabal harness-surface map (both this session) |
 

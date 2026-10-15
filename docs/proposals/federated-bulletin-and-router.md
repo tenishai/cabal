@@ -3,7 +3,7 @@
 |  |  |
 | --- | --- |
 | **Status** | Proposal |
-| **Authors** | Richard DiMartino + Raven (AI) |
+| **Authors** | Richard DiMartino + AI |
 | **Created** | 2026-07-02 |
 | **Implements** | `docs/proposals/federated-singletons.md` §1 (graduation = replacement) |
 | **Touches** | `core/models.py` (Agent), `core/bulletin/store.py`, `core/broker/router.py`, `core/routes/tasks.py` (token aud), persona factory, a migration |
