@@ -13,7 +13,7 @@ the proposal they came from.
 | file | status |
 |---|---|
 | `guardrails.md` | live design reference |
-| `activity-log-borrow-from-pi.md` | live design reference |
+| `activity-log-borrow-from-pi.md` | **shipped and drifted** — `TOOL_USE` now fires and `ActivityLogger` writes durable rows (`src/cabal/core/observability/activity_logger.py`, PRs #53-#55); the gap it describes is closed |
 | `federated-singletons.md` | proposal, not built |
 | `federated-bulletin-and-router.md` | proposal, not built; pairs with the above |
 | `investigation-engine.md` | proposal, not built |

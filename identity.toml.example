@@ -78,8 +78,12 @@ jwt_aud = "liminal"
 # doom_loop = true             # sameness counter; threshold below
 # doom_loop_threshold = 5
 # delegation_budget = true     # payload-independent per-conversation cap
-# delegation_budget_limit = 20
+# doom_loop_ttl_s = 600.0       # widened to 2x CABAL_DISPATCH_TIMEOUT_S if that is larger
+# delegation_depth = true       # refuse an ARRIVING chain that declares a depth above the limit (cabal#144, #171)
+# delegation_depth_limit = 8
+# delegation_budget_limit = 40
 # delegation_budget_caller_window_seconds = 3600.0
+# delegation_budget_retention_s = 86400.0   # how long a persisted conversation count is honoured
 
 # cabal#154 -- refuse a delegation with no declared edge. OFF by default, and
 # that is a migration decision rather than a judgement about the control: the
