@@ -238,7 +238,7 @@ Once the TUI is shipping, the same back-end (existing SSE + EventBus + per-perso
 
 | Future UI | Notes |
 |---|---|
-| **VSCode / VSCodium plugin** | Sidebar showing one or two Primus panes; operator types in the sidebar to `POST /agents/{name}` (existing). Activity bar badge for mailbox unread count via `/admin/events/stream`. Useful for "I'm coding; let me ask Mason-Primus a quick thing without leaving the IDE." |
+| **VSCode / VSCodium plugin** | Sidebar showing one or two Primus panes; operator types in the sidebar to `POST /agents/{name}` (existing). Activity bar badge for mailbox unread count via `/admin/events/stream`. Useful for "I'm coding; let me ask Wright-Primus a quick thing without leaving the IDE." |
 | **openwebui-style web UI** | Browser app consuming the same SSE endpoints. Operator picks a persona per chat, can split-view multiple chats. |
 | **iPhone Claude.app via MCP** | Liminal bridges MCP → cabal personas (already wired via `MCPToolProxy`). iPhone gets one Primus at a time. Push notifications for mailbox additions via APNs. |
 | **Home Assistant dashboard widget** | Subscribe-only; reads `/admin/events/stream` + the mailbox MCP tools (PR-E). Ambient awareness of the colony. |
