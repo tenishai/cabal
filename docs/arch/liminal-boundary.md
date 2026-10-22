@@ -1,10 +1,10 @@
 ---
 card: arch-card:cabal-liminal-boundary
-updated: 2026-10-07
+updated: 2026-10-22
 anchor: src/cabal/core/tools/mcp_proxy.py sha=4623908dbaddc1f2ba1688ddad9834fa73f1d5a1
 anchor: src/cabal/core/persona_factory.py sha=e1825f818414b99c8b2d60f46f21a6792230f534
 anchor: src/cabal/handlers/__init__.py sha=2e5f64bd92cf389a3ccaffb7bf7c44fdeef49580
-anchor: pyproject.toml sha=2fa722b74b0ca3669f9654a0a8be53779168bfa6
+anchor: pyproject.toml sha=ed44a8a2c200a05004366093f370121b82523aac
 ---
 # liminal-boundary — cabal ↔ liminal (MCP gateway), three directions
 
@@ -24,3 +24,4 @@ INVARIANTS:
 - In SOVEREIGN mode liminal ignores token-embedded scope and tool_extras and resolves a grant by (issuer, persona) (liminal server/routes.py `_authenticate`); tool_extras only steer single-cabal mode.
 CONSUMERS: agents/llm_persona.py (tool-use loop, `tool_use_max_steps`); liminal's entry-point loader (liminal src/liminal/protocol/handler.py); POST /auth/liminal-token mints 15-min gateway tokens for colleague agents (dispatch-auth.md).
 NOTE: the token provider is the `_token_provider` closure in persona_factory; `mcp_proxy.build_token_provider` was removed as dead code.
+CHANGE 2026-10-22: litellm pinned exactly (==1.104.2) after the 1.107.0 supply-chain compromise; bumps are a reviewed line.
