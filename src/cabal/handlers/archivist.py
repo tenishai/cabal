@@ -148,8 +148,8 @@ class ArchivistHandler:
                                 "default): same resource_name and entry_type. "
                                 "'resource': every active entry with this "
                                 "resource_name, whatever its type, for writers "
-                                "that use one name per fact. Ignored without "
-                                "supersede."
+                                "that use one name per fact. No effect without "
+                                "supersede; an unknown value is refused either way."
                             ),
                         },
                     },

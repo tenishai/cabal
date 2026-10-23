@@ -68,8 +68,9 @@ class ArchivistStore:
                 so one resource can hold a fact, a decision and a procedure side
                 by side. ``"resource"`` retires every active entry with the same
                 resource_name whatever its type, for writers that use one name
-                per fact and may revise its type (#350). Ignored when
-                ``supersede`` is False.
+                per fact and may revise its type (#350). It has no effect when
+                ``supersede`` is False, but an unknown value raises
+                ``ValueError`` either way.
 
         Returns:
             PublishResult.outcome:

@@ -154,6 +154,13 @@ def test_unknown_supersede_scope_is_rejected(store: ArchivistStore) -> None:
         store.publish(_entry("x"), supersede=True, supersede_scope="everything")  # type: ignore[arg-type]
 
 
+def test_unknown_supersede_scope_is_rejected_without_supersede(store: ArchivistStore) -> None:
+    """The scope has no effect without supersede, but a bad value is still an error."""
+    with pytest.raises(ValueError, match="supersede_scope"):
+        store.publish(_entry("x"), supersede_scope="everything")  # type: ignore[arg-type]
+    assert store.search("x") == []
+
+
 # ---- #26: body-only updates reach supersede (full-content hash) ----------
 
 
