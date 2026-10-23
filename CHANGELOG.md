@@ -6,6 +6,15 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+### Added
+
+- The archivist's publish takes an optional `supersede_scope` (tenishai/cabal#350).
+  `"type"`, the default, keeps today's behavior: a supersede retires active entries with
+  the same `resource_name` and `entry_type`. `"resource"` retires every active entry with
+  the same `resource_name` whatever its type, for writers that use one name per fact and
+  may revise its type (the techne publish lane). Available on `ArchivistStore.publish` and
+  on the `archivist.publish` tool; an unknown value is refused.
+
 ## [0.3.2] — 2026-10-13
 
 ### Upgrading
