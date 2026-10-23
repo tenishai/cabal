@@ -130,6 +130,14 @@ class ArchivistHandler:
                             "type": "number", "minimum": 0.0, "maximum": 1.0,
                         },
                         "source_thread": {"type": "string"},
+                        "supersede": {
+                            "type": "boolean",
+                            "description": (
+                                "Retire every active entry with the same "
+                                "resource_name and entry_type. Default false "
+                                "links them as RELATED instead."
+                            ),
+                        },
                     },
                     "required": ["resource_name", "summary", "entry_type"],
                 },
@@ -215,6 +223,10 @@ class ArchivistHandler:
                 f"got {entry_type!r}"
             )
 
+        supersede = payload.get("supersede", False)
+        if not isinstance(supersede, bool):
+            return ToolResult.failure("'supersede' must be a boolean")
+
         entry = Entry(
             resource_name=payload["resource_name"].strip(),
             summary=payload["summary"].strip(),
@@ -229,7 +241,7 @@ class ArchivistHandler:
             written_by=ctx.identity or "unknown",
         )
 
-        result = store.publish(entry)
+        result = store.publish(entry, supersede=supersede)
         return ToolResult.json({
             "outcome": result.outcome,
             "entry_id": result.entry_id,

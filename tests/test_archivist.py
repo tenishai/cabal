@@ -328,6 +328,62 @@ async def test_handler_get_returns_entry_with_relations(archivist_handler) -> No
 
 
 @pytest.mark.asyncio
+async def test_handler_publish_supersede_retires_prior(archivist_handler) -> None:
+    first = await archivist_handler.dispatch(
+        "publish",
+        {"resource_name": "nas-share", "summary": "Mounted at /mnt/a.", "entry_type": "fact"},
+        _ctx(),
+    )
+    first_id = first.content[0]["data"]["entry_id"]
+    second = await archivist_handler.dispatch(
+        "publish",
+        {
+            "resource_name": "nas-share", "summary": "Mounted at /mnt/b.",
+            "entry_type": "fact", "supersede": True,
+        },
+        _ctx(),
+    )
+    data = second.content[0]["data"]
+    assert data["outcome"] == "superseded"
+    assert data["related_ids"] == [first_id]
+
+    hits = (await archivist_handler.dispatch("search", {"query": "Mounted"}, _ctx())).content[0][
+        "data"
+    ]["hits"]
+    assert [h["summary"] for h in hits] == ["Mounted at /mnt/b."]
+
+
+@pytest.mark.asyncio
+async def test_handler_publish_without_supersede_still_links_related(archivist_handler) -> None:
+    await archivist_handler.dispatch(
+        "publish",
+        {"resource_name": "nas-share", "summary": "Mounted at /mnt/a.", "entry_type": "fact"},
+        _ctx(),
+    )
+    second = await archivist_handler.dispatch(
+        "publish",
+        {"resource_name": "nas-share", "summary": "Mounted at /mnt/b.", "entry_type": "fact"},
+        _ctx(),
+    )
+    assert second.content[0]["data"]["outcome"] == "related"
+    hits = (await archivist_handler.dispatch("search", {"query": "Mounted"}, _ctx())).content[0][
+        "data"
+    ]["hits"]
+    assert len(hits) == 2
+
+
+@pytest.mark.asyncio
+async def test_handler_publish_rejects_non_boolean_supersede(archivist_handler) -> None:
+    result = await archivist_handler.dispatch(
+        "publish",
+        {"resource_name": "x", "summary": "y", "entry_type": "fact", "supersede": "yes"},
+        _ctx(),
+    )
+    assert result.is_error is True
+    assert "supersede" in result.error
+
+
+@pytest.mark.asyncio
 async def test_handler_schema(archivist_handler) -> None:
     result = await archivist_handler.dispatch("schema", {}, _ctx())
     assert result.is_error is False
