@@ -12,11 +12,14 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from cabal.archivist.dedup import Dedupper, make_related_edges
 from cabal.archivist.models import Entry, Relation
 from cabal.archivist.schema import connect, init_db
+
+SupersedeScope = Literal["type", "resource"]
+SUPERSEDE_SCOPES: tuple[str, ...] = ("type", "resource")
 
 
 @dataclass(slots=True)
@@ -43,7 +46,13 @@ class ArchivistStore:
 
     # ---- write path -------------------------------------------------------
 
-    def publish(self, entry: Entry, *, supersede: bool = False) -> PublishResult:
+    def publish(
+        self,
+        entry: Entry,
+        *,
+        supersede: bool = False,
+        supersede_scope: SupersedeScope = "type",
+    ) -> PublishResult:
         """Write an entry through the dedup pipeline.
 
         Args:
@@ -54,6 +63,13 @@ class ArchivistStore:
                 Since ``search`` is active-only, latest-wins falls out for free.
                 Deterministic, no LLM (agent-model design §5e). Default False
                 preserves the RELATED-linking behavior.
+            supersede_scope: which priors a supersede retires. ``"type"`` (the
+                default) retires only same (resource_name, entry_type) entries,
+                so one resource can hold a fact, a decision and a procedure side
+                by side. ``"resource"`` retires every active entry with the same
+                resource_name whatever its type, for writers that use one name
+                per fact and may revise its type (#350). Ignored when
+                ``supersede`` is False.
 
         Returns:
             PublishResult.outcome:
@@ -66,6 +82,11 @@ class ArchivistStore:
                               active entries (supersede=True); related_ids holds
                               the now-superseded ids.
         """
+        if supersede_scope not in SUPERSEDE_SCOPES:
+            raise ValueError(
+                f"supersede_scope must be one of {list(SUPERSEDE_SCOPES)}; got {supersede_scope!r}"
+            )
+
         result = self._dedup.check(entry)
 
         if result.outcome in ("duplicate_l0", "duplicate_l1"):
@@ -76,21 +97,24 @@ class ArchivistStore:
                 related_ids=[],
             )
 
-        if supersede and result.outcome == "related":
-            # Insert the new entry AND retire EVERY active prior sharing its
-            # (resource_name, entry_type) in ONE transaction (#27) — never
-            # leaving two 'current' entries or a half-applied supersession, and
-            # not capped by the dedup LIMIT-5 sample.
+        # Dedup's Tier-1 overlap only sees same-type priors, so with resource
+        # scope a different-type prior arrives as "new" and still has to be
+        # looked up here.
+        if supersede and (result.outcome == "related" or supersede_scope == "resource"):
+            # Insert the new entry AND retire EVERY active prior in scope in ONE
+            # transaction (#27) — never leaving two 'current' entries or a
+            # half-applied supersession, and not capped by the dedup LIMIT-5
+            # sample.
             conn = connect(self.db_path)
             try:
                 self._insert(entry, conn=conn)
-                superseded_ids = self._supersede_all(entry, conn)
+                superseded_ids = self._supersede_all(entry, conn, scope=supersede_scope)
                 conn.commit()
             finally:
                 conn.close()
             self._dedup.record_new(entry)
             return PublishResult(
-                outcome="superseded",
+                outcome="superseded" if superseded_ids else "new",
                 entry_id=entry.id,
                 related_ids=superseded_ids,
             )
@@ -176,21 +200,29 @@ class ArchivistStore:
         finally:
             conn.close()
 
-    def _supersede_all(self, entry: Entry, conn: sqlite3.Connection) -> list[str]:
+    def _supersede_all(
+        self, entry: Entry, conn: sqlite3.Connection, *, scope: SupersedeScope = "type"
+    ) -> list[str]:
         """Within the caller's transaction (no commit here), retire EVERY active
-        entry sharing `entry`'s (resource_name, entry_type) — except `entry`
-        itself — flipping status to 'superseded' and recording a SUPERSEDES edge
+        entry sharing `entry`'s (resource_name, entry_type) — or just its
+        resource_name when `scope` is "resource" (#350) — except `entry` itself,
+        flipping status to 'superseded' and recording a SUPERSEDES edge
         new -> prior. Unbounded: queries all priors directly, not the dedup
         LIMIT-5 overlap sample (#27). Returns the superseded ids."""
         now = datetime.now(UTC).isoformat()
-        priors = [
-            r["id"]
-            for r in conn.execute(
+        if scope == "resource":
+            sql = (
                 "SELECT id FROM memory_entries "
-                "WHERE resource_name=? AND entry_type=? AND status='active' AND id != ?",
-                (entry.resource_name, entry.entry_type, entry.id),
-            ).fetchall()
-        ]
+                "WHERE resource_name=? AND status='active' AND id != ?"
+            )
+            params: tuple[str, ...] = (entry.resource_name, entry.id)
+        else:
+            sql = (
+                "SELECT id FROM memory_entries "
+                "WHERE resource_name=? AND entry_type=? AND status='active' AND id != ?"
+            )
+            params = (entry.resource_name, entry.entry_type, entry.id)
+        priors = [r["id"] for r in conn.execute(sql, params).fetchall()]
         for prior in priors:
             conn.execute(
                 "UPDATE memory_entries SET status='superseded', updated_at=? "

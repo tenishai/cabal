@@ -40,6 +40,7 @@ import structlog
 from liminal.protocol import Context, Handler, ToolResult, ToolSpec
 
 from cabal.archivist import ArchivistStore, Entry
+from cabal.archivist.store import SUPERSEDE_SCOPES
 
 log = structlog.get_logger(__name__)
 
@@ -139,6 +140,18 @@ class ArchivistHandler:
                                 "re-publish is a no-op either way."
                             ),
                         },
+                        "supersede_scope": {
+                            "type": "string",
+                            "enum": list(SUPERSEDE_SCOPES),
+                            "description": (
+                                "Which entries a supersede retires. 'type' (the "
+                                "default): same resource_name and entry_type. "
+                                "'resource': every active entry with this "
+                                "resource_name, whatever its type, for writers "
+                                "that use one name per fact. Ignored without "
+                                "supersede."
+                            ),
+                        },
                     },
                     "required": ["resource_name", "summary", "entry_type"],
                 },
@@ -228,6 +241,13 @@ class ArchivistHandler:
         if not isinstance(supersede, bool):
             return ToolResult.failure("'supersede' must be a boolean")
 
+        supersede_scope = payload.get("supersede_scope", "type")
+        if supersede_scope not in SUPERSEDE_SCOPES:
+            return ToolResult.failure(
+                f"'supersede_scope' must be one of {list(SUPERSEDE_SCOPES)}; "
+                f"got {supersede_scope!r}"
+            )
+
         entry = Entry(
             resource_name=payload["resource_name"].strip(),
             summary=payload["summary"].strip(),
@@ -242,7 +262,7 @@ class ArchivistHandler:
             written_by=ctx.identity or "unknown",
         )
 
-        result = store.publish(entry, supersede=supersede)
+        result = store.publish(entry, supersede=supersede, supersede_scope=supersede_scope)
         return ToolResult.json({
             "outcome": result.outcome,
             "entry_id": result.entry_id,

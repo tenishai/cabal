@@ -83,6 +83,77 @@ def test_supersede_scoped_to_resource_and_type(store: ArchivistStore) -> None:
     assert store.get(a.entry_id).status == "active"
 
 
+# ---- #350: resource scope retires across entry types ---------------------
+
+
+def test_resource_scope_retires_a_different_type(store: ArchivistStore) -> None:
+    """A fact revised into a procedure under the same name retires the fact."""
+    a = store.publish(_entry("mount by device name", resource="media-mount", etype="fact"))
+    b = store.publish(
+        _entry("mount by UUID with nofail", resource="media-mount", etype="procedure"),
+        supersede=True,
+        supersede_scope="resource",
+    )
+    assert b.outcome == "superseded"
+    assert b.related_ids == [a.entry_id]
+    assert store.get(a.entry_id).status == "superseded"
+    assert store.get(b.entry_id).status == "active"
+    rels = store.list_related(b.entry_id)
+    assert any(r["relation_type"] == "SUPERSEDES" and r["dst_id"] == a.entry_id for r in rels)
+    assert {e.id for e in store.search("mount")} == {b.entry_id}
+
+
+def test_resource_scope_retires_every_type_and_same_type_priors(store: ArchivistStore) -> None:
+    ids = [
+        store.publish(_entry(f"note {t}", resource="r", etype=t)).entry_id
+        for t in ("fact", "decision", "procedure")
+    ]
+    final = store.publish(
+        _entry("the final word", resource="r", etype="fact"),
+        supersede=True,
+        supersede_scope="resource",
+    )
+    assert final.outcome == "superseded"
+    assert sorted(final.related_ids) == sorted(ids)
+    assert all(store.get(i).status == "superseded" for i in ids)
+
+
+def test_resource_scope_first_entry_is_new(store: ArchivistStore) -> None:
+    r = store.publish(_entry("only one"), supersede=True, supersede_scope="resource")
+    assert r.outcome == "new"
+    assert r.related_ids == []
+
+
+def test_resource_scope_stays_within_its_resource(store: ArchivistStore) -> None:
+    a = store.publish(_entry("alpha", resource="svc-a"))
+    b = store.publish(
+        _entry("beta", resource="svc-b", etype="fact"), supersede=True, supersede_scope="resource"
+    )
+    assert b.outcome == "new"
+    assert store.get(a.entry_id).status == "active"
+
+
+def test_resource_scope_needs_supersede(store: ArchivistStore) -> None:
+    """Without supersede the scope is ignored: a different type is just new."""
+    a = store.publish(_entry("alpha", resource="r", etype="fact"))
+    b = store.publish(_entry("beta", resource="r", etype="decision"), supersede_scope="resource")
+    assert b.outcome == "new"
+    assert store.get(a.entry_id).status == "active"
+
+
+def test_resource_scope_identical_republish_is_still_a_duplicate(store: ArchivistStore) -> None:
+    store.publish(_entry("same", resource="r", etype="fact"))
+    dup = store.publish(
+        _entry("same", resource="r", etype="fact"), supersede=True, supersede_scope="resource"
+    )
+    assert dup.outcome in ("duplicate_l0", "duplicate_l1")
+
+
+def test_unknown_supersede_scope_is_rejected(store: ArchivistStore) -> None:
+    with pytest.raises(ValueError, match="supersede_scope"):
+        store.publish(_entry("x"), supersede=True, supersede_scope="everything")  # type: ignore[arg-type]
+
+
 # ---- #26: body-only updates reach supersede (full-content hash) ----------
 
 
