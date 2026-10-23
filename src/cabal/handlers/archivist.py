@@ -133,9 +133,10 @@ class ArchivistHandler:
                         "supersede": {
                             "type": "boolean",
                             "description": (
-                                "Retire every active entry with the same "
-                                "resource_name and entry_type. Default false "
-                                "links them as RELATED instead."
+                                "When active entries share this resource_name "
+                                "and entry_type, retire them instead of linking "
+                                "them RELATED (the default). An identical "
+                                "re-publish is a no-op either way."
                             ),
                         },
                     },

@@ -355,6 +355,7 @@ async def test_handler_publish_supersede_retires_prior(archivist_handler) -> Non
 
 @pytest.mark.asyncio
 async def test_handler_publish_without_supersede_still_links_related(archivist_handler) -> None:
+    # Pins the unchanged default; it passes with or without the supersede flag.
     await archivist_handler.dispatch(
         "publish",
         {"resource_name": "nas-share", "summary": "Mounted at /mnt/a.", "entry_type": "fact"},
@@ -370,6 +371,19 @@ async def test_handler_publish_without_supersede_still_links_related(archivist_h
         "data"
     ]["hits"]
     assert len(hits) == 2
+
+
+@pytest.mark.asyncio
+async def test_handler_identical_republish_with_supersede_is_a_duplicate(archivist_handler) -> None:
+    args = {"resource_name": "nas-share", "summary": "Mounted at /mnt/a.", "entry_type": "fact"}
+    first = await archivist_handler.dispatch("publish", args, _ctx())
+    again = await archivist_handler.dispatch("publish", {**args, "supersede": True}, _ctx())
+    assert again.content[0]["data"]["outcome"] in ("duplicate_l0", "duplicate_l1")
+    assert again.content[0]["data"]["entry_id"] == first.content[0]["data"]["entry_id"]
+    hits = (await archivist_handler.dispatch("search", {"query": "Mounted"}, _ctx())).content[0][
+        "data"
+    ]["hits"]
+    assert len(hits) == 1
 
 
 @pytest.mark.asyncio
