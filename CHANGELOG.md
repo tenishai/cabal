@@ -21,7 +21,7 @@ Pull requests and issues are in tenishai/cabal.
   sanitiser quoted tokens only when the query held one of `"-^*():`, so
   `what's the build host?`, `mash1.local` or `docker/compose` reached FTS5 as raw syntax
   and raised `sqlite3.OperationalError`. Every token is now quoted. Tokens are still
-  AND-ed, but `AND`, `OR`, `NOT`, `NEAR`, `*` and `{}` are now plain words, not
+  AND-ed, but `AND`, `OR`, `NOT`, `*`, `^`, `:` and `{}` are now plain words, not
   operators. The archivist handler also turns any database error into a failed tool
   call instead of raising.
 

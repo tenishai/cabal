@@ -370,8 +370,8 @@ def _sanitize_fts(query: str) -> str:
     FTS5 barewords allow only letters, digits, ``_`` and non-ASCII, so
     ``mash1.local`` or ``host?`` left bare is a syntax error (cabal#356).
     Quoted, each token is plain text: the tokenizer splits ``mash1.local``
-    into the phrase ``mash1 local``, and ``AND``/``OR``/``NOT``/``NEAR``,
-    ``*``, ``^``, ``:`` and ``{}`` lose their operator meaning. Tokens are
-    still implicitly AND-ed, as bare words were.
+    into the phrase ``mash1 local``, and ``AND``/``OR``/``NOT``, ``*``,
+    ``^``, ``:`` and ``{}`` lose their operator meaning. Tokens are still
+    implicitly AND-ed, as bare words were.
     """
     return " ".join('"' + t.replace('"', '""') + '"' for t in query.split())
