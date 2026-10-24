@@ -32,6 +32,7 @@ Deferred from MVP (covered in cabal/archivist/__init__.py docstring):
 from __future__ import annotations
 
 import os
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -206,16 +207,21 @@ class ArchivistHandler:
                 "default_config.db_path, or pass ctx.extra['archivist.db_path']"
             )
 
-        store = ArchivistStore(db_path)
+        try:
+            store = ArchivistStore(db_path)
 
-        if name == "publish":
-            return self._publish(store, payload, ctx)
-        if name == "search":
-            return self._search(store, payload)
-        if name == "get":
-            return self._get(store, payload)
-        if name == "schema":
-            return ToolResult.json(store.schema())
+            if name == "publish":
+                return self._publish(store, payload, ctx)
+            if name == "search":
+                return self._search(store, payload)
+            if name == "get":
+                return self._get(store, payload)
+            if name == "schema":
+                return ToolResult.json(store.schema())
+        except sqlite3.Error as exc:
+            # A database error is a failed call, not a crash (cabal#356).
+            log.warning("archivist.db_error", tool=name, error=str(exc))
+            return ToolResult.failure(f"archivist.{name}: database error: {exc}")
         return ToolResult.failure(f"unknown tool {name!r}")
 
     # ---- tools ---------------------------------------------------------
