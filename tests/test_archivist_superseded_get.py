@@ -30,3 +30,16 @@ def test_chain_is_one_hop_per_entry(tmp_path: Path) -> None:
 
     assert store.superseded_by(a.entry_id) == [b.entry_id]
     assert store.superseded_by(b.entry_id) == [c.entry_id]
+
+
+def test_a_related_edge_is_not_a_supersede(tmp_path: Path) -> None:
+    # A plain publish over an existing entry for the same resource writes a
+    # RELATED edge new -> prior, which is also an inbound edge on the prior.
+    # Only SUPERSEDES edges may name a replacement (review of PR #366).
+    store = ArchivistStore(tmp_path / "archivist.db")
+    first = store.publish(Entry(resource_name="mash1", summary="mash1 runs builds", entry_type="fact"))
+    second = store.publish(Entry(resource_name="mash1", summary="mash1 has 61 GB", entry_type="fact"))
+
+    assert second.outcome == "related"
+    assert store.get(first.entry_id).status == "active"
+    assert store.superseded_by(first.entry_id) == []
