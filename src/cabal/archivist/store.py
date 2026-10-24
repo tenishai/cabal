@@ -315,6 +315,23 @@ class ArchivistStore:
             for r in rows
         ]
 
+    def superseded_by(self, entry_id: str) -> list[str]:
+        """Ids of the entries that superseded this one: the sources of
+        SUPERSEDES edges pointing at it, oldest first. Empty for an entry
+        nothing has replaced. One hop only; a successor that was itself
+        superseded has its own `superseded_by`."""
+        conn = connect(self.db_path)
+        try:
+            rows = conn.execute(
+                """SELECT src_id FROM memory_relations
+                   WHERE dst_id = ? AND relation_type = 'SUPERSEDES'
+                   ORDER BY created_at, src_id""",
+                (entry_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [r["src_id"] for r in rows]
+
     # ---- introspection ----------------------------------------------------
 
     def schema(self) -> dict[str, Any]:
