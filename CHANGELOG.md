@@ -17,6 +17,10 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Fixed
 
+- Archivist `get` says when an entry is retired (tenishai/cabal#357). The entry now carries
+  `status` (`active` or `superseded`), and the result carries `superseded_by`, the ids of the
+  entries that replaced it. Before, a session that fetched an old id got the retired fact with no
+  sign it had been replaced. `ArchivistStore.superseded_by()` is new.
 - Archivist search no longer fails on ordinary questions (tenishai/cabal#356). The query
   sanitiser quoted tokens only when the query held one of `"-^*():`, so
   `what's the build host?`, `mash1.local` or `docker/compose` reached FTS5 as raw syntax

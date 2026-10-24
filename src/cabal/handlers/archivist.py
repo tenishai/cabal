@@ -11,7 +11,9 @@ Cabal-shipped liminal handler. Four tools:
     or required tags.
 
   archivist.get(entry_id)
-    Fetch one entry by id, with its outbound RELATED edges.
+    Fetch one entry by id, with its outbound edges, its `status` (active
+    or superseded) and `superseded_by`, the ids of the entries that
+    replaced it.
 
   archivist.schema()
     Return the corpus self-discovery payload — entry_type catalog,
@@ -56,7 +58,7 @@ CARD = {
     "tools": [
         {"name": "publish", "description": "Write an entry through the dedup pipeline."},
         {"name": "search", "description": "Search the team-memory corpus."},
-        {"name": "get", "description": "Fetch one entry by id (with edges)."},
+        {"name": "get", "description": "Fetch one entry by id (with edges, status and superseded_by)."},
         {"name": "schema", "description": "Self-discovery: types, counts, fields."},
     ],
     "activation": "always",
@@ -180,7 +182,11 @@ class ArchivistHandler:
             ),
             ToolSpec(
                 name="get",
-                description="Fetch one entry + its outbound edges.",
+                description=(
+                    "Fetch one entry by id, with its outbound edges. The entry's "
+                    "`status` is `active` or `superseded`; a superseded entry is "
+                    "retired, and `superseded_by` lists the ids that replaced it."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {"entry_id": {"type": "string"}},
@@ -309,9 +315,12 @@ class ArchivistHandler:
         if entry is None:
             return ToolResult.failure(f"no entry with id {entry_id!r}")
         relations = store.list_related(entry_id)
+        # A retired entry is still served by id, so say it is retired and
+        # what replaced it (issue #357). Search already hides it.
         return ToolResult.json({
             "entry": _entry_to_dict(entry),
             "related": relations,
+            "superseded_by": store.superseded_by(entry_id),
         })
 
     def _resolve_db_path(self, ctx: Context) -> Path | None:
@@ -359,6 +368,7 @@ def _entry_to_dict(entry: Entry) -> dict[str, Any]:
         "resource_name": entry.resource_name,
         "summary": entry.summary,
         "entry_type": entry.entry_type,
+        "status": entry.status,
         "tags": entry.tags,
         "details": entry.details,
         "gotchas": entry.gotchas,

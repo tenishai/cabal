@@ -300,6 +300,28 @@ async def test_handler_database_error_is_a_failure(archivist_handler, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_handler_get_marks_a_superseded_entry(archivist_handler) -> None:
+    # cabal#357: get served a retired entry with no status and no pointer
+    # to its replacement.
+    async def publish(summary: str, **extra):
+        result = await archivist_handler.dispatch(
+            "publish",
+            {"resource_name": "mash1", "summary": summary, "entry_type": "fact", **extra},
+            _ctx(),
+        )
+        return result.content[0]["data"]["entry_id"]
+
+    old = await publish("mash1 is at .15")
+    new = await publish("mash1 is at .16", supersede=True)
+
+    got_old = (await archivist_handler.dispatch("get", {"entry_id": old}, _ctx())).content[0]["data"]
+    got_new = (await archivist_handler.dispatch("get", {"entry_id": new}, _ctx())).content[0]["data"]
+
+    assert (got_old["entry"]["status"], got_old["superseded_by"]) == ("superseded", [new])
+    assert (got_new["entry"]["status"], got_new["superseded_by"]) == ("active", [])
+
+
+@pytest.mark.asyncio
 async def test_handler_publish_rejects_unknown_entry_type(archivist_handler) -> None:
     result = await archivist_handler.dispatch(
         "publish",
