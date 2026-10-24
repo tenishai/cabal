@@ -271,6 +271,35 @@ async def test_handler_publish_then_search(archivist_handler) -> None:
 
 
 @pytest.mark.asyncio
+async def test_handler_search_takes_a_natural_language_question(archivist_handler) -> None:
+    # cabal#356: this raised sqlite3.OperationalError out of dispatch.
+    await archivist_handler.dispatch(
+        "publish",
+        {"resource_name": "mash1", "summary": "The build host is mash1.local.", "entry_type": "fact"},
+        _ctx(),
+    )
+    result = await archivist_handler.dispatch(
+        "search", {"query": "what's the build host?"}, _ctx(),
+    )
+    assert result.is_error is False
+    result = await archivist_handler.dispatch("search", {"query": "mash1.local"}, _ctx())
+    assert [h["resource_name"] for h in result.content[0]["data"]["hits"]] == ["mash1"]
+
+
+@pytest.mark.asyncio
+async def test_handler_database_error_is_a_failure(archivist_handler, monkeypatch) -> None:
+    import sqlite3
+
+    def locked(self, *a, **kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ArchivistStore, "search", locked)
+    result = await archivist_handler.dispatch("search", {"query": "x"}, _ctx())
+    assert result.is_error is True
+    assert "database is locked" in result.error
+
+
+@pytest.mark.asyncio
 async def test_handler_publish_rejects_unknown_entry_type(archivist_handler) -> None:
     result = await archivist_handler.dispatch(
         "publish",

@@ -364,15 +364,14 @@ class ArchivistStore:
 # ---- internals ------------------------------------------------------------
 
 
-_FTS_SPECIAL = '"-^*():'
-
-
 def _sanitize_fts(query: str) -> str:
-    """Strip FTS5-special chars; bare tokens are fine."""
-    query = query.strip()
-    if not query:
-        return ""
-    if any(c in query for c in _FTS_SPECIAL):
-        tokens = [t.replace('"', '""') for t in query.split() if t.strip()]
-        return " ".join(f'"{t}"' for t in tokens) if tokens else ""
-    return query
+    """Quote every whitespace-separated token as an FTS5 string.
+
+    FTS5 barewords allow only letters, digits, ``_`` and non-ASCII, so
+    ``mash1.local`` or ``host?`` left bare is a syntax error (cabal#356).
+    Quoted, each token is plain text: the tokenizer splits ``mash1.local``
+    into the phrase ``mash1 local``, and ``AND``/``OR``/``NOT``, ``*``,
+    ``^``, ``:`` and ``{}`` lose their operator meaning. Tokens are still
+    implicitly AND-ed, as bare words were.
+    """
+    return " ".join('"' + t.replace('"', '""') + '"' for t in query.split())

@@ -15,6 +15,16 @@ Pull requests and issues are in tenishai/cabal.
   may revise its type (the techne publish lane). Available on `ArchivistStore.publish` and
   on the `archivist.publish` tool; an unknown value is refused.
 
+### Fixed
+
+- Archivist search no longer fails on ordinary questions (tenishai/cabal#356). The query
+  sanitiser quoted tokens only when the query held one of `"-^*():`, so
+  `what's the build host?`, `mash1.local` or `docker/compose` reached FTS5 as raw syntax
+  and raised `sqlite3.OperationalError`. Every token is now quoted. Tokens are still
+  AND-ed, but `AND`, `OR`, `NOT`, `*`, `^`, `:` and `{}` are now plain words, not
+  operators. The archivist handler also turns any database error into a failed tool
+  call instead of raising.
+
 ## [0.3.2] — 2026-10-13
 
 ### Upgrading
