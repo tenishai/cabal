@@ -92,47 +92,61 @@ class ArchivistStore:
                 f"supersede_scope must be one of {list(SUPERSEDE_SCOPES)}; got {supersede_scope!r}"
             )
 
-        result = self._dedup.check(entry)
+        # ONE write transaction from the dedup check through the insert and any
+        # supersede (#358). The check, the insert and the retirements used to run
+        # on separate connections, so identical publishes racing from two writers
+        # both saw no duplicate and both inserted: 8 processes x 30 rounds left
+        # 30 hashes with more than one active row. BEGIN IMMEDIATE takes the
+        # write lock before the first read, so a second writer waits and then
+        # sees the first one's row.
+        conn = connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            result = self._dedup.check(entry, conn=conn)
 
-        if result.outcome in ("duplicate_l0", "duplicate_l1"):
-            assert result.entry_id is not None
-            retired = (
-                self._supersede_from_match(result.entry_id, supersede_scope) if supersede else []
-            )
-            return PublishResult(
-                outcome=result.outcome,
-                entry_id=result.entry_id,
-                related_ids=retired,
-            )
+            if result.outcome in ("duplicate_l0", "duplicate_l1"):
+                assert result.entry_id is not None
+                retired = (
+                    self._supersede_from_match(result.entry_id, supersede_scope, conn)
+                    if supersede
+                    else []
+                )
+                conn.commit()
+                return PublishResult(
+                    outcome=result.outcome,
+                    entry_id=result.entry_id,
+                    related_ids=retired,
+                )
 
-        # Dedup's Tier-1 overlap only sees same-type priors, so with resource
-        # scope a different-type prior arrives as "new" and still has to be
-        # looked up here.
-        if supersede and (result.outcome == "related" or supersede_scope == "resource"):
-            # Insert the new entry AND retire EVERY active prior in scope in ONE
-            # transaction (#27) — never leaving two 'current' entries or a
-            # half-applied supersession, and not capped by the dedup LIMIT-5
-            # sample.
-            conn = connect(self.db_path)
-            try:
+            # Dedup's Tier-1 overlap only sees same-type priors, so with resource
+            # scope a different-type prior arrives as "new" and still has to be
+            # looked up here.
+            if supersede and (result.outcome == "related" or supersede_scope == "resource"):
+                # Insert the new entry AND retire EVERY active prior in scope in ONE
+                # transaction (#27) — never leaving two 'current' entries or a
+                # half-applied supersession, and not capped by the dedup LIMIT-5
+                # sample.
                 self._insert(entry, conn=conn)
                 superseded_ids = self._supersede_all(entry, conn, scope=supersede_scope)
                 conn.commit()
-            finally:
-                conn.close()
-            self._dedup.record_new(entry)
-            return PublishResult(
-                outcome="superseded" if superseded_ids else "new",
-                entry_id=entry.id,
-                related_ids=superseded_ids,
-            )
+                self._dedup.record_new(entry)
+                return PublishResult(
+                    outcome="superseded" if superseded_ids else "new",
+                    entry_id=entry.id,
+                    related_ids=superseded_ids,
+                )
 
-        self._insert(entry)
+            self._insert(entry, conn=conn)
+            if result.outcome == "related" and result.related_ids:
+                edges = make_related_edges(entry.id, result.related_ids)
+                self._insert_relations(edges, conn=conn)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
         self._dedup.record_new(entry)
-
-        if result.outcome == "related" and result.related_ids:
-            edges = make_related_edges(entry.id, result.related_ids)
-            self._insert_relations(edges)
 
         return PublishResult(
             outcome=result.outcome,
@@ -186,10 +200,15 @@ class ArchivistStore:
             if owned:
                 conn.close()
 
-    def _insert_relations(self, relations: list[Relation]) -> None:
+    def _insert_relations(
+        self, relations: list[Relation], conn: sqlite3.Connection | None = None
+    ) -> None:
+        """Insert edges. With `conn` the caller owns the transaction."""
         if not relations:
             return
-        conn = connect(self.db_path)
+        owned = conn is None
+        if conn is None:
+            conn = connect(self.db_path)
         try:
             for rel in relations:
                 conn.execute(
@@ -204,32 +223,29 @@ class ArchivistStore:
                         rel.created_at or datetime.now(UTC).isoformat(),
                     ),
                 )
-            conn.commit()
+            if owned:
+                conn.commit()
         finally:
-            conn.close()
+            if owned:
+                conn.close()
 
-    def _supersede_from_match(self, match_id: str, scope: SupersedeScope) -> list[str]:
+    def _supersede_from_match(
+        self, match_id: str, scope: SupersedeScope, conn: sqlite3.Connection
+    ) -> list[str]:
         """A supersede that exactly matches an active entry still means "this
         is the current truth" (#363): retire the other active entries in
         `scope`, with the matched entry as the survivor. The active check and
         the retirements share one write transaction. Dedup reports only active
         matches (#353), so a match that is no longer active here was retired by
-        another writer after the check; it retires nothing. Returns the retired
-        ids."""
-        conn = connect(self.db_path)
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT * FROM memory_entries WHERE id=? AND status='active'", (match_id,)
-            ).fetchone()
-            if row is None:
-                conn.rollback()
-                return []
-            retired = self._supersede_all(Entry.from_row(dict(row)), conn, scope=scope)
-            conn.commit()
-        finally:
-            conn.close()
-        return retired
+        another writer after the check; it retires nothing. Runs on the caller's
+        connection, inside publish's write transaction (#358). Returns the
+        retired ids."""
+        row = conn.execute(
+            "SELECT * FROM memory_entries WHERE id=? AND status='active'", (match_id,)
+        ).fetchone()
+        if row is None:
+            return []
+        return self._supersede_all(Entry.from_row(dict(row)), conn, scope=scope)
 
     def _supersede_all(
         self, entry: Entry, conn: sqlite3.Connection, *, scope: SupersedeScope = "type"
