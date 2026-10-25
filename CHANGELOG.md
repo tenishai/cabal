@@ -17,6 +17,14 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Fixed
 
+- **Logged exceptions no longer carry frame locals, and logged database URLs hide the
+  password** (tenishai/cabal#370). Neither cabal nor liminal configures structlog, so where
+  rich is installed (the mash1 archivist image has it) `log.exception` rendered every
+  frame's local variables: an archivist failure logged up to 80 characters of each
+  payload string and the context's credentials. The four structlog `log.exception` calls
+  now log the plain traceback text instead (`cabal.core.observability.failures.log_failure`).
+  The `cabal.identity_path` and `cabal.migrations_failed` lines print the database URL with
+  its password replaced by `***`.
 - **Archivist search with `tags` no longer drops matching rows** (tenishai/cabal#362). The
   tag filter ran in Python after an FTS query limited to `top_k*4`, so with 50 `staging`
   rows and 1 `production` row matching "cache", `tags=["production"]` returned nothing. Each
