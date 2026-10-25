@@ -17,6 +17,19 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Fixed
 
+- **Archivist search with `tags` no longer drops matching rows** (tenishai/cabal#362). The
+  tag filter ran in Python after an FTS query limited to `top_k*4`, so with 50 `staging`
+  rows and 1 `production` row matching "cache", `tags=["production"]` returned nothing. Each
+  tag is now a SQL condition, so the limit applies after filtering.
+- **A NUL or a lone surrogate in an archivist search no longer raises** (tenishai/cabal#365).
+  Control characters become spaces and a lone surrogate becomes U+FFFD before the query is
+  quoted; a surrogate pair sent as two code points is joined.
+- **The dedup cache no longer reports a retired entry as the duplicate** (tenishai/cabal#353).
+  After a supersede, re-publishing the retired content in the same process answered
+  `duplicate_l0` with the retired id and stored nothing, so no active entry held it. An L0
+  hit now counts only while its entry is active. With `supersede=True` such a publish
+  re-asserts the content: it becomes a new active entry and retires the current one, as it
+  already did after a restart.
 - Unit CI now runs the archivist handler tests (tenishai/cabal#359). `tests/test_archivist.py`
   and four other handler test files skipped without liminal, which the unit job can't
   install, so handler changes merged with their tests never run in CI. A copy of liminal's
