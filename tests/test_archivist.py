@@ -438,6 +438,30 @@ async def test_handler_identical_republish_with_supersede_is_a_duplicate(archivi
 
 
 @pytest.mark.asyncio
+async def test_handler_duplicate_supersede_reports_what_it_retired(archivist_handler) -> None:
+    # cabal#363: an exact re-publish under supersede left other entries active.
+    async def publish(summary: str, entry_type: str, **extra):
+        result = await archivist_handler.dispatch(
+            "publish",
+            {"resource_name": "nas-share", "summary": summary, "entry_type": entry_type, **extra},
+            _ctx(),
+        )
+        return result.content[0]["data"]
+
+    old = (await publish("Mounted at /mnt/a.", "fact"))["entry_id"]
+    proc = (await publish("Mount it at /mnt/b.", "procedure"))["entry_id"]
+    again = await publish(
+        "Mount it at /mnt/b.", "procedure", supersede=True, supersede_scope="resource"
+    )
+    assert again["outcome"] in ("duplicate_l0", "duplicate_l1")
+    assert (again["entry_id"], again["related_ids"]) == (proc, [old])
+    hits = (await archivist_handler.dispatch("search", {"query": "nas"}, _ctx())).content[0][
+        "data"
+    ]["hits"]
+    assert [h["id"] for h in hits] == [proc]
+
+
+@pytest.mark.asyncio
 async def test_handler_publish_rejects_non_boolean_supersede(archivist_handler) -> None:
     result = await archivist_handler.dispatch(
         "publish",

@@ -77,6 +77,10 @@ class ArchivistStore:
               new           — entry was written; first time we've seen this content
               duplicate_l0  — content matched an in-memory cache hit; no write
               duplicate_l1  — content matched an active DB row; no write
+                              With supersede=True a duplicate still retires
+                              the OTHER active entries in scope, keeping the
+                              matched entry as the current one (#363);
+                              related_ids holds the ids it retired.
               related       — entry was written AND linked to overlapping entries
                               via RELATED edges (Tier 1).
               superseded    — entry was written AND it retired prior same-resource
@@ -92,10 +96,13 @@ class ArchivistStore:
 
         if result.outcome in ("duplicate_l0", "duplicate_l1"):
             assert result.entry_id is not None
+            retired = (
+                self._supersede_from_match(result.entry_id, supersede_scope) if supersede else []
+            )
             return PublishResult(
                 outcome=result.outcome,
                 entry_id=result.entry_id,
-                related_ids=[],
+                related_ids=retired,
             )
 
         # Dedup's Tier-1 overlap only sees same-type priors, so with resource
@@ -200,6 +207,28 @@ class ArchivistStore:
             conn.commit()
         finally:
             conn.close()
+
+    def _supersede_from_match(self, match_id: str, scope: SupersedeScope) -> list[str]:
+        """A supersede that exactly matches an active entry still means "this
+        is the current truth" (#363): retire the other active entries in
+        `scope`, with the matched entry as the survivor. The active check and
+        the retirements share one write transaction. A match that is no longer
+        active (an L0 cache hit on a since-retired id) retires nothing, so an
+        old entry never displaces a current one. Returns the retired ids."""
+        conn = connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM memory_entries WHERE id=? AND status='active'", (match_id,)
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return []
+            retired = self._supersede_all(Entry.from_row(dict(row)), conn, scope=scope)
+            conn.commit()
+        finally:
+            conn.close()
+        return retired
 
     def _supersede_all(
         self, entry: Entry, conn: sqlite3.Connection, *, scope: SupersedeScope = "type"
