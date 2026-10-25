@@ -140,7 +140,9 @@ class ArchivistHandler:
                                 "When active entries share this resource_name "
                                 "and entry_type, retire them instead of linking "
                                 "them RELATED (the default). An identical "
-                                "re-publish is a no-op either way."
+                                "re-publish writes nothing; with supersede it "
+                                "still retires the other active entries in "
+                                "scope and lists them in related_ids."
                             ),
                         },
                         "supersede_scope": {

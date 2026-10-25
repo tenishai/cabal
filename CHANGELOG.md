@@ -17,6 +17,13 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Fixed
 
+- An archivist supersede that exactly matches an active entry still retires the other
+  active entries in scope (tenishai/cabal#363). It returned `duplicate_l1` before any
+  supersede ran, so when the techne publish lane re-sent an unchanged row with
+  `supersede_scope="resource"`, an entry another writer had added under the same resource
+  stayed active. The matched entry stays active, the outcome is still `duplicate_l0` or
+  `duplicate_l1`, and `related_ids` now lists the entries it retired. `supersede_scope`
+  applies as for any supersede. A match on an entry that is itself retired retires nothing.
 - Archivist `get` says when an entry is retired (tenishai/cabal#357). The entry now carries
   `status` (`active` or `superseded`), and the result carries `superseded_by`, the ids of the
   entries that replaced it. Before, a session that fetched an old id got the retired fact with no
