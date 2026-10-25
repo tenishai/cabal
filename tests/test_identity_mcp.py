@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-pytest.importorskip("liminal")
+pytest.importorskip("liminal.server")
 import os
 from pathlib import Path
 from textwrap import dedent

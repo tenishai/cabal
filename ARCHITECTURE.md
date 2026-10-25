@@ -1,7 +1,7 @@
 ---
 card: repo-card:cabal
 updated: 2026-10-13
-anchor: pyproject.toml sha=2fa722b74b0ca3669f9654a0a8be53779168bfa6
+anchor: pyproject.toml sha=0c00a7cfaa75441f2e16e91865b4e117dd7b0041
 anchor: src/cabal/core/app.py sha=6b74b041705549dd404659562bec8d4ec789ec77
 ---
 # cabal — repo card
@@ -33,7 +33,7 @@ DEPS:
 - liminal: optional (`cabal[mcp]`). cabal calls liminal as an MCP client; liminal loads cabal's four handlers by entry point and fetches credentials from cabal's /admin/secrets; liminal verifies cabal JWTs via /.well-known/jwks.json.
 - kobo ("the room"): mints `colleague` tokens (sub `agent:<name>`) cabal accepts, and syncs PUT /admin/dispatch-pairs (core/dispatch_pairs.py docstring). No import either way.
 - No code reference to ladon, agora, argus or gojira in src/ (agora appears only in CI comments); daedalus appears only in two source comments (guardrails_builtin.py, a2a/codes.py).
-HEALTH: 121 test files, 1233 test functions (`pytest -q`; asyncio_mode=auto; `pythonpath=["src"]` so a worktree tests itself). 17 files importorskip techne/liminal/litellm and skip without siblings. CI (.github/workflows/test.yml): `dco` = sign-off check on PRs; `unit` = ruff check src tests + `pytest -m "not integration"` on 3.12/3.13 (self-hosted runner; push to main, same-repo PR, dispatch); `fork-pr` = same on hosted runner for fork PRs; `integration` (full suite with sibling checkouts) and `docker` (image build) are workflow_dispatch ONLY. Only ONE test carries the `integration` marker (`test_cli_login_and_dispatch_against_live_daemon` in tests/test_cli_login_dispatch.py). mypy strict is configured but not run in CI. No branch protection: CI reports, never blocks.
+HEALTH: 126 test files, 1298 test functions (`pytest -q`; asyncio_mode=auto; `pythonpath=["src"]` so a worktree tests itself). 15 files importorskip techne/liminal/litellm and skip without them. Without liminal, tests/conftest.py puts a vendored copy of `liminal.protocol` (tests/_vendor, cabal#359) on the path, so the handler tests that need only the protocol run in unit CI; tests/test_vendored_liminal_protocol.py fails if an installed liminal's protocol differs from it. CI (.github/workflows/test.yml): `dco` = sign-off check on PRs; `unit` = ruff check src tests + `pytest -m "not integration"` on 3.12/3.13 (self-hosted runner; push to main, same-repo PR, dispatch); `fork-pr` = same on hosted runner for fork PRs; `integration` (full suite with sibling checkouts) and `docker` (image build) are workflow_dispatch ONLY. Only ONE test carries the `integration` marker (`test_cli_login_and_dispatch_against_live_daemon` in tests/test_cli_login_dispatch.py). mypy strict is configured but not run in CI. No branch protection: CI reports, never blocks.
 GOTCHAS:
 - cabal is the orchestrator/IdP/broker, NOT the MCP gateway (that is liminal) and NOT the memory store (that is techne). core/ speaks A2A; handlers/ speak liminal MCP. Dispatch logic in a handler is the wrong layer.
 - Dispatch-token policy lives once in routes/_dispatch_auth.py; the REST, legacy JSON-RPC and v1.0 doors only translate refusals, and the TUI's in-process client keeps an operator-only variant (dispatch-auth.md). Change policy there, not in a door.

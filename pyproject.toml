@@ -125,7 +125,7 @@ line-length = 100
 # otherwise drag them in, and alembic's own template emits the shapes ruff
 # objects to (`Union[str, None]`, unsorted imports), so every future
 # `alembic revision` would fail lint on generated code nobody wrote.
-extend-exclude = ["src/cabal/migrations"]
+extend-exclude = ["src/cabal/migrations", "tests/_vendor"]
 target-version = "py312"
 
 [tool.ruff.lint]

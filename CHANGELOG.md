@@ -17,6 +17,12 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Fixed
 
+- Unit CI now runs the archivist handler tests (tenishai/cabal#359). `tests/test_archivist.py`
+  and four other handler test files skipped without liminal, which the unit job can't
+  install, so handler changes merged with their tests never run in CI. A copy of liminal's
+  `protocol` package in `tests/_vendor/` is put on the path when liminal is absent, and
+  `tests/test_vendored_liminal_protocol.py` fails when an installed liminal's protocol
+  differs from the copy. Test files that need liminal's server now skip on `liminal.server`.
 - An archivist supersede that exactly matches an active entry still retires the other
   active entries in scope (tenishai/cabal#363). It returned `duplicate_l1` before any
   supersede ran, so when the techne publish lane re-sent an unchanged row with

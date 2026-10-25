@@ -23,7 +23,7 @@ import pytest
 # sibling techne/liminal packages — auto-skip when they're absent (e.g. CI's
 # no-siblings unit job), matching the convention in test_patterns_handler.py.
 pytest.importorskip("techne")
-pytest.importorskip("liminal")
+pytest.importorskip("liminal.server")
 
 from cabal.tui.client.base import BrokerClient, BrokerError  # noqa: E402
 from cabal.tui.client.inprocess import InProcessBrokerClient  # noqa: E402
