@@ -12,6 +12,7 @@ Phase 1 surface (per cabal-handoff.md §4):
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1031,3 +1032,49 @@ def reload_identity() -> None:
         typer.echo("reloaded. (no LLM-backed personas registered)")
     if body.get("warning"):
         typer.echo(f"  warning: {body['warning']}")
+
+
+archivist_app = typer.Typer(help="Archivist database maintenance, run on the archivist host.")
+app.add_typer(archivist_app, name="archivist")
+
+
+@archivist_app.command("purge")
+def archivist_purge(
+    resource_name: str = typer.Argument(..., help="Exact resource_name to remove."),
+    db: Path = typer.Option(
+        None,
+        "--db",
+        help="Archivist database file. Default: $CABAL_ARCHIVIST_DB.",
+    ),
+    apply: bool = typer.Option(
+        False, "--apply", help="Delete. Without it, only list what would be removed."
+    ),
+) -> None:
+    """Hard-delete every version of an entry, its FTS rows and its relations (#351).
+
+    For text the archivist must not hold (personal data, a leaked secret). To
+    retire an entry that is no longer true, supersede it with a tombstone
+    through archivist.publish instead.
+    """
+    from cabal.archivist.purge import purge
+
+    if db is None:
+        env = os.environ.get("CABAL_ARCHIVIST_DB", "")
+        if not env:
+            typer.echo("no database: pass --db or set CABAL_ARCHIVIST_DB", err=True)
+            raise typer.Exit(code=2)
+        db = Path(env)
+    try:
+        result = purge(db, resource_name, apply=apply)
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    for e in result.entries:
+        typer.echo(f"{e.id}  {e.entry_type:<10} {e.status:<10} {e.content_hash}  {e.created_at}")
+    verb = "removed" if apply else "would remove"
+    typer.echo(
+        f"{verb} {len(result.entries)} entries and {result.relations} relations "
+        f"for {resource_name!r}"
+    )
+    if not apply and result.entries:
+        typer.echo("re-run with --apply to delete")
