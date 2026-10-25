@@ -8,6 +8,12 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **`cbl archivist purge <resource_name>`** (tenishai/cabal#351) hard-deletes every
+  version of an archivist entry, its full-text index rows and its relations, then runs
+  FTS5 `optimize` and `VACUUM` so the text leaves the file. It does a dry run unless
+  given `--apply`. It's for personal data and leaked secrets, and it runs only on the
+  host that holds the database: no MCP tool or route reaches it. To retire an entry
+  that is merely no longer true, supersede it with a tombstone instead.
 - The archivist's publish takes an optional `supersede_scope` (tenishai/cabal#350).
   `"type"`, the default, keeps today's behavior: a supersede retires active entries with
   the same `resource_name` and `entry_type`. `"resource"` retires every active entry with
