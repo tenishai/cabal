@@ -45,6 +45,7 @@ from liminal.protocol import Context, Handler, ToolResult, ToolSpec
 
 from cabal.archivist import ArchivistStore, Entry
 from cabal.archivist.store import SUPERSEDE_SCOPES
+from cabal.core.observability.failures import log_failure
 
 log = structlog.get_logger(__name__)
 
@@ -247,7 +248,7 @@ class ArchivistHandler:
             # The message stays in the log: it can hold server paths, as an
             # OSError from init_db does. The caller gets the type only, as
             # liminal's LocalDispatcher gives it.
-            log.exception("archivist.unexpected_error", tool=name)
+            log_failure(log, "archivist.unexpected_error", tool=name)
             return ToolResult.failure(f"archivist.{name}: internal error: {type(exc).__name__}")
         return ToolResult.failure(f"unknown tool {name!r}")
 
