@@ -608,3 +608,118 @@ async def test_get_handler_reads_env_db_path(monkeypatch, tmp_path: Path) -> Non
     assert get_handler().default_config.db_path is None
     monkeypatch.delenv("CABAL_ARCHIVIST_DB", raising=False)
     assert get_handler().default_config.db_path is None
+
+
+# ---- #360 / #361: payload validation, importance 0, call logging -----------
+
+_BASE = {"resource_name": "nas-share", "summary": "Mounted at /mnt/a.", "entry_type": "fact"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("importance", "high"),
+        ("importance", [1]),
+        ("importance", True),
+        ("importance", 1.5),
+        ("importance", -0.1),
+        ("importance", float("nan")),
+        ("details", 5),
+        ("details", {"a": 1}),
+        ("gotchas", ["x"]),
+        ("source_thread", 7),
+        ("tags", [1]),
+        ("tags", {"a": 1}),
+        ("commands", "make test, make lint"),
+        ("commands", [1]),
+        ("refs", [None]),
+    ],
+)
+async def test_handler_publish_refuses_a_wrong_typed_field(
+    archivist_handler, field_name, value
+) -> None:
+    # cabal#360: these raised out of dispatch, or were stored as given.
+    result = await archivist_handler.dispatch(
+        "publish", {**_BASE, field_name: value}, _ctx(),
+    )
+    assert result.is_error is True
+    assert f"'{field_name}'" in result.error
+    assert "internal error" not in result.error  # a validation failure, not a crash
+    schema = (await archivist_handler.dispatch("schema", {}, _ctx())).content[0]["data"]
+    assert schema["counts"]["total_active"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("sent", "stored"), [(0, 0.0), (0.0, 0.0), (None, 1.0), (1, 1.0), (0.4, 0.4)])
+async def test_handler_publish_keeps_importance(archivist_handler, sent, stored) -> None:
+    # cabal#361: `importance or 1.0` stored 0 as 1.0.
+    payload = dict(_BASE) if sent is None else {**_BASE, "importance": sent}
+    pub = await archivist_handler.dispatch("publish", payload, _ctx())
+    entry_id = pub.content[0]["data"]["entry_id"]
+    got = await archivist_handler.dispatch("get", {"entry_id": entry_id}, _ctx())
+    assert got.content[0]["data"]["entry"]["importance"] == stored
+
+
+@pytest.mark.asyncio
+async def test_handler_publish_still_takes_comma_separated_tags(archivist_handler) -> None:
+    pub = await archivist_handler.dispatch(
+        "publish", {**_BASE, "tags": "nas, storage", "commands": ["mount -a"]}, _ctx(),
+    )
+    entry_id = pub.content[0]["data"]["entry_id"]
+    entry = (await archivist_handler.dispatch("get", {"entry_id": entry_id}, _ctx())).content[0][
+        "data"
+    ]["entry"]
+    assert (entry["tags"], entry["commands"]) == (["nas", "storage"], ["mount -a"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field_name", "value"), [("top_k", "abc"), ("top_k", 2.5), ("top_k", True), ("tags", [3])]
+)
+async def test_handler_search_refuses_a_wrong_typed_field(
+    archivist_handler, field_name, value
+) -> None:
+    result = await archivist_handler.dispatch(
+        "search", {"query": "nas", field_name: value}, _ctx(),
+    )
+    assert result.is_error is True
+    assert f"'{field_name}'" in result.error
+
+
+@pytest.mark.asyncio
+async def test_handler_refuses_a_non_string_db_path_override(archivist_handler) -> None:
+    ctx = Context(identity="x", agent_name="x", credentials={}, extra={"archivist.db_path": 5})
+    result = await archivist_handler.dispatch("schema", {}, ctx)
+    assert result.is_error is True
+    assert "archivist.db_path" in result.error
+
+
+@pytest.mark.asyncio
+async def test_handler_unexpected_error_is_a_failure(archivist_handler, monkeypatch) -> None:
+    def boom(self):
+        raise FileExistsError(17, "File exists", "/srv/secret-corpus")
+
+    monkeypatch.setattr(ArchivistStore, "schema", boom)
+    result = await archivist_handler.dispatch("schema", {}, _ctx())
+    assert result.is_error is True
+    assert result.error == "archivist.schema: internal error: FileExistsError"
+    assert "/srv/secret-corpus" not in result.error
+
+
+@pytest.mark.asyncio
+async def test_handler_logs_one_line_per_call(archivist_handler) -> None:
+    from structlog.testing import capture_logs
+
+    with capture_logs() as logs:
+        pub = await archivist_handler.dispatch("publish", _BASE, _ctx())
+        await archivist_handler.dispatch("search", {"query": "nas", "top_k": "x"}, _ctx())
+    calls = [e for e in logs if e["event"] == "archivist.call"]
+    assert len(calls) == 2
+    ok, failed = calls
+    assert ok["log_level"] == "debug"
+    assert (ok["tool"], ok["outcome"], ok["resource"]) == ("publish", "new", "nas-share")
+    assert ok["entry_id"] == pub.content[0]["data"]["entry_id"]
+    assert isinstance(ok["duration_ms"], float)
+    assert (failed["tool"], failed["outcome"]) == ("search", "failure")
+    assert "top_k" in failed["error"]

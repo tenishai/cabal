@@ -24,6 +24,17 @@ Pull requests and issues are in tenishai/cabal.
   stayed active. The matched entry stays active, the outcome is still `duplicate_l0` or
   `duplicate_l1`, and `related_ids` now lists the entries it retired. `supersede_scope`
   applies as for any supersede. A match on an entry that is itself retired retires nothing.
+- The archivist handler refuses a wrong-typed field instead of raising (tenishai/cabal#360).
+  `importance: "high"`, `details: 5`, `top_k: "abc"` and similar payloads raised out of
+  `dispatch`, and `source_thread: 7` was stored as an integer. Every optional field of
+  publish and search, and the `archivist.db_path` override, is now type-checked, and the
+  failed call names the field. `importance` must be a number from 0 to 1. `tags`, `commands`
+  and `refs` must be lists of strings (`tags` still takes a comma-separated string);
+  non-string items used to be coerced or dropped. Any other unexpected error is logged and
+  returned as a failed call that names only the exception type. Each call logs one debug line `archivist.call` with the tool,
+  outcome, entry id, resource, `written_by`, error and duration.
+- An archivist publish with `importance: 0` stores 0 (tenishai/cabal#361). The handler
+  read it with `or 1.0`, so 0 became 1.0, the highest importance.
 - Archivist `get` says when an entry is retired (tenishai/cabal#357). The entry now carries
   `status` (`active` or `superseded`), and the result carries `superseded_by`, the ids of the
   entries that replaced it. Before, a session that fetched an old id got the retired fact with no
