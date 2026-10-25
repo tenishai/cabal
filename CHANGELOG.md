@@ -17,6 +17,12 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Fixed
 
+- **A re-asserted archivist fact stays active through a gitsync round trip**
+  (tenishai/cabal#367). Publishing A, superseding it with B and re-publishing A with
+  `supersede=True` leaves A active in SQLite, but after `export_corpus` and
+  `materialize_corpus` both came back superseded, because identity is the content hash
+  and the markers point both ways. Materialize now follows the latest marker for each
+  hash. gitsync has no caller in `src/` yet, so this was latent.
 - **Concurrent identical archivist publishes no longer store duplicates**
   (tenishai/cabal#358). The dedup check, the insert and any supersede ran on separate
   connections, so identical publishes from two writers both saw no duplicate and both

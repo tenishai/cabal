@@ -87,3 +87,27 @@ def test_identical_entry_from_two_machines_is_one_file(tmp_path: Path) -> None:
     export_corpus(a, merged)
     export_corpus(b, merged)
     assert len(list((merged / "entries").glob("*.json"))) == 1  # idempotent, conflict-free
+
+
+def test_reasserted_content_stays_active_after_a_round_trip(tmp_path: Path) -> None:
+    """#367: publish A, supersede with B, re-publish A with supersede=True. SQLite
+    holds A active and B superseded; export + materialize used to leave both
+    superseded, because the markers point both ways between the two hashes."""
+    db = tmp_path / "a.db"
+    store = ArchivistStore(db)
+    store.publish(_entry("mounted at a"))
+    store.publish(_entry("mounted at b"), supersede=True)
+    store.publish(_entry("mounted at a"), supersede=True)  # same process: #353 fix
+
+    export_corpus(store, tmp_path / "corpus")
+    view = tmp_path / "view.db"
+    materialize_corpus(tmp_path / "corpus", view)
+
+    assert _rows(view) == {("mounted at a", "active"), ("mounted at b", "superseded")}
+
+
+def test_a_marker_without_at_still_retires_its_target() -> None:
+    from cabal.archivist.gitsync import _superseded_hashes
+
+    assert _superseded_hashes([("b", "a", None)]) == {"a"}
+    assert _superseded_hashes([("b", "a", "2026-01-01"), ("a", "b", "2026-01-02")]) == {"b"}
