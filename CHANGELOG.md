@@ -23,6 +23,13 @@ Pull requests and issues are in tenishai/cabal.
   `materialize_corpus` both came back superseded, because identity is the content hash
   and the markers point both ways. Materialize now follows the latest marker for each
   hash. gitsync has no caller in `src/` yet, so this was latent.
+- **Concurrent identical archivist publishes no longer store duplicates**
+  (tenishai/cabal#358). The dedup check, the insert and any supersede ran on separate
+  connections, so identical publishes from two writers both saw no duplicate and both
+  inserted; with `supersede_scope="type"`, simultaneous first publishes left two active
+  rows. A publish now runs on one connection inside `BEGIN IMMEDIATE`, from the check
+  through the insert, the supersede and any RELATED edges, so a second writer waits and
+  then sees the first one's row. One process (today's liminal) was never affected.
 - **Logged exceptions no longer carry frame locals, and logged database URLs hide the
   password** (tenishai/cabal#370). Neither cabal nor liminal configures structlog, so where
   rich is installed (the mash1 archivist image has it) `log.exception` rendered every
