@@ -698,12 +698,13 @@ async def test_handler_refuses_a_non_string_db_path_override(archivist_handler) 
 @pytest.mark.asyncio
 async def test_handler_unexpected_error_is_a_failure(archivist_handler, monkeypatch) -> None:
     def boom(self):
-        raise RuntimeError("something broke")
+        raise FileExistsError(17, "File exists", "/srv/secret-corpus")
 
     monkeypatch.setattr(ArchivistStore, "schema", boom)
     result = await archivist_handler.dispatch("schema", {}, _ctx())
     assert result.is_error is True
-    assert "RuntimeError: something broke" in result.error
+    assert result.error == "archivist.schema: internal error: FileExistsError"
+    assert "/srv/secret-corpus" not in result.error
 
 
 @pytest.mark.asyncio

@@ -31,7 +31,7 @@ Pull requests and issues are in tenishai/cabal.
   failed call names the field. `importance` must be a number from 0 to 1. `tags`, `commands`
   and `refs` must be lists of strings (`tags` still takes a comma-separated string);
   non-string items used to be coerced or dropped. Any other unexpected error is logged and
-  returned as a failed call. Each call logs one debug line `archivist.call` with the tool,
+  returned as a failed call that names only the exception type. Each call logs one debug line `archivist.call` with the tool,
   outcome, entry id, resource, `written_by`, error and duration.
 - An archivist publish with `importance: 0` stores 0 (tenishai/cabal#361). The handler
   read it with `or 1.0`, so 0 became 1.0, the highest importance.

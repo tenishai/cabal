@@ -244,10 +244,11 @@ class ArchivistHandler:
             log.warning("archivist.db_error", tool=name, error=str(exc))
             return ToolResult.failure(f"archivist.{name}: database error: {exc}")
         except Exception as exc:
+            # The message stays in the log: it can hold server paths, as an
+            # OSError from init_db does. The caller gets the type only, as
+            # liminal's LocalDispatcher gives it.
             log.exception("archivist.unexpected_error", tool=name)
-            return ToolResult.failure(
-                f"archivist.{name}: internal error: {type(exc).__name__}: {exc}"
-            )
+            return ToolResult.failure(f"archivist.{name}: internal error: {type(exc).__name__}")
         return ToolResult.failure(f"unknown tool {name!r}")
 
     # ---- tools ---------------------------------------------------------
