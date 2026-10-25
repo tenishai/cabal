@@ -17,6 +17,12 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Fixed
 
+- **A re-asserted archivist fact stays active through a gitsync round trip**
+  (tenishai/cabal#367). Publishing A, superseding it with B and re-publishing A with
+  `supersede=True` leaves A active in SQLite, but after `export_corpus` and
+  `materialize_corpus` both came back superseded, because identity is the content hash
+  and the markers point both ways. Materialize now follows the latest marker for each
+  hash. gitsync has no caller in `src/` yet, so this was latent.
 - **Logged exceptions no longer carry frame locals, and logged database URLs hide the
   password** (tenishai/cabal#370). Neither cabal nor liminal configures structlog, so where
   rich is installed (the mash1 archivist image has it) `log.exception` rendered every

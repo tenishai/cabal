@@ -13,9 +13,12 @@ merge conflict-free:
                                   edge → pure adds, no merge conflicts.
 
 `status` (active|superseded) is DERIVED on materialization: an entry is superseded
-iff some marker targets its content hash. So supersession survives a git merge of
-three contributors without mutating any entry file — the CRDT-ish property that
-makes a git hub work.
+iff some marker targets its content hash, unless it superseded something itself
+LATER than that (by the markers' `at`): re-publishing retired content with
+supersede=True re-asserts it, and since identity is the content hash both rows
+share one file (#367). So supersession survives a git merge of three
+contributors without mutating any entry file — the CRDT-ish property that makes
+a git hub work.
 
 Liminal-free: SQLite + json + files only.
 
@@ -104,14 +107,13 @@ def materialize_corpus(corpus_dir: Path, db_path: Path) -> ArchivistStore:
         db_path.unlink()  # rebuild the view from scratch
     store = ArchivistStore(db_path)
 
-    superseded: set[str] = set()
     edges: list[tuple[str, str, str | None]] = []
     sdir = corpus_dir / "supersedes"
     if sdir.exists():
         for f in sorted(sdir.glob("*.json")):
             m = json.loads(f.read_text())
-            superseded.add(m["supersedes"])
             edges.append((m["by"], m["supersedes"], m.get("at")))
+    superseded = _superseded_hashes(edges)
 
     present: set[str] = set()
     edir = corpus_dir / "entries"
@@ -154,3 +156,25 @@ def materialize_corpus(corpus_dir: Path, db_path: Path) -> ArchivistStore:
         ]
     )
     return store
+
+
+def _superseded_hashes(edges: list[tuple[str, str, str | None]]) -> set[str]:
+    """Hashes whose latest marker retires them (#367).
+
+    A hash a marker targets is superseded, unless the same hash also appears as
+    `by` in a marker with a later `at`: it was re-asserted after it was retired.
+    Without this, re-asserting A after B superseded it left markers both ways
+    and both entries superseded, so the resource had no active entry. A marker
+    with no `at` (older exports) counts as earliest, so a hash that is only ever
+    targeted stays superseded, as before."""
+    last_targeted: dict[str, str] = {}
+    last_by: dict[str, str] = {}
+    for by, target, at in edges:
+        stamp = at or ""
+        if stamp >= last_targeted.get(target, ""):
+            last_targeted[target] = stamp
+        if stamp >= last_by.get(by, ""):
+            last_by[by] = stamp
+    return {
+        h for h, t in last_targeted.items() if h not in last_by or t >= last_by[h]
+    }
