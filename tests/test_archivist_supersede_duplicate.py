@@ -85,18 +85,29 @@ def test_duplicate_without_supersede_retires_nothing(db: Path) -> None:
     assert _status(store, a) == "active"
 
 
-def test_duplicate_of_a_retired_entry_does_not_displace_the_current_one(db: Path) -> None:
-    # The L0 cache still maps the retired entry's hash to its id. A re-publish
-    # that hits it must not retire the entry that replaced it.
+@pytest.mark.parametrize("fresh_store", [False, True], ids=["same-process", "restarted"])
+def test_republishing_retired_content_with_supersede_reasserts_it(
+    db: Path, fresh_store: bool
+) -> None:
+    # Superseding with content an older entry held is a re-assertion: a new active
+    # entry, and the one it replaces retired. It used to depend on the process. In
+    # the one that retired the content, a stale L0 hit answered with the retired
+    # id and changed nothing, so no active entry held the content (#353); after a
+    # restart the same publish went through L1 and did this. Now both do this.
     store = ArchivistStore(db)
     old = store.publish(_entry("mounted at a")).entry_id
     new = store.publish(_entry("mounted at b"), supersede=True).entry_id
     assert _status(store, old) == "superseded"
+    if fresh_store:
+        store = ArchivistStore(db)
 
     again = store.publish(_entry("mounted at a"), supersede=True, supersede_scope="resource")
 
-    assert again.related_ids == []
-    assert (_status(store, old), _status(store, new)) == ("superseded", "active")
+    assert again.outcome == "superseded"
+    assert again.related_ids == [new]
+    assert again.entry_id not in (old, new)
+    assert (_status(store, old), _status(store, new)) == ("superseded", "superseded")
+    assert _status(store, again.entry_id) == "active"
 
 
 def test_duplicate_supersede_is_one_transaction(db: Path) -> None:
@@ -119,3 +130,21 @@ def test_duplicate_supersede_is_one_transaction(db: Path) -> None:
         store.publish(_entry("current", "procedure"), supersede=True, supersede_scope="resource")
 
     assert (_status(store, a), _status(store, b)) == ("active", "active")
+
+
+# ---- the L0 cache must not report a retired entry as the duplicate (#353) ----
+
+
+@pytest.mark.parametrize("scope", ["resource", "type"])
+def test_republishing_retired_content_is_not_an_l0_duplicate(db: Path, scope: str) -> None:
+    store = ArchivistStore(db)
+    x = store.publish(_entry("fact X"))
+    replacement = _entry("fact Y", etype="procedure" if scope == "resource" else "fact")
+    store.publish(replacement, supersede=True, supersede_scope=scope)
+    assert _status(store, x.entry_id) == "superseded"
+
+    again = store.publish(_entry("fact X"))  # same process: X's hash is still in L0
+
+    assert again.outcome not in ("duplicate_l0", "duplicate_l1")
+    assert _status(store, again.entry_id) == "active"
+    assert again.entry_id != x.entry_id

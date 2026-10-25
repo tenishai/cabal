@@ -212,9 +212,10 @@ class ArchivistStore:
         """A supersede that exactly matches an active entry still means "this
         is the current truth" (#363): retire the other active entries in
         `scope`, with the matched entry as the survivor. The active check and
-        the retirements share one write transaction. A match that is no longer
-        active (an L0 cache hit on a since-retired id) retires nothing, so an
-        old entry never displaces a current one. Returns the retired ids."""
+        the retirements share one write transaction. Dedup reports only active
+        matches (#353), so a match that is no longer active here was retired by
+        another writer after the check; it retires nothing. Returns the retired
+        ids."""
         conn = connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -296,8 +297,14 @@ class ArchivistStore:
         if entry_type is not None:
             sql.append("  AND e.entry_type = ?")
             params.append(entry_type)
+        # Tags filter in SQL, before the LIMIT (#362). Filtering in Python after an
+        # over-fetch of top_k*4 returned nothing when the matching rows ranked
+        # below that many rows with other tags.
+        for tag in tags or []:
+            sql.append("  AND EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)")
+            params.append(tag)
         sql.append("ORDER BY bm25(memory_entries_fts) LIMIT ?")
-        params.append(top_k * 4 if tags else top_k)  # over-fetch when tag-filtering
+        params.append(top_k)
 
         conn = connect(self.db_path)
         try:
@@ -305,15 +312,7 @@ class ArchivistStore:
         finally:
             conn.close()
 
-        out: list[Entry] = []
-        for raw_row in rows:
-            entry = Entry.from_row(dict(raw_row))
-            if tags is not None and not all(t in entry.tags for t in tags):
-                continue
-            out.append(entry)
-            if len(out) >= top_k:
-                break
-        return out
+        return [Entry.from_row(dict(raw_row)) for raw_row in rows]
 
     def get(self, entry_id: str) -> Entry | None:
         conn = connect(self.db_path)
@@ -419,5 +418,16 @@ def _sanitize_fts(query: str) -> str:
     into the phrase ``mash1 local``, and ``AND``/``OR``/``NOT``, ``*``,
     ``^``, ``:`` and ``{}`` lose their operator meaning. Tokens are still
     implicitly AND-ed, as bare words were.
+
+    Control characters (NUL included) become spaces, because FTS5's parser stops
+    at a NUL inside a quoted token and raises "unterminated string", and a lone
+    surrogate becomes U+FFFD, because sqlite3 can't encode one to bind it
+    (#365). A surrogate pair held as two code points is joined into one
+    character.
     """
-    return " ".join('"' + t.replace('"', '""') + '"' for t in query.split())
+    return " ".join('"' + t.replace('"', '""') + '"' for t in _clean_query(query).split())
+
+
+def _clean_query(query: str) -> str:
+    text = query.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    return "".join(" " if ord(c) < 32 or ord(c) == 127 else c for c in text)
