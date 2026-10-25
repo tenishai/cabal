@@ -17,6 +17,12 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Fixed
 
+- **The archivist, documents, patterns and code handlers say when they are unconfigured**
+  (tenishai/liminal#191). Each refuses every call when it has no corpus, yet liminal's
+  `/healthz` showed them "ready". Each now defines liminal's optional `status()`, which
+  answers e.g. `unconfigured: CABAL_ARCHIVIST_DB is unset, so only a per-caller
+  archivist.db_path can name a corpus`, and `/healthz` shows that instead. The code handler
+  reads no environment variable, so as served by liminal it always reports unconfigured.
 - **A re-asserted archivist fact stays active through a gitsync round trip**
   (tenishai/cabal#367). Publishing A, superseding it with B and re-publishing A with
   `supersede=True` leaves A active in SQLite, but after `export_corpus` and
