@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("liminal")
+pytest.importorskip("liminal.protocol")
 
 from liminal.protocol.card import validate_card  # noqa: E402
 

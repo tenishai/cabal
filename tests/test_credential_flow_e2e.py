@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-pytest.importorskip("liminal")
+pytest.importorskip("liminal.server")
 
 from typing import Any
 

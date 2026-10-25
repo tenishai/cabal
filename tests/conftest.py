@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
+import sys
 from pathlib import Path
+
+# Without a real liminal, expose the vendored liminal.protocol (cabal#359) so the
+# handler tests run in unit CI. Must happen before cabal.core.app is imported.
+if importlib.util.find_spec("liminal") is None:
+    sys.path.insert(0, str(Path(__file__).parent / "_vendor"))
 
 import pytest
 import pytest_asyncio

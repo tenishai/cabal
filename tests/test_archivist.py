@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("liminal")
+pytest.importorskip("liminal.protocol")
 
 from liminal.protocol import Context  # noqa: E402
 
