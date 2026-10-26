@@ -3,12 +3,23 @@
 Cabal-shipped liminal handler. Four tools:
 
   archivist.publish(resource_name, summary, entry_type, ...)
-    Write an entry through the dedup pipeline. Returns the entry id
-    + the outcome (new / duplicate_l0 / duplicate_l1 / related).
+    Write an entry through the dedup pipeline. Returns the outcome,
+    the entry id and related_ids:
+      new           written; related_ids is empty
+      duplicate_l0  same content as an active entry (L0 cache or L1
+      duplicate_l1  hash), nothing written, entry_id is that entry;
+                    related_ids is empty, or with supersede the other
+                    entries in scope that it retired
+      related      written and linked RELATED to up to 5 active
+                    entries with the same resource_name and entry_type;
+                    related_ids holds them
+      superseded    written with supersede, retiring active entries in
+                    scope; related_ids holds the retired ids
 
   archivist.search(query, entry_type?, tags?, top_k?)
-    FTS5 search across the team-memory corpus. Filter by entry_type
-    or required tags.
+    FTS5 search across the active entries of the team-memory corpus.
+    The query is plain words, all of which must match. Filter by
+    entry_type or tags (every tag must match).
 
   archivist.get(entry_id)
     Fetch one entry by id, with its outbound edges, its `status` (active
@@ -112,7 +123,16 @@ class ArchivistHandler:
                 description=(
                     "Publish an entry to team memory. The dedup pipeline "
                     "(L0 LRU → L1 hash → Tier-1 resource overlap) "
-                    "decides whether to write or link."
+                    "decides whether to write or link. Returns outcome, "
+                    "entry_id and related_ids. Outcomes: 'new' (written; "
+                    "related_ids empty); 'duplicate_l0' / 'duplicate_l1' "
+                    "(same content as an active entry, nothing written, "
+                    "entry_id is that entry; related_ids empty, or with "
+                    "supersede the other entries it retired); 'related' "
+                    "(written and linked to up to 5 active entries with the "
+                    "same resource_name and entry_type, listed in "
+                    "related_ids); 'superseded' (written with supersede; "
+                    "related_ids lists the entries it retired)."
                 ),
                 input_schema={
                     "type": "object",
@@ -175,20 +195,40 @@ class ArchivistHandler:
             ),
             ToolSpec(
                 name="search",
-                description="Search the team-memory corpus.",
+                description=(
+                    "Search the active entries of the team-memory corpus "
+                    "(superseded entries are never returned). Results are "
+                    "ranked by FTS5 bm25."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string"},
+                        "query": {
+                            "type": "string",
+                            "description": (
+                                "Plain words; every word must match. AND, OR "
+                                "and NOT are ordinary words, and punctuation "
+                                "is never an operator: it splits a word, so "
+                                "'mash1.local' matches the phrase 'mash1 local'."
+                            ),
+                        },
                         "entry_type": {
                             "type": "string",
                             "enum": list(_VALID_ENTRY_TYPES),
                         },
                         "tags": {
                             "type": "array", "items": {"type": "string"},
+                            "description": (
+                                "Every tag must be on the entry (exact match). "
+                                "A comma-separated string is also accepted."
+                            ),
                         },
                         "top_k": {
                             "type": "integer", "minimum": 1, "maximum": 50,
+                            "description": (
+                                "Most results to return, default 10. A value "
+                                "outside 1..50 is clamped to that range."
+                            ),
                         },
                     },
                     "required": ["query"],

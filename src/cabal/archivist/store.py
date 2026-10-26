@@ -26,7 +26,7 @@ SUPERSEDE_SCOPES: tuple[str, ...] = ("type", "resource")
 class PublishResult:
     """What happened to a publish() call."""
 
-    outcome: str  # "new" | "duplicate_l0" | "duplicate_l1" | "related"
+    outcome: str  # "new" | "duplicate_l0" | "duplicate_l1" | "related" | "superseded"
     entry_id: str
     related_ids: list[str]
 

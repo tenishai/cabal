@@ -39,7 +39,12 @@ A few things worth knowing before you spend effort:
   It also lists the repo's traps (for example, where the dispatch-token policy
   lives, and why a route must not grow its own copy).
 - **Alembic migrations ship as package data.** Adding a revision under
-  `src/cabal/migrations/versions/` is also a packaging change.
+  `src/cabal/migrations/versions/` is also a packaging change. So do the guides in
+  `src/cabal/guides/`: a new one needs its `MANIFEST` entry.
+- **`tests/_vendor` holds a copy of liminal's `protocol` package** for the unit suite.
+  When liminal's `protocol` changes, re-copy it and bump `VENDORED_FROM` in
+  `tests/_vendor/liminal/__init__.py`; `tests/test_vendored_liminal_protocol.py` fails
+  against an installed liminal otherwise.
 - **Docker.** `make up` builds the dev stack from sibling checkouts of techne and
   liminal and needs `docker buildx`; see the README.
 

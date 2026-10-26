@@ -27,6 +27,12 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- **`cbl guide [name]`** lists or prints the guides that ship in the package. The first is
+  `welcome`: what cabal is, where it fits beside techne, liminal, daedalus and kobo, what it
+  can do for you, and every option with why you'd want it. The guides are package data under
+  `src/cabal/guides/`, so they work from an installed wheel and the Docker image. An unknown
+  name exits 2 and lists the valid ones.
+
 - The archivist's `archivist.publish` tool takes an optional boolean `supersede`, default
   false (tenishai/cabal#348). `ArchivistStore.publish` could already retire the entries a
   new one replaces, but the tool never passed the flag, so over MCP a revised fact stayed
@@ -45,6 +51,15 @@ Pull requests and issues are in tenishai/cabal.
   on the `archivist.publish` tool; an unknown value is refused.
 
 ### Fixed
+
+- The `cabal.master_key_mismatch` and `cabal.encrypted_row_damaged` startup lines logged
+  `db_url` with any password in it. They now redact it as the other startup lines do.
+- The archivist tool descriptions say what the handler does: search matches plain words,
+  all of them, over active entries only; every tag must match and a comma-separated string
+  is accepted; `top_k` is clamped to 1..50. publish lists all five outcomes, `superseded`
+  included, and what `related_ids` holds for each.
+- The README's Modes section said `cbl daemon up --agent` picks which personas register
+  locally. Nothing reads that flag yet; it now says so, and that scale today is federation.
 
 - **The archivist, documents, patterns and code handlers say when they are unconfigured**
   (tenishai/liminal#191). Each refuses every call when it has no corpus, yet liminal's
