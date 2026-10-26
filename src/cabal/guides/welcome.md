@@ -207,7 +207,7 @@ Packages are distributed as `tenish-<name>` from git URLs or the private index.
 The tenishai repos are private for now. Installing from the git URLs below needs a GitHub
 account with read access to the tenishai organization, with git set up to use it (an SSH
 key, or a token through a credential helper); without that, the install fails at the git
-clone step. The tenish package index (pypi.tenish.ai) needs credentials too.
+clone step.
 
 - Everything wired, from git: `pip install -r requirements-sources.txt ".[full]"` in a
   clone. `requirements-sources.txt` pins the techne and liminal tags.
