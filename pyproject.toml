@@ -34,9 +34,13 @@ dependencies = [
     # so `import cabal` succeeded without it and a clean install booted, reached
     # the TUI, and died at FIRST DISPATCH with ModuleNotFoundError -- which
     # reads as a runtime bug rather than a missing dependency. That is why it
-    # survived: every dev venv already had it from an earlier revision. Floor is
-    # the version the issue verified, not a guess.
-    "litellm>=1.92",
+    # survived: every dev venv already had it from an earlier revision. The floor
+    # the issue verified (1.92) is replaced by the exact pin below.
+    # Pinned exactly after litellm 1.107.0 shipped a credential stealer on PyPI
+    # (2026-10-21; 1.82.7/1.82.8 in March): an open lower bound lets any rebuild
+    # take whatever is newest that hour. This pins the Python package only; the
+    # LiteLLM Proxy image in docker-compose.yml and k8s/ still floats on main-stable.
+    "litellm==1.104.2",
     # techne + liminal are optional extras (see [project.optional-dependencies]
     # below: `mcp`, `memory`, `full`). Neither is on a public index; the concrete
     # git sources are pinned in `requirements-sources.txt` for clean-machine

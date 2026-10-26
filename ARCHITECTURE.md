@@ -1,14 +1,14 @@
 ---
 card: repo-card:cabal
-updated: 2026-10-13
-anchor: pyproject.toml sha=0c00a7cfaa75441f2e16e91865b4e117dd7b0041
+updated: 2026-10-25
+anchor: pyproject.toml sha=ae92b6d25b5eb5eb42cb18c98af252e9170a8cb5
 anchor: src/cabal/core/app.py sha=deb06330a8dd466b7f74110b5c3e536f792705c9
 ---
 # cabal — repo card
 
 WHAT: the platform's orchestrator ("Cabal Core"): a self-hosted FastAPI daemon that is the IdP (RS256 JWT mint/verify, JWKS), the A2A dispatch broker between agents, the bulletin board of registered agents, and the encrypted credential store, plus the LLM personas (architect, archivist, librarian, mason, wright) that run inside it.
 STATE: main, v0.3.2 (pyproject; distribution `tenish-cabal`, import name `cabal`; `cabal.__version__` reads that package's metadata), classifier Pre-Alpha, AGPL-3.0. Recent work (git log): the A2A v1.0 interface at /agents/{name}/a2a, one shared dispatch-auth policy, detached dispatch, exact-match secrets lookups, operator-only handler flags; 0.3.1 added `cabal.bootstrap_code` and 0.3.2 the `colleague_invite` remedy on a missing-pair refusal.
-STACK: Python ≥3.12 (CI 3.12/3.13). FastAPI + uvicorn, SQLAlchemy async + aiosqlite (SQLite only), Alembic (revisions under src/cabal/migrations/versions, shipped as package data), pydantic-settings, Typer, cryptography (Fernet), joserfc (JWT/JWS; declared directly), httpx, structlog, litellm (hard dep, lazily imported). Extras: `mcp` (`tenish-liminal` ≥0.4), `memory` (`tenish-techne` ≥0.18.2), `full`, `tui` (textual), `dev`. Install: `pip install -e ".[dev]"`; siblings as editable checkouts `-e ../techne -e ../liminal` (git pins in requirements-sources.txt). Dockerfile CMD = `cbl daemon up --host 0.0.0.0 --port 7400 --config /app/identity.toml`; docker-compose*.yml, k8s/ manifests, Makefile (dev compose stack, `make bootstrap`).
+STACK: Python ≥3.12 (CI 3.12/3.13). FastAPI + uvicorn, SQLAlchemy async + aiosqlite (SQLite only), Alembic (revisions under src/cabal/migrations/versions, shipped as package data), pydantic-settings, Typer, cryptography (Fernet), joserfc (JWT/JWS; declared directly), httpx, structlog, litellm (hard dep, lazily imported; pinned ==1.104.2 after the 1.107.0 supply-chain compromise, Dependabot ignores it, a bump is a reviewed line). Extras: `mcp` (`tenish-liminal` ≥0.4), `memory` (`tenish-techne` ≥0.18.2), `full`, `tui` (textual), `dev`. Install: `pip install -e ".[dev]"`; siblings as editable checkouts `-e ../techne -e ../liminal` (git pins in requirements-sources.txt). Dockerfile CMD = `cbl daemon up --host 0.0.0.0 --port 7400 --config /app/identity.toml`; docker-compose*.yml, k8s/ manifests, Makefile (dev compose stack, `make bootstrap`).
 ENTRY:
 - `cbl` → src/cabal/cli/main.py:app (daemon up, login, dispatch, chat, status, secret, token, persona graduate/absorb, primus rotate, reload identity, reset-auth, session, conversations, tail)
 - server → src/cabal/core/app.py:create_app (lifespan: master key → engine → migrations → signing key → JWKS → identity.toml → router + personas → heartbeat → bootstrap code, delivered per `cabal.bootstrap_code`: log, file or off); default bind 127.0.0.1:7400
