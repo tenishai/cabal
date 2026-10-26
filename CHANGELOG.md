@@ -9,12 +9,15 @@ Pull requests and issues are in tenishai/cabal.
 ### Upgrading
 
 - No database migration since 0.3.2, for cabal's database or the archivist's.
-- Archivist search treats every token as a plain word. `AND`, `OR`, `NOT`, `*`, `^`, `:`
-  and `{}` used to reach FTS5 as operators and now match literally; tokens are still AND-ed.
-- The archivist handler refuses wrong-typed fields instead of coercing them: `importance`
-  must be a number from 0 to 1, and `tags`, `commands` and `refs` lists of strings (`tags`
-  still takes a comma-separated string). A client that sent `importance: "high"` or
-  numeric tags now gets a failed call naming the field.
+- Archivist search treats every token as a plain word. `AND`, `OR` and `NOT` used to reach
+  FTS5 as operators when the query held no punctuation, and now match literally; tokens are
+  still AND-ed.
+- The archivist handler refuses wrong-typed fields instead of coercing them. `importance`
+  must be a number from 0 to 1, search's `top_k` an integer, `source_thread` a string, and
+  `tags`, `commands` and `refs` lists of strings; only `tags` still takes a comma-separated
+  string. A client that sent a numeric string for `importance` or `top_k` (`"0.5"`, `"5"`),
+  a comma-separated `commands` or `refs`, or an integer `source_thread` now gets a failed
+  call naming the field. `top_k: 0` now returns 1 result; 0.3.2 fell back to 10.
 
 ### Added
 

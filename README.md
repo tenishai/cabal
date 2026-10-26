@@ -375,8 +375,8 @@ was signed by a key that no longer exists: run `cbl login --code <CODE>` again.
 
 To stop serving an entry that is no longer true, publish a tombstone that
 supersedes it through `archivist.publish` (`supersede: true`; add
-`supersede_scope: "resource"` to retire the name's entries of every type). The old row stays in the table for
-audit, and search stops returning it.
+`supersede_scope: "resource"` to retire the name's entries of every type).
+The old row stays in the table for audit, and search stops returning it.
 
 When the text must not be stored at all (personal data, a leaked secret), purge
 it on the host that holds the database. For the mash1 container, that's
