@@ -89,3 +89,41 @@ def test_hide_password():
 
     assert _hide_password("postgresql+psycopg://u:pw@db:5432/c") == "postgresql+psycopg://u:***@db:5432/c"
     assert _hide_password("sqlite:///data/cabal.db") == "sqlite:///data/cabal.db"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "event"),
+    [
+        ("MasterKeyMismatchError", "cabal.master_key_mismatch"),
+        ("EncryptedRowDamagedError", "cabal.encrypted_row_damaged"),
+    ],
+)
+async def test_master_key_startup_errors_hide_the_db_password(monkeypatch, error, event):
+    """The two master-key startup lines log db_url too, and must redact it like
+    the migration and identity_path lines do (cabal#370)."""
+    import structlog.testing
+
+    from cabal.core import app as app_mod
+    from cabal.core.auth import master_key
+
+    exc_type = getattr(master_key, error)
+
+    def refuse(**_kw):
+        raise exc_type("test")
+
+    monkeypatch.setattr(app_mod, "resolve_master_key", refuse)
+    app = app_mod.create_app(
+        db_url="postgresql+asyncpg://u:hunter2@db:5432/c",
+        config_path="absent.toml",
+        print_bootstrap_code=False,
+    )
+    with structlog.testing.capture_logs() as logs:
+        with pytest.raises(exc_type):
+            async with app.router.lifespan_context(app):
+                pass
+
+    lines = [e for e in logs if e["event"] == event]
+    assert lines, [e["event"] for e in logs]
+    assert lines[0]["db_url"] == "postgresql+asyncpg://u:***@db:5432/c"
+    assert "hunter2" not in str(logs)

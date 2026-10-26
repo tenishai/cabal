@@ -1,19 +1,47 @@
 # Cabal
 
-Self-hosted personal agent orchestration platform. Cabal Core is the SQLite-backed
-control plane and A2A broker; personas (Architect, Archivist, Librarian, ...) and
-the Mason primus run as agent modules registered with the bulletin board.
+cabal is a self-hosted daemon that runs a small team of LLM personas and routes work
+between them and other agents over A2A. It is the identity provider (it mints and
+verifies the JWTs), the dispatch broker that decides who may call whom and logs every
+hop, and the encrypted store for the credentials your agents' tools need. Run it when
+you have more than one agent and want one place on your own machine that connects them,
+scopes them and keeps their keys.
+
+For an agent: `cbl guide welcome` prints the bundled guide to what cabal is, what it can
+do for you, and every option with why you'd want it. It ships in the package, so it
+describes the installed version.
 
 The distribution is named `tenish-cabal` (`pip show tenish-cabal`; extras install as
 `tenish-cabal[mcp]`); the import package is still `cabal` and the commands are `cbl` and `cabal`.
 `v0.3.0` is the first tag that builds `tenish-cabal`; `v0.2.0` builds `cabal`.
 
-## Status
+## Where this fits
 
-**The suite passes.** All phases through the security + hygiene sweep are complete:
-trust boundary enforcement, streaming dispatch router, techne correctness, async
-hygiene, SSRF defense, CI on all three repos, MCP spec compliance, and a full
-hygiene pass. The end-to-end demo (`make demo`) runs cleanly with Docker Compose.
+cabal is the orchestrator. Each project below is optional to it.
+
+- **liminal** (MCP tool gateway), extra `mcp`: personas call their tools through it, and
+  it loads cabal's four handlers and fetches credentials from cabal.
+- **techne** (memory library), extra `memory`: persona recall, and the corpora behind the
+  documents, patterns and code handlers.
+- **daedalus** (agent construction kit): no import either way. A daedalus agent runs as
+  its own process, and cabal dispatches to it over A2A once you register it with
+  `cbl persona graduate`.
+- **kobo** ("the room"): no import. It mints `colleague` tokens cabal accepts and syncs
+  `PUT /admin/dispatch-pairs`.
+- **gojira**: `gojira.yaml` deploys cabal to GKE.
+
+**Where an agent is defined.** A cabal persona is a `[personas.<name>]` block in
+`identity.toml`, and the name must be one cabal has code for (`architect`, `archivist`,
+`librarian`, `mason`, `wright`; `PERSONA_REGISTRY` in `agents/personas/__init__.py`).
+Any other name gets a bulletin-board row and no handler. A daedalus agent is defined in
+its own bundle directory and run by daedalus; cabal only holds a federated row pointing at
+its endpoint, and sends it Tasks at `POST <endpoint>/a2a/tasks`.
+
+**The handlers ship unconfigured.** The archivist, documents, patterns and code handlers
+run inside liminal and have no corpus until you name one: `CABAL_ARCHIVIST_DB` turns on
+shared team memory, `CABAL_LIBRARIAN_DB` document search, and `CABAL_ARCHITECT_DB` pattern
+search and recording. `code` reads no env var and needs a persona's `code.db_path`.
+Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped-stacks).
 
 ## What works
 
@@ -29,7 +57,7 @@ hygiene pass. The end-to-end demo (`make demo`) runs cleanly with Docker Compose
 - **LLM personas** — `LLMPersona` wraps LiteLLM acompletion with tool-use loop,
   budget guard, circuit breaker, and per-step hook callbacks.
 - **CLI** — `cbl` covers daemon, login, dispatch, token mint/list, secret set,
-  persona reload, agent status.
+  persona reload, agent status, archivist purge, and `cbl guide`.
 - **Docker Compose dev stack** — `make up / bootstrap / demo` runs the full
   cabal + liminal stack; `make demo` is a 6-step smoke test that passes reliably.
 - **A2A v1.0 interface** — `POST /agents/{name}/a2a` (with `A2A-Version: 1.0`)
@@ -66,7 +94,9 @@ src/cabal/
   cli/            cbl entrypoint
   tui/            cabal entrypoint — the Textual terminal UI
   agents/         LLMPersona, EchoAgent, and personas/ (MasonPrimusPersona)
-  archivist/      Shared-memory sync: gitmemory, dedup, promote, store
+  archivist/      Shared-memory sync: gitmemory, gitsync, dedup, promote, store,
+                  purge (admin-only, CLI)
+  guides/         Markdown guides bundled in the wheel (`cbl guide`)
   librarian/      Document indexing + adapters
   handlers/       liminal-facing MCP handlers: archivist, code, documents, patterns
   codex/          Code-graph blame and repo resolution
@@ -461,10 +491,11 @@ outright. This needs a liminal release that has `requires_operator`.
 
 - **Solo (default)**: one process, all personas as local handlers, dispatch router
   shortcuts the network for in-process calls.
-- **Scale**: per-agent containers, dispatch router routes via HTTP.
+- **Scale**: some personas run elsewhere and the router reaches them over HTTP. Today
+  that is federation: `cbl persona graduate` points a persona at a remote endpoint.
 
-Same package, same code, same tests — `--agent` flag at startup decides which
-handlers register locally.
+`cbl daemon up --agent <name>` is accepted and logged, but nothing reads it yet: every
+daemon registers every persona its `identity.toml` declares.
 
 ## How this was built
 

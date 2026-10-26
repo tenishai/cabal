@@ -1,10 +1,10 @@
 ---
 card: arch-card:cabal-liminal-boundary
-updated: 2026-10-25
+updated: 2026-10-26
 anchor: src/cabal/core/tools/mcp_proxy.py sha=4623908dbaddc1f2ba1688ddad9834fa73f1d5a1
 anchor: src/cabal/core/persona_factory.py sha=e1825f818414b99c8b2d60f46f21a6792230f534
 anchor: src/cabal/handlers/__init__.py sha=2e5f64bd92cf389a3ccaffb7bf7c44fdeef49580
-anchor: pyproject.toml sha=ae92b6d25b5eb5eb42cb18c98af252e9170a8cb5
+anchor: pyproject.toml sha=56caaf0a2ab2c10e63248b79cac850dc288220aa
 ---
 # liminal-boundary — cabal ↔ liminal (MCP gateway), three directions
 
@@ -19,6 +19,7 @@ INVARIANTS:
 - liminal is optional for cabal core (lazy `_require_liminal`; distribution `tenish-liminal>=0.4`, extra `tenish-cabal[mcp]`), but `cabal.handlers.*` hard-import it. WHY: they are only ever loaded by liminal.
 - `allowed_handlers`: None = unrestricted (omitted from the token); [] = forwarded, so liminal refuses everything.
 - Tool names must not already contain `__`, or the reverse mapping breaks (only the first `__` is converted).
+- Each handler has `status()`: None when its default corpus is set, else an `unconfigured: ...` reason. liminal >= 0.6.0 shows that on `/healthz`; older liminal ignores it and shows `ready`. The code handler always reports unconfigured, because its `get_handler` reads no env var. The tools stay listed either way, since a per-caller `tool_extras` path can still name a corpus.
 - Handlers lazy-import techne and return `ToolResult.failure("techne not installed…")` instead of raising. Per-call DB path from `ctx.extra["<handler>.db_path"]` rejects `..`; fallbacks from env `CABAL_ARCHITECT_DB`, `CABAL_LIBRARIAN_DB`, `CABAL_ARCHIVIST_DB`.
 - "OPERATOR-ONLY" TOOLS ARE GATED BY LIMINAL, NOT CABAL: `patterns.record` and `documents.refresh` set `requires_operator: True` in their card dicts (cabal#233, #245; pinned by tests/test_operator_only_handlers.py) and the handler bodies check nothing themselves (`DocumentsHandler._refresh` says so). Enforcement is liminal's `tools/call` gate, which is NOT verified here; the persona→liminal token carries scope ["dispatch"] only, so a persona-minted call should be refused. Do not add a scope check inside a handler; keep the flag.
 - In SOVEREIGN mode liminal ignores token-embedded scope and tool_extras and resolves a grant by (issuer, persona) (liminal server/routes.py `_authenticate`); tool_extras only steer single-cabal mode.

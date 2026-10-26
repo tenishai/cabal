@@ -6,6 +6,10 @@ Instructions for AI coding agents working in this repo. Claude Code loads this v
 cabal is orchestration: a FastAPI broker that dispatches work between agents over A2A,
 with JWT-scoped auth, a bulletin board, and SQLite underneath.
 
+To explain cabal to a user, run `cbl guide welcome`: it ships in the package
+(`src/cabal/guides/`) and describes the installed version. Keep it true when you change
+an option it covers.
+
 ## Build, test, lint
 
 ```bash
@@ -23,6 +27,11 @@ exist; do not read a passing `test-integration` as integration coverage.
 The unit suite needs no siblings. Tests that exercise techne or liminal want those
 checked out adjacent (`pip install -e ../techne`), and without them you get import errors
 that look like real failures.
+
+Without liminal, the handler tests import a vendored copy of `liminal.protocol` from
+`tests/_vendor`. When liminal's `protocol` package changes, re-copy it there and bump
+`VENDORED_FROM` in `tests/_vendor/liminal/__init__.py`;
+`tests/test_vendored_liminal_protocol.py` fails against an installed liminal otherwise.
 
 ## Dispatch-token policy lives in one place
 
@@ -63,7 +72,9 @@ src/cabal/
   core/          the substrate: FastAPI app, A2A broker, auth, routes, observability
   agents/        persona implementations (LLMPersona, EchoAgent, personas/mason.py)
   handlers/      liminal-facing MCP handlers — archivist, code, documents, patterns
-  archivist/     shared-memory sync (gitmemory, dedup, promote, store)
+  archivist/     shared-memory sync (gitmemory, gitsync, dedup, promote, store,
+                 purge: admin-only, CLI)
+  guides/        markdown guides bundled in the wheel, printed by `cbl guide`
   librarian/     document indexing + adapters
   codex/         code-graph blame and repo resolution
   cli/           the `cbl` entry point

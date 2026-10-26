@@ -497,7 +497,7 @@ def create_app(
             # message instead of a traceback (cabal#92).
             log.error(
                 "cabal.master_key_mismatch",
-                db_url=effective_db_url(db_url),
+                db_url=_hide_password(effective_db_url(db_url)),
                 key_source=describe_master_key_source(),
                 msg=MASTER_KEY_MISMATCH_MSG,
             )
@@ -507,7 +507,7 @@ def create_app(
                 raise
             log.error(
                 "cabal.encrypted_row_damaged",
-                db_url=effective_db_url(db_url),
+                db_url=_hide_password(effective_db_url(db_url)),
                 msg=(
                     "The stored signing key is not well-formed ciphertext, so "
                     "no master key will decrypt it. Restore the database from a "

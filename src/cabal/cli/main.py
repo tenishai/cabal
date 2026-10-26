@@ -5,6 +5,7 @@ Phase 1 surface (per cabal-handoff.md §4):
     cbl login            — trade a bootstrap code for an operator JWT
     cbl dispatch         — send a one-shot A2A Task and print the result
     cbl version          — print version
+    cbl guide [name]     — list or print the guides bundled in the package
     cbl token mint       — (Phase 2) mint a session_token
     cbl reload identity  — (Phase 2) hot-reload identity.toml
 """
@@ -38,6 +39,33 @@ app.add_typer(daemon_app, name="daemon")
 def version_cmd() -> None:
     """Print Cabal version and exit."""
     typer.echo(f"cabal {__version__}")
+
+
+@app.command("guide")
+def guide_cmd(
+    name: str = typer.Argument(None, help="Guide to print. Omit to list them."),
+) -> None:
+    """Print a guide that ships with cabal, or list them.
+
+    The guides are package data, so this works from an installed wheel with no
+    repo checkout. Output is raw markdown, meant for an agent to read.
+    """
+    from cabal.guides import MANIFEST, guide_text
+
+    if not name:
+        typer.echo("Bundled guides (cbl guide <name>):\n")
+        width = max(len(n) for n in MANIFEST)
+        for n, desc in MANIFEST.items():
+            typer.echo(f"  {n:<{width}}  {desc}")
+        return
+    try:
+        typer.echo(guide_text(name), nl=False)
+    except KeyError:
+        typer.echo(
+            f"no bundled guide named {name!r}; valid names: {', '.join(MANIFEST)}",
+            err=True,
+        )
+        raise typer.Exit(code=2) from None
 
 
 @daemon_app.command("up")

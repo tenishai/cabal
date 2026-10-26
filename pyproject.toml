@@ -104,7 +104,11 @@ where = ["src"]
 # reach `upgrade head`. `versions/*.py` are data here, not modules: alembic
 # loads them by path.
 [tool.setuptools.package-data]
-cabal = ["migrations/env.py", "migrations/script.py.mako", "migrations/versions/*.py"]
+# guides/*.md is what `cbl guide` prints; same reason, it must reach the wheel.
+cabal = [
+    "migrations/env.py", "migrations/script.py.mako", "migrations/versions/*.py",
+    "guides/*.md",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
