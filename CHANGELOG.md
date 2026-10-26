@@ -12,6 +12,8 @@ Pull requests and issues are in tenishai/cabal.
 - litellm is pinned exactly to 1.104.2 (it was `>=1.92`). litellm 1.107.0 shipped a
   credential stealer on PyPI on 2026-10-21, and an open lower bound let any rebuild take
   whatever was newest. A litellm bump is now a reviewed line in `pyproject.toml`.
+  This covers the Python package only. The LiteLLM Proxy image in `docker-compose.yml` and
+  `k8s/litellm.yaml` still uses the floating tag `main-stable` (issue #383).
 - Archivist search treats every token as a plain word. `AND`, `OR` and `NOT` used to reach
   FTS5 as operators when the query held no punctuation, and now match literally; a bare
   `{...}`, which raised an FTS5 syntax error then, is now plain words too. Tokens are still
