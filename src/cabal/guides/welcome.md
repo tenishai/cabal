@@ -98,8 +98,9 @@ and `max_tokens_override`, plus these, each with a reason to set it:
   persona.
 - `may_delegate_to`: the personas this one may hand work to. It does nothing unless
   `[guardrails] delegation_edges = true`, and then **omitting it means no delegation**, the
-  opposite of `mcp.allowed_handlers`, where omitting means every handler. Set it on every
-  primus when you turn delegation edges on, or the primus can't reach anyone.
+  opposite of `mcp.allowed_handlers`, where omitting means every handler. Once delegation
+  edges are on, set it on every persona that dispatches to another persona, or that dispatch
+  is refused. A primus's fan-out to its own subordinates isn't gated by edges.
 - `commit_to_memory`: write the persona's own Q&A back into its memory store. Off by
   default for every persona; turn it on only for a persona whose store nobody else reads.
 - `mcp`: liminal's tools for this persona (see "The liminal integration" below).
