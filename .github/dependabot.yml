@@ -6,15 +6,20 @@
 # self-hosted pool. A dependency bump runs install-time code before review, so
 # keep the self-hosted runner off this repository once it is public, or route
 # dependabot[bot] PRs to the hosted `fork-pr` job. techne's dependabot.yml leaves
-# out the pip ecosystem for this reason; cabal enables it because it pins only
-# floors, so `unit`'s `pip install -e ".[dev]"` already pulls the newest releases
-# on every run and a Dependabot bump adds little new exposure.
+# out the pip ecosystem for this reason; cabal enables it because most of its
+# dependencies are floors, so `unit`'s `pip install -e ".[dev]"` already pulls the
+# newest releases on every run and a Dependabot bump adds little new exposure.
+# litellm is the exception: it is pinned exactly (pyproject.toml), and a bump PR
+# would run the new release on the self-hosted runner before anyone reviewed it,
+# so Dependabot ignores it and a litellm bump is a hand-written PR.
 version: 2
 updates:
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      - dependency-name: "litellm"
     groups:
       python:
         patterns:
