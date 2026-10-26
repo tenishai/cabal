@@ -13,14 +13,23 @@ LLMClient through). What ships today:
     details, gotchas, commands, refs, importance, source_thread,
     content_hash, written_by, status, access_count, timestamps.
   - 4-layer dedup pipeline minus the LLM verdict:
-      L0  in-memory LRU cache on content_hash (skip if hit)
-      L1  DB content_hash check (skip if hit)
+      L0  in-memory LRU cache on content_hash (skip if hit). A hit
+          counts only while the cached entry is still active (cabal#353).
+      L1  DB content_hash check against active entries (skip if hit)
       Tier 1  find existing entries with same (resource_name,
               entry_type); record RELATED relation on near-overlap
       Tier 2  deferred (LLM SUPERSEDES/CONTRADICTS/SUPPLEMENTS)
-  - Search via direct FTS5 on the archivist's own table; every query
-    token is quoted, so the query is plain words (cabal#356).
-  - Cross-reference edges (RELATED) via memory_relations table.
+  - publish runs in one BEGIN IMMEDIATE transaction, from the dedup
+    check through the insert and any supersede, so racing writers
+    cannot both insert the same content (cabal#358).
+  - Deterministic supersession: publish(supersede=True) retires the
+    active entries it replaces (status='superseded', SUPERSEDES edge).
+    supersede_scope="type" (default) retires same resource_name and
+    entry_type; "resource" retires every type under the name (cabal#350).
+  - Search via direct FTS5 on the archivist's own table, active
+    entries only; every query token is quoted, so the query is plain
+    words (cabal#356).
+  - Cross-reference edges (RELATED, SUPERSEDES) via memory_relations.
   - schema() introspection so agents can self-discover the corpus.
 
 Deferred (called out in the handler docstring as follow-ups):
