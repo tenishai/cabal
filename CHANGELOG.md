@@ -10,8 +10,9 @@ Pull requests and issues are in tenishai/cabal.
 
 - No database migration since 0.3.2, for cabal's database or the archivist's.
 - Archivist search treats every token as a plain word. `AND`, `OR` and `NOT` used to reach
-  FTS5 as operators when the query held no punctuation, and now match literally; tokens are
-  still AND-ed.
+  FTS5 as operators when the query held no punctuation, and now match literally; a bare
+  `{...}`, which raised an FTS5 syntax error then, is now plain words too. Tokens are still
+  AND-ed.
 - The archivist handler refuses wrong-typed fields instead of coercing them. `importance`
   must be a number from 0 to 1, search's `top_k` an integer, `source_thread` a string, and
   `tags`, `commands` and `refs` lists of strings; only `tags` still takes a comma-separated
