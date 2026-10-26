@@ -95,6 +95,7 @@ from cabal.core.memory.techne_store import TechneMemoryStore
 from cabal.core.models import Persona
 from cabal.core.observability.activity_logger import ActivityLogger
 from cabal.core.observability.event_bus import EventBus
+from cabal.core.observability.failures import log_failure
 from cabal.core.observability.langfuse_client import LangfuseTraceClient
 from cabal.core.observability.trace_exporter import TraceExporter
 from cabal.core.routes import (
@@ -169,6 +170,16 @@ def _ensure_sqlite_parent_dir(db_url: str) -> None:
     parent = Path(database).parent
     if str(parent) not in ("", "."):
         parent.mkdir(parents=True, exist_ok=True)
+
+
+def _hide_password(db_url: str) -> str:
+    """`db_url` with any password replaced by ***, for log lines (cabal#370)."""
+    try:
+        from sqlalchemy.engine import make_url
+
+        return make_url(db_url).render_as_string(hide_password=True)
+    except Exception:  # noqa: BLE001 — never let redaction fail the log line
+        return "<unparseable db url>"
 
 
 def _run_migrations(db_url: str) -> None:
@@ -507,13 +518,13 @@ def create_app(
             raise
         except Exception:
             if not started:
-                log.exception("cabal.startup_failed")
+                log_failure(log, "cabal.startup_failed")
             else:
                 # Suppressing the misleading `startup_failed` must not mean
                 # saying nothing: an unlogged shutdown exception goes back to
                 # uvicorn, which is the swallowing this whole wrapper exists to
                 # end, just relocated to the other end of the lifespan.
-                log.exception("cabal.shutdown_failed")
+                log_failure(log, "cabal.shutdown_failed")
             raise
 
     @asynccontextmanager
@@ -562,7 +573,7 @@ def create_app(
             try:
                 _run_migrations(sync_url)
             except Exception:
-                log.exception("cabal.migrations_failed", db_url=sync_url)
+                log_failure(log, "cabal.migrations_failed", db_url=_hide_password(sync_url))
                 raise
 
         kid = await ensure_signing_key(sessionmaker, master_key=master_key)
@@ -590,7 +601,11 @@ def create_app(
         config_path_obj = resolve_identity_path(config_path)
         _app.state.identity_path = config_path_obj
         _app.state.config_path = str(config_path_obj)
-        log.info("cabal.identity_path", path=str(config_path_obj), db_url=effective_db_url(db_url))
+        log.info(
+            "cabal.identity_path",
+            path=str(config_path_obj),
+            db_url=_hide_password(effective_db_url(db_url)),
+        )
         if config_path_obj.exists():
             identity = load_identity(config_path_obj)
             async with open_session(sessionmaker) as session:

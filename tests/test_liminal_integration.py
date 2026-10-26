@@ -20,7 +20,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
-pytest.importorskip("liminal")
+pytest.importorskip("liminal.server")
 from cryptography.hazmat.primitives import serialization
 from joserfc.jwk import KeySet, RSAKey
 

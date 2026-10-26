@@ -13,6 +13,7 @@ the fourth as a follow-up preserves the public dispatch surface.
 
 from __future__ import annotations
 
+import sqlite3
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -42,22 +43,36 @@ class Dedupper:
         self._l0_capacity = l0_capacity
         self._l0_cache: OrderedDict[str, str] = OrderedDict()
 
-    def check(self, entry: Entry) -> DedupResult:
+    def check(self, entry: Entry, conn: sqlite3.Connection | None = None) -> DedupResult:
         """Run L0 → L1 → Tier-1 against `entry`. Does NOT write.
 
-        Returns a DedupResult; the caller decides whether to commit.
+        Returns a DedupResult; the caller decides whether to commit. With `conn`,
+        the reads run on the caller's connection, inside its transaction, so a
+        publish can hold the write lock from this check through its insert
+        (#358); the caller closes it.
         """
         if not entry.content_hash:
             entry.content_hash = entry.compute_hash()
 
-        # L0: in-memory LRU cache of content_hash → entry_id
-        cached = self._l0_get(entry.content_hash)
-        if cached is not None:
-            return DedupResult(outcome="duplicate_l0", entry_id=cached)
-
-        # L1: DB content_hash check
-        conn = connect(self.db_path)
+        owned = conn is None
+        if conn is None:
+            conn = connect(self.db_path)
         try:
+            # L0: in-memory LRU cache of content_hash → entry_id. A hit counts only
+            # while that entry is still active (#353): a supersede retires entries
+            # without touching this cache, and a stale hit reported a retired id as
+            # the duplicate while no active entry held the content.
+            cached = self._l0_get(entry.content_hash)
+            if cached is not None:
+                live = conn.execute(
+                    "SELECT 1 FROM memory_entries WHERE id = ? AND status = 'active'",
+                    (cached,),
+                ).fetchone()
+                if live is not None:
+                    return DedupResult(outcome="duplicate_l0", entry_id=cached)
+                self._l0_cache.pop(entry.content_hash, None)
+
+            # L1: DB content_hash check
             row = conn.execute(
                 """SELECT id FROM memory_entries
                    WHERE content_hash = ? AND status = 'active'
@@ -79,7 +94,8 @@ class Dedupper:
                 (entry.resource_name, entry.entry_type),
             ).fetchall()
         finally:
-            conn.close()
+            if owned:
+                conn.close()
 
         related_ids = [r["id"] for r in overlaps]
         if related_ids:

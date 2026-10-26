@@ -18,7 +18,8 @@ LLMClient through). What ships today:
       Tier 1  find existing entries with same (resource_name,
               entry_type); record RELATED relation on near-overlap
       Tier 2  deferred (LLM SUPERSEDES/CONTRADICTS/SUPPLEMENTS)
-  - Search via techne hybrid recall.
+  - Search via direct FTS5 on the archivist's own table; every query
+    token is quoted, so the query is plain words (cabal#356).
   - Cross-reference edges (RELATED) via memory_relations table.
   - schema() introspection so agents can self-discover the corpus.
 

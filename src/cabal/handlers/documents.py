@@ -95,6 +95,16 @@ class DocumentsConfig:
 class DocumentsHandler:
     default_config: DocumentsConfig = field(default_factory=DocumentsConfig)
 
+    def status(self) -> str | None:
+        """liminal#191: with no default corpus every call without a per-caller
+        documents.db_path is refused, so /healthz says so instead of ready."""
+        if self.default_config.db_path is not None:
+            return None
+        return (
+            "unconfigured: CABAL_LIBRARIAN_DB is unset, so only a per-caller "
+            "documents.db_path can name a corpus"
+        )
+
     def tools(self) -> list[ToolSpec]:
         return [
             ToolSpec(

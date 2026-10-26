@@ -6,6 +6,123 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+### Upgrading
+
+- No database migration since 0.3.2, for cabal's database or the archivist's.
+- litellm is pinned exactly to 1.104.2 (it was `>=1.92`). litellm 1.107.0 shipped a
+  credential stealer on PyPI on 2026-10-21, and an open lower bound let any rebuild take
+  whatever was newest. A litellm bump is now a reviewed line in `pyproject.toml`.
+- Archivist search treats every token as a plain word. `AND`, `OR` and `NOT` used to reach
+  FTS5 as operators when the query held no punctuation, and now match literally; a bare
+  `{...}`, which raised an FTS5 syntax error then, is now plain words too. Tokens are still
+  AND-ed.
+- The archivist handler refuses wrong-typed fields instead of coercing them. `importance`
+  must be a number from 0 to 1, search's `top_k` an integer, `source_thread` a string, and
+  `tags`, `commands` and `refs` lists of strings; only `tags` still takes a comma-separated
+  string. A client that sent a numeric string for `importance` or `top_k` (`"0.5"`, `"5"`),
+  a comma-separated `commands` or `refs`, or an integer `source_thread` now gets a failed
+  call naming the field. `top_k: 0` now returns 1 result; 0.3.2 fell back to 10.
+
+### Added
+
+- The archivist's `archivist.publish` tool takes an optional boolean `supersede`, default
+  false (tenishai/cabal#348). `ArchivistStore.publish` could already retire the entries a
+  new one replaces, but the tool never passed the flag, so over MCP a revised fact stayed
+  active beside the one it replaced. A non-boolean value is refused.
+- **`cbl archivist purge <resource_name>`** (tenishai/cabal#351) hard-deletes every
+  version of an archivist entry, its full-text index rows and its relations, then runs
+  FTS5 `optimize` and `VACUUM` so the text leaves the file. It does a dry run unless
+  given `--apply`. It's for personal data and leaked secrets, and it runs only on the
+  host that holds the database: no MCP tool or route reaches it. To retire an entry
+  that is merely no longer true, supersede it with a tombstone instead.
+- The archivist's publish takes an optional `supersede_scope` (tenishai/cabal#350).
+  `"type"`, the default, keeps today's behavior: a supersede retires active entries with
+  the same `resource_name` and `entry_type`. `"resource"` retires every active entry with
+  the same `resource_name` whatever its type, for writers that use one name per fact and
+  may revise its type (the techne publish lane). Available on `ArchivistStore.publish` and
+  on the `archivist.publish` tool; an unknown value is refused.
+
+### Fixed
+
+- **The archivist, documents, patterns and code handlers say when they are unconfigured**
+  (tenishai/liminal#191). Each refuses every call when it has no corpus, yet liminal's
+  `/healthz` showed them "ready". Each now defines liminal's optional `status()`, which
+  answers e.g. `unconfigured: CABAL_ARCHIVIST_DB is unset, so only a per-caller
+  archivist.db_path can name a corpus`, and `/healthz` shows that instead. The code handler
+  reads no environment variable, so as served by liminal it always reports unconfigured.
+  liminal 0.6.0 is the first release that reads `status()`; it is optional there, so older
+  liminal still loads the handlers and shows them ready, and the `tenish-liminal>=0.4` floor
+  is unchanged.
+- **A re-asserted archivist fact stays active through a gitsync round trip**
+  (tenishai/cabal#367). Publishing A, superseding it with B and re-publishing A with
+  `supersede=True` leaves A active in SQLite, but after `export_corpus` and
+  `materialize_corpus` both came back superseded, because identity is the content hash
+  and the markers point both ways. Materialize now follows the latest marker for each
+  hash. gitsync has no caller in `src/` yet, so this was latent.
+- **Concurrent identical archivist publishes no longer store duplicates**
+  (tenishai/cabal#358). The dedup check, the insert and any supersede ran on separate
+  connections, so identical publishes from two writers both saw no duplicate and both
+  inserted; with `supersede_scope="type"`, simultaneous first publishes left two active
+  rows. A publish now runs on one connection inside `BEGIN IMMEDIATE`, from the check
+  through the insert, the supersede and any RELATED edges, so a second writer waits and
+  then sees the first one's row. One process (today's liminal) was never affected.
+- **Logged exceptions no longer carry frame locals, and logged database URLs hide the
+  password** (tenishai/cabal#370). Neither cabal nor liminal configures structlog, so where
+  rich is installed (the mash1 archivist image has it) `log.exception` rendered every
+  frame's local variables: an archivist failure logged up to 80 characters of each
+  payload string and the context's credentials. The four structlog `log.exception` calls
+  now log the plain traceback text instead (`cabal.core.observability.failures.log_failure`).
+  The `cabal.identity_path` and `cabal.migrations_failed` lines print the database URL with
+  its password replaced by `***`.
+- **Archivist search with `tags` no longer drops matching rows** (tenishai/cabal#362). The
+  tag filter ran in Python after an FTS query limited to `top_k*4`, so with 50 `staging`
+  rows and 1 `production` row matching "cache", `tags=["production"]` returned nothing. Each
+  tag is now a SQL condition, so the limit applies after filtering.
+- **A NUL or a lone surrogate in an archivist search no longer raises** (tenishai/cabal#365).
+  Control characters become spaces and a lone surrogate becomes U+FFFD before the query is
+  quoted; a surrogate pair sent as two code points is joined.
+- **The dedup cache no longer reports a retired entry as the duplicate** (tenishai/cabal#353).
+  After a supersede, re-publishing the retired content in the same process answered
+  `duplicate_l0` with the retired id and stored nothing, so no active entry held it. An L0
+  hit now counts only while its entry is active. With `supersede=True` such a publish
+  re-asserts the content: it becomes a new active entry and retires the current one, as it
+  already did after a restart.
+- Unit CI now runs the archivist handler tests (tenishai/cabal#359). `tests/test_archivist.py`
+  and four other handler test files skipped without liminal, which the unit job can't
+  install, so handler changes merged with their tests never run in CI. A copy of liminal's
+  `protocol` package in `tests/_vendor/` is put on the path when liminal is absent, and
+  `tests/test_vendored_liminal_protocol.py` fails when an installed liminal's protocol
+  differs from the copy. Test files that need liminal's server now skip on `liminal.server`.
+- An archivist supersede that exactly matches an active entry still retires the other
+  active entries in scope (tenishai/cabal#363). It returned `duplicate_l1` before any
+  supersede ran, so when the techne publish lane re-sent an unchanged row with
+  `supersede_scope="resource"`, an entry another writer had added under the same resource
+  stayed active. The matched entry stays active, the outcome is still `duplicate_l0` or
+  `duplicate_l1`, and `related_ids` now lists the entries it retired. `supersede_scope`
+  applies as for any supersede. A match on an entry that is itself retired retires nothing.
+- The archivist handler refuses a wrong-typed field instead of raising (tenishai/cabal#360).
+  `importance: "high"`, `details: 5`, `top_k: "abc"` and similar payloads raised out of
+  `dispatch`, and `source_thread: 7` was stored as an integer. Every optional field of
+  publish and search, and the `archivist.db_path` override, is now type-checked, and the
+  failed call names the field. `importance` must be a number from 0 to 1. `tags`, `commands`
+  and `refs` must be lists of strings (`tags` still takes a comma-separated string);
+  non-string items used to be coerced or dropped. Any other unexpected error is logged and
+  returned as a failed call that names only the exception type. Each call logs one debug line `archivist.call` with the tool,
+  outcome, entry id, resource, `written_by`, error and duration.
+- An archivist publish with `importance: 0` stores 0 (tenishai/cabal#361). The handler
+  read it with `or 1.0`, so 0 became 1.0, the highest importance.
+- Archivist `get` says when an entry is retired (tenishai/cabal#357). The entry now carries
+  `status` (`active` or `superseded`), and the result carries `superseded_by`, the ids of the
+  entries that replaced it. Before, a session that fetched an old id got the retired fact with no
+  sign it had been replaced. `ArchivistStore.superseded_by()` is new.
+- Archivist search no longer fails on ordinary questions (tenishai/cabal#356). The query
+  sanitiser quoted tokens only when the query held one of `"-^*():`, so
+  `what's the build host?`, `mash1.local` or `docker/compose` reached FTS5 as raw syntax
+  and raised `sqlite3.OperationalError`. Every token is now quoted. Tokens are still
+  AND-ed, but `AND`, `OR`, `NOT`, `*`, `^`, `:` and `{}` are now plain words, not
+  operators. The archivist handler also turns any database error into a failed tool
+  call instead of raising.
+
 ## [0.3.2] — 2026-10-13
 
 ### Upgrading

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("liminal")
+pytest.importorskip("liminal.server")
 
 
 from textwrap import dedent

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("liminal")
+pytest.importorskip("liminal.protocol")
 
 from liminal.protocol import Context  # noqa: E402
 
@@ -271,6 +271,57 @@ async def test_handler_publish_then_search(archivist_handler) -> None:
 
 
 @pytest.mark.asyncio
+async def test_handler_search_takes_a_natural_language_question(archivist_handler) -> None:
+    # cabal#356: this raised sqlite3.OperationalError out of dispatch.
+    await archivist_handler.dispatch(
+        "publish",
+        {"resource_name": "mash1", "summary": "The build host is mash1.local.", "entry_type": "fact"},
+        _ctx(),
+    )
+    result = await archivist_handler.dispatch(
+        "search", {"query": "what's the build host?"}, _ctx(),
+    )
+    assert result.is_error is False
+    result = await archivist_handler.dispatch("search", {"query": "mash1.local"}, _ctx())
+    assert [h["resource_name"] for h in result.content[0]["data"]["hits"]] == ["mash1"]
+
+
+@pytest.mark.asyncio
+async def test_handler_database_error_is_a_failure(archivist_handler, monkeypatch) -> None:
+    import sqlite3
+
+    def locked(self, *a, **kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ArchivistStore, "search", locked)
+    result = await archivist_handler.dispatch("search", {"query": "x"}, _ctx())
+    assert result.is_error is True
+    assert "database is locked" in result.error
+
+
+@pytest.mark.asyncio
+async def test_handler_get_marks_a_superseded_entry(archivist_handler) -> None:
+    # cabal#357: get served a retired entry with no status and no pointer
+    # to its replacement.
+    async def publish(summary: str, **extra):
+        result = await archivist_handler.dispatch(
+            "publish",
+            {"resource_name": "mash1", "summary": summary, "entry_type": "fact", **extra},
+            _ctx(),
+        )
+        return result.content[0]["data"]["entry_id"]
+
+    old = await publish("mash1 is at .15")
+    new = await publish("mash1 is at .16", supersede=True)
+
+    got_old = (await archivist_handler.dispatch("get", {"entry_id": old}, _ctx())).content[0]["data"]
+    got_new = (await archivist_handler.dispatch("get", {"entry_id": new}, _ctx())).content[0]["data"]
+
+    assert (got_old["entry"]["status"], got_old["superseded_by"]) == ("superseded", [new])
+    assert (got_new["entry"]["status"], got_new["superseded_by"]) == ("active", [])
+
+
+@pytest.mark.asyncio
 async def test_handler_publish_rejects_unknown_entry_type(archivist_handler) -> None:
     result = await archivist_handler.dispatch(
         "publish",
@@ -325,6 +376,161 @@ async def test_handler_get_returns_entry_with_relations(archivist_handler) -> No
         e["dst_id"] == first_id and e["relation_type"] == "RELATED"
         for e in data["related"]
     )
+
+
+@pytest.mark.asyncio
+async def test_handler_publish_supersede_retires_prior(archivist_handler) -> None:
+    first = await archivist_handler.dispatch(
+        "publish",
+        {"resource_name": "nas-share", "summary": "Mounted at /mnt/a.", "entry_type": "fact"},
+        _ctx(),
+    )
+    first_id = first.content[0]["data"]["entry_id"]
+    second = await archivist_handler.dispatch(
+        "publish",
+        {
+            "resource_name": "nas-share", "summary": "Mounted at /mnt/b.",
+            "entry_type": "fact", "supersede": True,
+        },
+        _ctx(),
+    )
+    data = second.content[0]["data"]
+    assert data["outcome"] == "superseded"
+    assert data["related_ids"] == [first_id]
+
+    hits = (await archivist_handler.dispatch("search", {"query": "Mounted"}, _ctx())).content[0][
+        "data"
+    ]["hits"]
+    assert [h["summary"] for h in hits] == ["Mounted at /mnt/b."]
+
+
+@pytest.mark.asyncio
+async def test_handler_publish_without_supersede_still_links_related(archivist_handler) -> None:
+    # Pins the unchanged default; it passes with or without the supersede flag.
+    await archivist_handler.dispatch(
+        "publish",
+        {"resource_name": "nas-share", "summary": "Mounted at /mnt/a.", "entry_type": "fact"},
+        _ctx(),
+    )
+    second = await archivist_handler.dispatch(
+        "publish",
+        {"resource_name": "nas-share", "summary": "Mounted at /mnt/b.", "entry_type": "fact"},
+        _ctx(),
+    )
+    assert second.content[0]["data"]["outcome"] == "related"
+    hits = (await archivist_handler.dispatch("search", {"query": "Mounted"}, _ctx())).content[0][
+        "data"
+    ]["hits"]
+    assert len(hits) == 2
+
+
+@pytest.mark.asyncio
+async def test_handler_identical_republish_with_supersede_is_a_duplicate(archivist_handler) -> None:
+    args = {"resource_name": "nas-share", "summary": "Mounted at /mnt/a.", "entry_type": "fact"}
+    first = await archivist_handler.dispatch("publish", args, _ctx())
+    again = await archivist_handler.dispatch("publish", {**args, "supersede": True}, _ctx())
+    assert again.content[0]["data"]["outcome"] in ("duplicate_l0", "duplicate_l1")
+    assert again.content[0]["data"]["entry_id"] == first.content[0]["data"]["entry_id"]
+    hits = (await archivist_handler.dispatch("search", {"query": "Mounted"}, _ctx())).content[0][
+        "data"
+    ]["hits"]
+    assert len(hits) == 1
+
+
+@pytest.mark.asyncio
+async def test_handler_duplicate_supersede_reports_what_it_retired(archivist_handler) -> None:
+    # cabal#363: an exact re-publish under supersede left other entries active.
+    async def publish(summary: str, entry_type: str, **extra):
+        result = await archivist_handler.dispatch(
+            "publish",
+            {"resource_name": "nas-share", "summary": summary, "entry_type": entry_type, **extra},
+            _ctx(),
+        )
+        return result.content[0]["data"]
+
+    old = (await publish("Mounted at /mnt/a.", "fact"))["entry_id"]
+    proc = (await publish("Mount it at /mnt/b.", "procedure"))["entry_id"]
+    again = await publish(
+        "Mount it at /mnt/b.", "procedure", supersede=True, supersede_scope="resource"
+    )
+    assert again["outcome"] in ("duplicate_l0", "duplicate_l1")
+    assert (again["entry_id"], again["related_ids"]) == (proc, [old])
+    hits = (await archivist_handler.dispatch("search", {"query": "nas"}, _ctx())).content[0][
+        "data"
+    ]["hits"]
+    assert [h["id"] for h in hits] == [proc]
+
+
+@pytest.mark.asyncio
+async def test_handler_publish_rejects_non_boolean_supersede(archivist_handler) -> None:
+    result = await archivist_handler.dispatch(
+        "publish",
+        {"resource_name": "x", "summary": "y", "entry_type": "fact", "supersede": "yes"},
+        _ctx(),
+    )
+    assert result.is_error is True
+    assert "supersede" in result.error
+
+
+@pytest.mark.asyncio
+async def test_handler_publish_resource_scope_retires_a_different_type(archivist_handler) -> None:
+    first = await archivist_handler.dispatch(
+        "publish",
+        {"resource_name": "nas-share", "summary": "Mounted at /mnt/a.", "entry_type": "fact"},
+        _ctx(),
+    )
+    first_id = first.content[0]["data"]["entry_id"]
+    second = await archivist_handler.dispatch(
+        "publish",
+        {
+            "resource_name": "nas-share", "summary": "Mount it at /mnt/b.",
+            "entry_type": "procedure", "supersede": True, "supersede_scope": "resource",
+        },
+        _ctx(),
+    )
+    data = second.content[0]["data"]
+    assert data["outcome"] == "superseded"
+    assert data["related_ids"] == [first_id]
+    hits = (await archivist_handler.dispatch("search", {"query": "nas"}, _ctx())).content[0][
+        "data"
+    ]["hits"]
+    assert [h["summary"] for h in hits] == ["Mount it at /mnt/b."]
+
+
+@pytest.mark.asyncio
+async def test_handler_publish_default_scope_keeps_a_different_type(archivist_handler) -> None:
+    await archivist_handler.dispatch(
+        "publish",
+        {"resource_name": "nas-share", "summary": "Mounted at /mnt/a.", "entry_type": "fact"},
+        _ctx(),
+    )
+    second = await archivist_handler.dispatch(
+        "publish",
+        {
+            "resource_name": "nas-share", "summary": "Mount it at /mnt/b.",
+            "entry_type": "procedure", "supersede": True,
+        },
+        _ctx(),
+    )
+    assert second.content[0]["data"]["outcome"] == "new"
+    hits = (await archivist_handler.dispatch("search", {"query": "nas"}, _ctx())).content[0][
+        "data"
+    ]["hits"]
+    assert len(hits) == 2
+
+
+@pytest.mark.asyncio
+async def test_handler_publish_rejects_unknown_supersede_scope(archivist_handler) -> None:
+    result = await archivist_handler.dispatch(
+        "publish",
+        {
+            "resource_name": "x", "summary": "y", "entry_type": "fact",
+            "supersede": True, "supersede_scope": "everything",
+        },
+        _ctx(),
+    )
+    assert result.is_error is True
+    assert "supersede_scope" in result.error
 
 
 @pytest.mark.asyncio
@@ -402,3 +608,118 @@ async def test_get_handler_reads_env_db_path(monkeypatch, tmp_path: Path) -> Non
     assert get_handler().default_config.db_path is None
     monkeypatch.delenv("CABAL_ARCHIVIST_DB", raising=False)
     assert get_handler().default_config.db_path is None
+
+
+# ---- #360 / #361: payload validation, importance 0, call logging -----------
+
+_BASE = {"resource_name": "nas-share", "summary": "Mounted at /mnt/a.", "entry_type": "fact"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("importance", "high"),
+        ("importance", [1]),
+        ("importance", True),
+        ("importance", 1.5),
+        ("importance", -0.1),
+        ("importance", float("nan")),
+        ("details", 5),
+        ("details", {"a": 1}),
+        ("gotchas", ["x"]),
+        ("source_thread", 7),
+        ("tags", [1]),
+        ("tags", {"a": 1}),
+        ("commands", "make test, make lint"),
+        ("commands", [1]),
+        ("refs", [None]),
+    ],
+)
+async def test_handler_publish_refuses_a_wrong_typed_field(
+    archivist_handler, field_name, value
+) -> None:
+    # cabal#360: these raised out of dispatch, or were stored as given.
+    result = await archivist_handler.dispatch(
+        "publish", {**_BASE, field_name: value}, _ctx(),
+    )
+    assert result.is_error is True
+    assert f"'{field_name}'" in result.error
+    assert "internal error" not in result.error  # a validation failure, not a crash
+    schema = (await archivist_handler.dispatch("schema", {}, _ctx())).content[0]["data"]
+    assert schema["counts"]["total_active"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("sent", "stored"), [(0, 0.0), (0.0, 0.0), (None, 1.0), (1, 1.0), (0.4, 0.4)])
+async def test_handler_publish_keeps_importance(archivist_handler, sent, stored) -> None:
+    # cabal#361: `importance or 1.0` stored 0 as 1.0.
+    payload = dict(_BASE) if sent is None else {**_BASE, "importance": sent}
+    pub = await archivist_handler.dispatch("publish", payload, _ctx())
+    entry_id = pub.content[0]["data"]["entry_id"]
+    got = await archivist_handler.dispatch("get", {"entry_id": entry_id}, _ctx())
+    assert got.content[0]["data"]["entry"]["importance"] == stored
+
+
+@pytest.mark.asyncio
+async def test_handler_publish_still_takes_comma_separated_tags(archivist_handler) -> None:
+    pub = await archivist_handler.dispatch(
+        "publish", {**_BASE, "tags": "nas, storage", "commands": ["mount -a"]}, _ctx(),
+    )
+    entry_id = pub.content[0]["data"]["entry_id"]
+    entry = (await archivist_handler.dispatch("get", {"entry_id": entry_id}, _ctx())).content[0][
+        "data"
+    ]["entry"]
+    assert (entry["tags"], entry["commands"]) == (["nas", "storage"], ["mount -a"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field_name", "value"), [("top_k", "abc"), ("top_k", 2.5), ("top_k", True), ("tags", [3])]
+)
+async def test_handler_search_refuses_a_wrong_typed_field(
+    archivist_handler, field_name, value
+) -> None:
+    result = await archivist_handler.dispatch(
+        "search", {"query": "nas", field_name: value}, _ctx(),
+    )
+    assert result.is_error is True
+    assert f"'{field_name}'" in result.error
+
+
+@pytest.mark.asyncio
+async def test_handler_refuses_a_non_string_db_path_override(archivist_handler) -> None:
+    ctx = Context(identity="x", agent_name="x", credentials={}, extra={"archivist.db_path": 5})
+    result = await archivist_handler.dispatch("schema", {}, ctx)
+    assert result.is_error is True
+    assert "archivist.db_path" in result.error
+
+
+@pytest.mark.asyncio
+async def test_handler_unexpected_error_is_a_failure(archivist_handler, monkeypatch) -> None:
+    def boom(self):
+        raise FileExistsError(17, "File exists", "/srv/secret-corpus")
+
+    monkeypatch.setattr(ArchivistStore, "schema", boom)
+    result = await archivist_handler.dispatch("schema", {}, _ctx())
+    assert result.is_error is True
+    assert result.error == "archivist.schema: internal error: FileExistsError"
+    assert "/srv/secret-corpus" not in result.error
+
+
+@pytest.mark.asyncio
+async def test_handler_logs_one_line_per_call(archivist_handler) -> None:
+    from structlog.testing import capture_logs
+
+    with capture_logs() as logs:
+        pub = await archivist_handler.dispatch("publish", _BASE, _ctx())
+        await archivist_handler.dispatch("search", {"query": "nas", "top_k": "x"}, _ctx())
+    calls = [e for e in logs if e["event"] == "archivist.call"]
+    assert len(calls) == 2
+    ok, failed = calls
+    assert ok["log_level"] == "debug"
+    assert (ok["tool"], ok["outcome"], ok["resource"]) == ("publish", "new", "nas-share")
+    assert ok["entry_id"] == pub.content[0]["data"]["entry_id"]
+    assert isinstance(ok["duration_ms"], float)
+    assert (failed["tool"], failed["outcome"]) == ("search", "failure")
+    assert "top_k" in failed["error"]

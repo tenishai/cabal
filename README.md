@@ -98,6 +98,12 @@ importable (`pip install tenish-cabal[memory]`):
   nothing to index and rejects any named repo as unknown. The codex is a db per repo, which one path cannot address;
   the design is still open in #129.
 
+With liminal 0.6.0 or later, `/healthz` shows each of these handlers as
+`unconfigured`, with the reason, until its default corpus is set (the code
+handler always shows it, since it reads no env var). Older liminal ignores
+the handlers' `status()` and shows them `ready`. The tools stay listed either
+way, because a persona's `tool_extras` can still name a corpus.
+
 ## Quickstart (development)
 
 **Prerequisites**: Python 3.12 or newer, `git`, and on Debian/Ubuntu
@@ -364,6 +370,36 @@ takes an explicit `--purge-secrets`.
 
 If the daemon starts but dispatch fails with `No key for kid`, the saved token
 was signed by a key that no longer exists: run `cbl login --code <CODE>` again.
+
+## Removing an archivist entry (`cbl archivist purge`)
+
+To stop serving an entry that is no longer true, publish a tombstone that
+supersedes it through `archivist.publish` (`supersede: true`; add
+`supersede_scope: "resource"` to retire the name's entries of every type).
+The old row stays in the table for audit, and search stops returning it.
+
+When the text must not be stored at all (personal data, a leaked secret), purge
+it on the host that holds the database. For the mash1 container, that's
+`docker exec -it archivist cbl archivist purge <resource_name>`:
+
+```sh
+cbl archivist purge <resource_name>            # dry run: lists every version
+cbl archivist purge <resource_name> --apply    # deletes
+```
+
+The name must match exactly. `--db` names the database file and defaults to
+`$CABAL_ARCHIVIST_DB`. `--apply` deletes every version of the entry, whatever
+its status or type, together with its full-text index rows and every relation
+that touches it. It then runs the FTS5 `optimize` and `VACUUM`, so the text
+leaves the index and the file. If `--apply` fails after the delete, re-running
+it finishes that cleanup. The output and the log carry ids, types, statuses and
+content hashes, never the entry's text.
+
+No MCP tool or HTTP route can reach this command. A writer that still holds the
+fact (for example a techne row tagged `team`) will publish it again, so remove
+it there first. If the corpus is mirrored with gitsync, also delete
+`entries/<content_hash>.json` from the memory repo; git history keeps it until
+that history is rewritten.
 
 ## Seeing the fleet (`cbl status`)
 

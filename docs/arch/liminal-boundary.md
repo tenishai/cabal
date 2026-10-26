@@ -1,10 +1,10 @@
 ---
 card: arch-card:cabal-liminal-boundary
-updated: 2026-10-22
+updated: 2026-10-25
 anchor: src/cabal/core/tools/mcp_proxy.py sha=4623908dbaddc1f2ba1688ddad9834fa73f1d5a1
 anchor: src/cabal/core/persona_factory.py sha=e1825f818414b99c8b2d60f46f21a6792230f534
 anchor: src/cabal/handlers/__init__.py sha=2e5f64bd92cf389a3ccaffb7bf7c44fdeef49580
-anchor: pyproject.toml sha=ed44a8a2c200a05004366093f370121b82523aac
+anchor: pyproject.toml sha=465403f5284d0daf4a0b5cbd0bbc76f85a329099
 ---
 # liminal-boundary — cabal ↔ liminal (MCP gateway), three directions
 

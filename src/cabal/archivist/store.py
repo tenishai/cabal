@@ -12,11 +12,14 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from cabal.archivist.dedup import Dedupper, make_related_edges
 from cabal.archivist.models import Entry, Relation
 from cabal.archivist.schema import connect, init_db
+
+SupersedeScope = Literal["type", "resource"]
+SUPERSEDE_SCOPES: tuple[str, ...] = ("type", "resource")
 
 
 @dataclass(slots=True)
@@ -43,7 +46,13 @@ class ArchivistStore:
 
     # ---- write path -------------------------------------------------------
 
-    def publish(self, entry: Entry, *, supersede: bool = False) -> PublishResult:
+    def publish(
+        self,
+        entry: Entry,
+        *,
+        supersede: bool = False,
+        supersede_scope: SupersedeScope = "type",
+    ) -> PublishResult:
         """Write an entry through the dedup pipeline.
 
         Args:
@@ -54,53 +63,90 @@ class ArchivistStore:
                 Since ``search`` is active-only, latest-wins falls out for free.
                 Deterministic, no LLM (agent-model design §5e). Default False
                 preserves the RELATED-linking behavior.
+            supersede_scope: which priors a supersede retires. ``"type"`` (the
+                default) retires only same (resource_name, entry_type) entries,
+                so one resource can hold a fact, a decision and a procedure side
+                by side. ``"resource"`` retires every active entry with the same
+                resource_name whatever its type, for writers that use one name
+                per fact and may revise its type (#350). It has no effect when
+                ``supersede`` is False, but an unknown value raises
+                ``ValueError`` either way.
 
         Returns:
             PublishResult.outcome:
               new           — entry was written; first time we've seen this content
               duplicate_l0  — content matched an in-memory cache hit; no write
               duplicate_l1  — content matched an active DB row; no write
+                              With supersede=True a duplicate still retires
+                              the OTHER active entries in scope, keeping the
+                              matched entry as the current one (#363);
+                              related_ids holds the ids it retired.
               related       — entry was written AND linked to overlapping entries
                               via RELATED edges (Tier 1).
               superseded    — entry was written AND it retired prior same-resource
                               active entries (supersede=True); related_ids holds
                               the now-superseded ids.
         """
-        result = self._dedup.check(entry)
-
-        if result.outcome in ("duplicate_l0", "duplicate_l1"):
-            assert result.entry_id is not None
-            return PublishResult(
-                outcome=result.outcome,
-                entry_id=result.entry_id,
-                related_ids=[],
+        if supersede_scope not in SUPERSEDE_SCOPES:
+            raise ValueError(
+                f"supersede_scope must be one of {list(SUPERSEDE_SCOPES)}; got {supersede_scope!r}"
             )
 
-        if supersede and result.outcome == "related":
-            # Insert the new entry AND retire EVERY active prior sharing its
-            # (resource_name, entry_type) in ONE transaction (#27) — never
-            # leaving two 'current' entries or a half-applied supersession, and
-            # not capped by the dedup LIMIT-5 sample.
-            conn = connect(self.db_path)
-            try:
-                self._insert(entry, conn=conn)
-                superseded_ids = self._supersede_all(entry, conn)
+        # ONE write transaction from the dedup check through the insert and any
+        # supersede (#358). The check, the insert and the retirements used to run
+        # on separate connections, so identical publishes racing from two writers
+        # both saw no duplicate and both inserted: 8 processes x 30 rounds left
+        # 30 hashes with more than one active row. BEGIN IMMEDIATE takes the
+        # write lock before the first read, so a second writer waits and then
+        # sees the first one's row.
+        conn = connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            result = self._dedup.check(entry, conn=conn)
+
+            if result.outcome in ("duplicate_l0", "duplicate_l1"):
+                assert result.entry_id is not None
+                retired = (
+                    self._supersede_from_match(result.entry_id, supersede_scope, conn)
+                    if supersede
+                    else []
+                )
                 conn.commit()
-            finally:
-                conn.close()
-            self._dedup.record_new(entry)
-            return PublishResult(
-                outcome="superseded",
-                entry_id=entry.id,
-                related_ids=superseded_ids,
-            )
+                return PublishResult(
+                    outcome=result.outcome,
+                    entry_id=result.entry_id,
+                    related_ids=retired,
+                )
 
-        self._insert(entry)
+            # Dedup's Tier-1 overlap only sees same-type priors, so with resource
+            # scope a different-type prior arrives as "new" and still has to be
+            # looked up here.
+            if supersede and (result.outcome == "related" or supersede_scope == "resource"):
+                # Insert the new entry AND retire EVERY active prior in scope in ONE
+                # transaction (#27) — never leaving two 'current' entries or a
+                # half-applied supersession, and not capped by the dedup LIMIT-5
+                # sample.
+                self._insert(entry, conn=conn)
+                superseded_ids = self._supersede_all(entry, conn, scope=supersede_scope)
+                conn.commit()
+                self._dedup.record_new(entry)
+                return PublishResult(
+                    outcome="superseded" if superseded_ids else "new",
+                    entry_id=entry.id,
+                    related_ids=superseded_ids,
+                )
+
+            self._insert(entry, conn=conn)
+            if result.outcome == "related" and result.related_ids:
+                edges = make_related_edges(entry.id, result.related_ids)
+                self._insert_relations(edges, conn=conn)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
         self._dedup.record_new(entry)
-
-        if result.outcome == "related" and result.related_ids:
-            edges = make_related_edges(entry.id, result.related_ids)
-            self._insert_relations(edges)
 
         return PublishResult(
             outcome=result.outcome,
@@ -154,10 +200,15 @@ class ArchivistStore:
             if owned:
                 conn.close()
 
-    def _insert_relations(self, relations: list[Relation]) -> None:
+    def _insert_relations(
+        self, relations: list[Relation], conn: sqlite3.Connection | None = None
+    ) -> None:
+        """Insert edges. With `conn` the caller owns the transaction."""
         if not relations:
             return
-        conn = connect(self.db_path)
+        owned = conn is None
+        if conn is None:
+            conn = connect(self.db_path)
         try:
             for rel in relations:
                 conn.execute(
@@ -172,25 +223,53 @@ class ArchivistStore:
                         rel.created_at or datetime.now(UTC).isoformat(),
                     ),
                 )
-            conn.commit()
+            if owned:
+                conn.commit()
         finally:
-            conn.close()
+            if owned:
+                conn.close()
 
-    def _supersede_all(self, entry: Entry, conn: sqlite3.Connection) -> list[str]:
+    def _supersede_from_match(
+        self, match_id: str, scope: SupersedeScope, conn: sqlite3.Connection
+    ) -> list[str]:
+        """A supersede that exactly matches an active entry still means "this
+        is the current truth" (#363): retire the other active entries in
+        `scope`, with the matched entry as the survivor. The active check and
+        the retirements share one write transaction. Dedup reports only active
+        matches (#353), so a match that is no longer active here was retired by
+        another writer after the check; it retires nothing. Runs on the caller's
+        connection, inside publish's write transaction (#358). Returns the
+        retired ids."""
+        row = conn.execute(
+            "SELECT * FROM memory_entries WHERE id=? AND status='active'", (match_id,)
+        ).fetchone()
+        if row is None:
+            return []
+        return self._supersede_all(Entry.from_row(dict(row)), conn, scope=scope)
+
+    def _supersede_all(
+        self, entry: Entry, conn: sqlite3.Connection, *, scope: SupersedeScope = "type"
+    ) -> list[str]:
         """Within the caller's transaction (no commit here), retire EVERY active
-        entry sharing `entry`'s (resource_name, entry_type) — except `entry`
-        itself — flipping status to 'superseded' and recording a SUPERSEDES edge
+        entry sharing `entry`'s (resource_name, entry_type) — or just its
+        resource_name when `scope` is "resource" (#350) — except `entry` itself,
+        flipping status to 'superseded' and recording a SUPERSEDES edge
         new -> prior. Unbounded: queries all priors directly, not the dedup
         LIMIT-5 overlap sample (#27). Returns the superseded ids."""
         now = datetime.now(UTC).isoformat()
-        priors = [
-            r["id"]
-            for r in conn.execute(
+        if scope == "resource":
+            sql = (
                 "SELECT id FROM memory_entries "
-                "WHERE resource_name=? AND entry_type=? AND status='active' AND id != ?",
-                (entry.resource_name, entry.entry_type, entry.id),
-            ).fetchall()
-        ]
+                "WHERE resource_name=? AND status='active' AND id != ?"
+            )
+            params: tuple[str, ...] = (entry.resource_name, entry.id)
+        else:
+            sql = (
+                "SELECT id FROM memory_entries "
+                "WHERE resource_name=? AND entry_type=? AND status='active' AND id != ?"
+            )
+            params = (entry.resource_name, entry.entry_type, entry.id)
+        priors = [r["id"] for r in conn.execute(sql, params).fetchall()]
         for prior in priors:
             conn.execute(
                 "UPDATE memory_entries SET status='superseded', updated_at=? "
@@ -234,8 +313,14 @@ class ArchivistStore:
         if entry_type is not None:
             sql.append("  AND e.entry_type = ?")
             params.append(entry_type)
+        # Tags filter in SQL, before the LIMIT (#362). Filtering in Python after an
+        # over-fetch of top_k*4 returned nothing when the matching rows ranked
+        # below that many rows with other tags.
+        for tag in tags or []:
+            sql.append("  AND EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)")
+            params.append(tag)
         sql.append("ORDER BY bm25(memory_entries_fts) LIMIT ?")
-        params.append(top_k * 4 if tags else top_k)  # over-fetch when tag-filtering
+        params.append(top_k)
 
         conn = connect(self.db_path)
         try:
@@ -243,15 +328,7 @@ class ArchivistStore:
         finally:
             conn.close()
 
-        out: list[Entry] = []
-        for raw_row in rows:
-            entry = Entry.from_row(dict(raw_row))
-            if tags is not None and not all(t in entry.tags for t in tags):
-                continue
-            out.append(entry)
-            if len(out) >= top_k:
-                break
-        return out
+        return [Entry.from_row(dict(raw_row)) for raw_row in rows]
 
     def get(self, entry_id: str) -> Entry | None:
         conn = connect(self.db_path)
@@ -281,6 +358,23 @@ class ArchivistStore:
             }
             for r in rows
         ]
+
+    def superseded_by(self, entry_id: str) -> list[str]:
+        """Ids of the entries that superseded this one: the sources of
+        SUPERSEDES edges pointing at it, oldest first. Empty for an entry
+        nothing has replaced. One hop only; a successor that was itself
+        superseded has its own `superseded_by`."""
+        conn = connect(self.db_path)
+        try:
+            rows = conn.execute(
+                """SELECT src_id FROM memory_relations
+                   WHERE dst_id = ? AND relation_type = 'SUPERSEDES'
+                   ORDER BY created_at, src_id""",
+                (entry_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [r["src_id"] for r in rows]
 
     # ---- introspection ----------------------------------------------------
 
@@ -331,15 +425,25 @@ class ArchivistStore:
 # ---- internals ------------------------------------------------------------
 
 
-_FTS_SPECIAL = '"-^*():'
-
-
 def _sanitize_fts(query: str) -> str:
-    """Strip FTS5-special chars; bare tokens are fine."""
-    query = query.strip()
-    if not query:
-        return ""
-    if any(c in query for c in _FTS_SPECIAL):
-        tokens = [t.replace('"', '""') for t in query.split() if t.strip()]
-        return " ".join(f'"{t}"' for t in tokens) if tokens else ""
-    return query
+    """Quote every whitespace-separated token as an FTS5 string.
+
+    FTS5 barewords allow only letters, digits, ``_`` and non-ASCII, so
+    ``mash1.local`` or ``host?`` left bare is a syntax error (cabal#356).
+    Quoted, each token is plain text: the tokenizer splits ``mash1.local``
+    into the phrase ``mash1 local``, and ``AND``/``OR``/``NOT``, ``*``,
+    ``^``, ``:`` and ``{}`` lose their operator meaning. Tokens are still
+    implicitly AND-ed, as bare words were.
+
+    Control characters (NUL included) become spaces, because FTS5's parser stops
+    at a NUL inside a quoted token and raises "unterminated string", and a lone
+    surrogate becomes U+FFFD, because sqlite3 can't encode one to bind it
+    (#365). A surrogate pair held as two code points is joined into one
+    character.
+    """
+    return " ".join('"' + t.replace('"', '""') + '"' for t in _clean_query(query).split())
+
+
+def _clean_query(query: str) -> str:
+    text = query.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    return "".join(" " if ord(c) < 32 or ord(c) == 127 else c for c in text)

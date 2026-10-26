@@ -11,7 +11,9 @@ Cabal-shipped liminal handler. Four tools:
     or required tags.
 
   archivist.get(entry_id)
-    Fetch one entry by id, with its outbound RELATED edges.
+    Fetch one entry by id, with its outbound edges, its `status` (active
+    or superseded) and `superseded_by`, the ids of the entries that
+    replaced it.
 
   archivist.schema()
     Return the corpus self-discovery payload — entry_type catalog,
@@ -32,6 +34,8 @@ Deferred from MVP (covered in cabal/archivist/__init__.py docstring):
 from __future__ import annotations
 
 import os
+import sqlite3
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,6 +44,8 @@ import structlog
 from liminal.protocol import Context, Handler, ToolResult, ToolSpec
 
 from cabal.archivist import ArchivistStore, Entry
+from cabal.archivist.store import SUPERSEDE_SCOPES
+from cabal.core.observability.failures import log_failure
 
 log = structlog.get_logger(__name__)
 
@@ -54,7 +60,7 @@ CARD = {
     "tools": [
         {"name": "publish", "description": "Write an entry through the dedup pipeline."},
         {"name": "search", "description": "Search the team-memory corpus."},
-        {"name": "get", "description": "Fetch one entry by id (with edges)."},
+        {"name": "get", "description": "Fetch one entry by id (with edges, status and superseded_by)."},
         {"name": "schema", "description": "Self-discovery: types, counts, fields."},
     ],
     "activation": "always",
@@ -88,6 +94,16 @@ class ArchivistConfig:
 @dataclass
 class ArchivistHandler:
     default_config: ArchivistConfig = field(default_factory=ArchivistConfig)
+
+    def status(self) -> str | None:
+        """liminal#191: with no default corpus every call without a per-caller
+        archivist.db_path is refused, so /healthz says so instead of ready."""
+        if self.default_config.db_path is not None:
+            return None
+        return (
+            "unconfigured: CABAL_ARCHIVIST_DB is unset, so only a per-caller "
+            "archivist.db_path can name a corpus"
+        )
 
     def tools(self) -> list[ToolSpec]:
         return [
@@ -130,6 +146,29 @@ class ArchivistHandler:
                             "type": "number", "minimum": 0.0, "maximum": 1.0,
                         },
                         "source_thread": {"type": "string"},
+                        "supersede": {
+                            "type": "boolean",
+                            "description": (
+                                "When active entries share this resource_name "
+                                "and entry_type, retire them instead of linking "
+                                "them RELATED (the default). An identical "
+                                "re-publish writes nothing; with supersede it "
+                                "still retires the other active entries in "
+                                "scope and lists them in related_ids."
+                            ),
+                        },
+                        "supersede_scope": {
+                            "type": "string",
+                            "enum": list(SUPERSEDE_SCOPES),
+                            "description": (
+                                "Which entries a supersede retires. 'type' (the "
+                                "default): same resource_name and entry_type. "
+                                "'resource': every active entry with this "
+                                "resource_name, whatever its type, for writers "
+                                "that use one name per fact. No effect without "
+                                "supersede; an unknown value is refused either way."
+                            ),
+                        },
                     },
                     "required": ["resource_name", "summary", "entry_type"],
                 },
@@ -157,7 +196,11 @@ class ArchivistHandler:
             ),
             ToolSpec(
                 name="get",
-                description="Fetch one entry + its outbound edges.",
+                description=(
+                    "Fetch one entry by id, with its outbound edges. The entry's "
+                    "`status` is `active` or `superseded`; a superseded entry is "
+                    "retired, and `superseded_by` lists the ids that replaced it."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {"entry_id": {"type": "string"}},
@@ -177,23 +220,46 @@ class ArchivistHandler:
     async def dispatch(
         self, name: str, payload: dict[str, Any], ctx: Context
     ) -> ToolResult:
-        db_path = self._resolve_db_path(ctx)
-        if db_path is None:
-            return ToolResult.failure(
-                "no archivist corpus configured: set CABAL_ARCHIVIST_DB, "
-                "default_config.db_path, or pass ctx.extra['archivist.db_path']"
-            )
+        started = time.monotonic()
+        result = self._dispatch(name, payload, ctx)
+        _log_call(name, payload, ctx, result, started)
+        return result
 
-        store = ArchivistStore(db_path)
+    def _dispatch(
+        self, name: str, payload: dict[str, Any], ctx: Context
+    ) -> ToolResult:
+        # Every path returns a ToolResult; nothing raises out of dispatch
+        # (cabal#360).
+        try:
+            db_path = self._resolve_db_path(ctx)
+            if db_path is None:
+                return ToolResult.failure(
+                    "no archivist corpus configured: set CABAL_ARCHIVIST_DB, "
+                    "default_config.db_path, or pass ctx.extra['archivist.db_path']"
+                )
 
-        if name == "publish":
-            return self._publish(store, payload, ctx)
-        if name == "search":
-            return self._search(store, payload)
-        if name == "get":
-            return self._get(store, payload)
-        if name == "schema":
-            return ToolResult.json(store.schema())
+            store = ArchivistStore(db_path)
+
+            if name == "publish":
+                return self._publish(store, payload, ctx)
+            if name == "search":
+                return self._search(store, payload)
+            if name == "get":
+                return self._get(store, payload)
+            if name == "schema":
+                return ToolResult.json(store.schema())
+        except _InvalidField as exc:
+            return ToolResult.failure(str(exc))
+        except sqlite3.Error as exc:
+            # A database error is a failed call, not a crash (cabal#356).
+            log.warning("archivist.db_error", tool=name, error=str(exc))
+            return ToolResult.failure(f"archivist.{name}: database error: {exc}")
+        except Exception as exc:
+            # The message stays in the log: it can hold server paths, as an
+            # OSError from init_db does. The caller gets the type only, as
+            # liminal's LocalDispatcher gives it.
+            log_failure(log, "archivist.unexpected_error", tool=name)
+            return ToolResult.failure(f"archivist.{name}: internal error: {type(exc).__name__}")
         return ToolResult.failure(f"unknown tool {name!r}")
 
     # ---- tools ---------------------------------------------------------
@@ -215,21 +281,32 @@ class ArchivistHandler:
                 f"got {entry_type!r}"
             )
 
+        supersede = payload.get("supersede", False)
+        if not isinstance(supersede, bool):
+            return ToolResult.failure("'supersede' must be a boolean")
+
+        supersede_scope = payload.get("supersede_scope", "type")
+        if supersede_scope not in SUPERSEDE_SCOPES:
+            return ToolResult.failure(
+                f"'supersede_scope' must be one of {list(SUPERSEDE_SCOPES)}; "
+                f"got {supersede_scope!r}"
+            )
+
         entry = Entry(
             resource_name=payload["resource_name"].strip(),
             summary=payload["summary"].strip(),
             entry_type=entry_type,
-            tags=_as_str_list(payload.get("tags")),
-            details=payload.get("details"),
-            gotchas=payload.get("gotchas"),
-            commands=_as_str_list(payload.get("commands")),
-            refs=_as_str_list(payload.get("refs")),
-            importance=float(payload.get("importance") or 1.0),
-            source_thread=payload.get("source_thread"),
+            tags=_str_list(payload, "tags", allow_csv=True),
+            details=_opt_str(payload, "details"),
+            gotchas=_opt_str(payload, "gotchas"),
+            commands=_str_list(payload, "commands"),
+            refs=_str_list(payload, "refs"),
+            importance=_importance(payload),
+            source_thread=_opt_str(payload, "source_thread"),
             written_by=ctx.identity or "unknown",
         )
 
-        result = store.publish(entry)
+        result = store.publish(entry, supersede=supersede, supersede_scope=supersede_scope)
         return ToolResult.json({
             "outcome": result.outcome,
             "entry_id": result.entry_id,
@@ -248,9 +325,8 @@ class ArchivistHandler:
                 f"'entry_type' must be one of {list(_VALID_ENTRY_TYPES)}; "
                 f"got {entry_type!r}"
             )
-        tags = _as_str_list(payload.get("tags")) or None
-        top_k = int(payload.get("top_k") or self.default_config.default_top_k)
-        top_k = max(1, min(top_k, 50))
+        tags = _str_list(payload, "tags", allow_csv=True) or None
+        top_k = _top_k(payload, self.default_config.default_top_k)
 
         hits = store.search(
             query, entry_type=entry_type, tags=tags, top_k=top_k,
@@ -270,15 +346,23 @@ class ArchivistHandler:
         if entry is None:
             return ToolResult.failure(f"no entry with id {entry_id!r}")
         relations = store.list_related(entry_id)
+        # A retired entry is still served by id, so say it is retired and
+        # what replaced it (issue #357). Search already hides it.
         return ToolResult.json({
             "entry": _entry_to_dict(entry),
             "related": relations,
+            "superseded_by": store.superseded_by(entry_id),
         })
 
     def _resolve_db_path(self, ctx: Context) -> Path | None:
         override = ctx.extra.get("archivist.db_path")
         if not override:
             return self.default_config.db_path
+        if not isinstance(override, str):
+            raise _InvalidField(
+                "ctx.extra['archivist.db_path'] must be a string; "
+                f"got {type(override).__name__}"
+            )
         candidate = Path(override).expanduser()
         if any(part == ".." for part in candidate.parts):
             log.warning(
@@ -304,14 +388,81 @@ def get_handler() -> Handler:
 # ---- helpers ------------------------------------------------------------
 
 
-def _as_str_list(value: Any) -> list[str]:
+class _InvalidField(ValueError):
+    """A payload field has the wrong type or value. The message names the
+    field and becomes the ToolResult failure (cabal#360)."""
+
+
+def _opt_str(payload: dict[str, Any], name: str) -> str | None:
+    value = payload.get(name)
+    if value is None or isinstance(value, str):
+        return value
+    raise _InvalidField(f"'{name}' must be a string; got {type(value).__name__}")
+
+
+def _str_list(payload: dict[str, Any], name: str, *, allow_csv: bool = False) -> list[str]:
+    """A list of strings. With ``allow_csv`` (tags only) a comma-separated
+    string is also accepted, as before; commands and refs are never split,
+    since a command may hold a comma."""
+    value = payload.get(name)
     if value is None:
         return []
-    if isinstance(value, list):
-        return [str(x) for x in value if isinstance(x, (str, int, float))]
-    if isinstance(value, str):
+    if allow_csv and isinstance(value, str):
         return [t.strip() for t in value.split(",") if t.strip()]
-    return []
+    if isinstance(value, list) and all(isinstance(x, str) for x in value):
+        return list(value)
+    raise _InvalidField(f"'{name}' must be a list of strings")
+
+
+def _importance(payload: dict[str, Any]) -> float:
+    """None -> 1.0. NOT ``or 1.0``, which turns 0 into 1.0 (cabal#361)."""
+    value = payload.get("importance")
+    if value is None:
+        return 1.0
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _InvalidField(
+            f"'importance' must be a number from 0 to 1; got {type(value).__name__}"
+        )
+    if not 0.0 <= value <= 1.0:  # also refuses NaN
+        raise _InvalidField(f"'importance' must be a number from 0 to 1; got {value!r}")
+    return float(value)
+
+
+def _top_k(payload: dict[str, Any], default: int) -> int:
+    value = payload.get("top_k")
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _InvalidField(f"'top_k' must be an integer; got {type(value).__name__}")
+    return max(1, min(value, 50))
+
+
+def _log_call(
+    name: str, payload: Any, ctx: Context, result: ToolResult, started: float
+) -> None:
+    """One debug line per call: tool, outcome, entry id, resource, written_by, error, duration."""
+    outcome = "failure" if result.is_error else "ok"
+    entry_id = resource = None
+    data: Any = result.content[0].get("data") if result.content else None
+    if isinstance(data, dict):
+        outcome = data.get("outcome", outcome)
+        entry_id = data.get("entry_id")
+        if isinstance(data.get("entry"), dict):
+            entry_id = data["entry"].get("id")
+            resource = data["entry"].get("resource_name")
+    if isinstance(payload, dict):
+        entry_id = entry_id or payload.get("entry_id")
+        resource = resource or payload.get("resource_name")
+    log.debug(
+        "archivist.call",
+        tool=name,
+        outcome=outcome,
+        entry_id=entry_id,
+        resource=resource,
+        written_by=ctx.identity,
+        error=result.error,
+        duration_ms=round((time.monotonic() - started) * 1000, 1),
+    )
 
 
 def _entry_to_dict(entry: Entry) -> dict[str, Any]:
@@ -320,6 +471,7 @@ def _entry_to_dict(entry: Entry) -> dict[str, Any]:
         "resource_name": entry.resource_name,
         "summary": entry.summary,
         "entry_type": entry.entry_type,
+        "status": entry.status,
         "tags": entry.tags,
         "details": entry.details,
         "gotchas": entry.gotchas,

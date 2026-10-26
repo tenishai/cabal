@@ -88,6 +88,16 @@ class PatternsConfig:
 class PatternsHandler:
     default_config: PatternsConfig = field(default_factory=PatternsConfig)
 
+    def status(self) -> str | None:
+        """liminal#191: with no default corpus every call without a per-caller
+        patterns.db_path is refused, so /healthz says so instead of ready."""
+        if self.default_config.db_path is not None:
+            return None
+        return (
+            "unconfigured: CABAL_ARCHITECT_DB is unset, so only a per-caller "
+            "patterns.db_path can name a corpus"
+        )
+
     def tools(self) -> list[ToolSpec]:
         return [
             ToolSpec(
