@@ -98,6 +98,12 @@ importable (`pip install tenish-cabal[memory]`):
   nothing to index and rejects any named repo as unknown. The codex is a db per repo, which one path cannot address;
   the design is still open in #129.
 
+With liminal 0.6.0 or later, `/healthz` shows each of these handlers as
+`unconfigured`, with the reason, until its default corpus is set (the code
+handler always shows it, since it reads no env var). Older liminal ignores
+the handlers' `status()` and shows them `ready`. The tools stay listed either
+way, because a persona's `tool_extras` can still name a corpus.
+
 ## Quickstart (development)
 
 **Prerequisites**: Python 3.12 or newer, `git`, and on Debian/Ubuntu
@@ -368,7 +374,8 @@ was signed by a key that no longer exists: run `cbl login --code <CODE>` again.
 ## Removing an archivist entry (`cbl archivist purge`)
 
 To stop serving an entry that is no longer true, publish a tombstone that
-supersedes it through `archivist.publish`. The old row stays in the table for
+supersedes it through `archivist.publish` (`supersede: true`; add
+`supersede_scope: "resource"` to retire the name's entries of every type). The old row stays in the table for
 audit, and search stops returning it.
 
 When the text must not be stored at all (personal data, a leaked secret), purge

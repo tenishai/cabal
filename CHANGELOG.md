@@ -6,8 +6,22 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+### Upgrading
+
+- No database migration since 0.3.2, for cabal's database or the archivist's.
+- Archivist search treats every token as a plain word. `AND`, `OR`, `NOT`, `*`, `^`, `:`
+  and `{}` used to reach FTS5 as operators and now match literally; tokens are still AND-ed.
+- The archivist handler refuses wrong-typed fields instead of coercing them: `importance`
+  must be a number from 0 to 1, and `tags`, `commands` and `refs` lists of strings (`tags`
+  still takes a comma-separated string). A client that sent `importance: "high"` or
+  numeric tags now gets a failed call naming the field.
+
 ### Added
 
+- The archivist's `archivist.publish` tool takes an optional boolean `supersede`, default
+  false (tenishai/cabal#348). `ArchivistStore.publish` could already retire the entries a
+  new one replaces, but the tool never passed the flag, so over MCP a revised fact stayed
+  active beside the one it replaced. A non-boolean value is refused.
 - **`cbl archivist purge <resource_name>`** (tenishai/cabal#351) hard-deletes every
   version of an archivist entry, its full-text index rows and its relations, then runs
   FTS5 `optimize` and `VACUUM` so the text leaves the file. It does a dry run unless
@@ -29,6 +43,9 @@ Pull requests and issues are in tenishai/cabal.
   answers e.g. `unconfigured: CABAL_ARCHIVIST_DB is unset, so only a per-caller
   archivist.db_path can name a corpus`, and `/healthz` shows that instead. The code handler
   reads no environment variable, so as served by liminal it always reports unconfigured.
+  liminal 0.6.0 is the first release that reads `status()`; it is optional there, so older
+  liminal still loads the handlers and shows them ready, and the `tenish-liminal>=0.4` floor
+  is unchanged.
 - **A re-asserted archivist fact stays active through a gitsync round trip**
   (tenishai/cabal#367). Publishing A, superseding it with B and re-publishing A with
   `supersede=True` leaves A active in SQLite, but after `export_corpus` and
