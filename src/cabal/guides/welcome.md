@@ -90,10 +90,25 @@ logged at startup, but nothing reads it yet; every daemon still registers every 
 
 ### Personas and `safety_tier`
 
-Each persona block takes `role`, `description`, `model_override`, `system_prompt_override`,
-`max_tokens_override`, `capabilities`, `may_delegate_to`, `commit_to_memory`, an `mcp`
-block and a `checkpointing` block (see `identity.toml.example`). Models route through
-LiteLLM, set by `[litellm]` and `model_override`.
+Each persona block takes `role`, `description`, `model_override`, `system_prompt_override`
+and `max_tokens_override`, plus these, each with a reason to set it:
+
+- `capabilities`: tags such as `["code-search"]`. A task sent with `required_capabilities`
+  goes to a persona whose tags cover them, so a caller can ask for a skill without naming a
+  persona.
+- `may_delegate_to`: the personas this one may hand work to. It does nothing unless
+  `[guardrails] delegation_edges = true`, and then **omitting it means no delegation**, the
+  opposite of `mcp.allowed_handlers`, where omitting means every handler. Set it on every
+  primus when you turn delegation edges on, or the primus can't reach anyone.
+- `commit_to_memory`: write the persona's own Q&A back into its memory store. Off by
+  default for every persona; turn it on only for a persona whose store nobody else reads.
+- `mcp`: liminal's tools for this persona (see "The liminal integration" below).
+- `checkpointing`: `enabled = true` writes a checkpoint row on every model call, so a task
+  that dies with the daemon can be resumed (`POST /admin/tasks/{id}/resume`). Reach for it
+  on personas with long tool-use chains. Cost: a database write per step.
+
+Models route through LiteLLM, set by `[litellm]` and `model_override`. Every setting is
+commented in `identity.toml.example` in the repo.
 
 `safety_tier` (default `"strict"`) is recorded on the persona's bulletin row and agent card
 and shown by `cbl status`. cabal enforces nothing based on it today, so treat it as a label
@@ -174,12 +189,15 @@ UI. Without it, cabal still writes tool-call and LLM-call rows to its own events
 
 ### `identity.toml`
 
-One file holds `[cabal]` (operator id, bind, `public_url`, `front_door`, `bootstrap_code`),
+One file holds `[cabal]` (operator id, bind, `bootstrap_code`, and two A2A v1.0 settings:
+`public_url`, the base URL clients reach cabal at, without which no v1.0 agent cards are
+served; and `front_door`, the persona whose card is served at
+`/.well-known/agent-card.json`),
 `[litellm]`, `[techne]`, `[liminal]`, `[langfuse]`, `[guardrails]` and the personas. cabal
 reads `--config` if given, else `./identity.toml` when the working directory holds cabal
 state, else `$CABAL_HOME/identity.toml` (`~/.cabal`). Unknown keys are accepted silently and
 unknown sections only log `identity.unknown_section`, so a typo shows up as a feature that
-does not turn on. Start from `identity.toml.example`.
+does not turn on. Start from `identity.toml.example` in the repo.
 
 ## How to install
 

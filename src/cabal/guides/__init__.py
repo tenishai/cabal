@@ -21,10 +21,6 @@ MANIFEST: dict[str, str] = {
 }
 
 
-def guide_names() -> list[str]:
-    return list(MANIFEST)
-
-
 def guide_text(name: str) -> str:
     """The markdown of one bundled guide. Raises KeyError for an unknown name."""
     if name not in MANIFEST:
@@ -32,4 +28,4 @@ def guide_text(name: str) -> str:
     return files(__name__).joinpath(f"{name}.md").read_text(encoding="utf-8")
 
 
-__all__ = ["MANIFEST", "guide_names", "guide_text"]
+__all__ = ["MANIFEST", "guide_text"]

@@ -69,5 +69,5 @@ def test_cli_prints_a_guide():
 
 def test_cli_unknown_name_fails_and_lists_valid_names():
     result = CliRunner().invoke(app, ["guide", "nope"])
-    assert result.exit_code != 0
+    assert result.exit_code == 2
     assert "welcome" in result.output
