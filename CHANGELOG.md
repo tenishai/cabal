@@ -6,8 +6,26 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+### Upgrading
+
+- No database migration since 0.3.2, for cabal's database or the archivist's.
+- Archivist search treats every token as a plain word. `AND`, `OR` and `NOT` used to reach
+  FTS5 as operators when the query held no punctuation, and now match literally; a bare
+  `{...}`, which raised an FTS5 syntax error then, is now plain words too. Tokens are still
+  AND-ed.
+- The archivist handler refuses wrong-typed fields instead of coercing them. `importance`
+  must be a number from 0 to 1, search's `top_k` an integer, `source_thread` a string, and
+  `tags`, `commands` and `refs` lists of strings; only `tags` still takes a comma-separated
+  string. A client that sent a numeric string for `importance` or `top_k` (`"0.5"`, `"5"`),
+  a comma-separated `commands` or `refs`, or an integer `source_thread` now gets a failed
+  call naming the field. `top_k: 0` now returns 1 result; 0.3.2 fell back to 10.
+
 ### Added
 
+- The archivist's `archivist.publish` tool takes an optional boolean `supersede`, default
+  false (tenishai/cabal#348). `ArchivistStore.publish` could already retire the entries a
+  new one replaces, but the tool never passed the flag, so over MCP a revised fact stayed
+  active beside the one it replaced. A non-boolean value is refused.
 - **`cbl archivist purge <resource_name>`** (tenishai/cabal#351) hard-deletes every
   version of an archivist entry, its full-text index rows and its relations, then runs
   FTS5 `optimize` and `VACUUM` so the text leaves the file. It does a dry run unless
@@ -29,6 +47,9 @@ Pull requests and issues are in tenishai/cabal.
   answers e.g. `unconfigured: CABAL_ARCHIVIST_DB is unset, so only a per-caller
   archivist.db_path can name a corpus`, and `/healthz` shows that instead. The code handler
   reads no environment variable, so as served by liminal it always reports unconfigured.
+  liminal 0.6.0 is the first release that reads `status()`; it is optional there, so older
+  liminal still loads the handlers and shows them ready, and the `tenish-liminal>=0.4` floor
+  is unchanged.
 - **A re-asserted archivist fact stays active through a gitsync round trip**
   (tenishai/cabal#367). Publishing A, superseding it with B and re-publishing A with
   `supersede=True` leaves A active in SQLite, but after `export_corpus` and
