@@ -6,8 +6,15 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-26
+
 ### Upgrading
 
+- `requirements-sources.txt` now installs techne v0.19.0 and liminal v0.7.1 (it named
+  v0.18.2 and v0.5.0). A non-dev install from that file picks them up; each has its own
+  Upgrading notes (techne: restart the MCP server, re-run `techne init` on a uv tool
+  install). The Docker image still pins techne 0.18.2 and liminal 0.5.0 from its package
+  index, unchanged in this release.
 - No database migration since 0.3.2, for cabal's database or the archivist's.
 - litellm is pinned exactly to 1.104.2 (it was `>=1.92`). litellm 1.107.0 shipped a
   credential stealer on PyPI on 2026-10-21, and an open lower bound let any rebuild take
