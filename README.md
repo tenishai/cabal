@@ -56,7 +56,7 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
   handler) is complete and tested end-to-end.
 - **LLM personas** — `LLMPersona` wraps LiteLLM acompletion with tool-use loop,
   budget guard, circuit breaker, and per-step hook callbacks.
-- **CLI** — `cbl` covers daemon, login, dispatch, token mint/list, secret set,
+- **CLI** — `cbl` covers daemon, login, dispatch (also detached, with `cbl task`), token mint/list, secret set,
   persona reload, agent status, archivist purge, and `cbl guide`.
 - **Docker Compose dev stack** — `make up / bootstrap / demo` runs the full
   cabal + liminal stack; `make demo` is a 6-step smoke test that passes reliably.
@@ -365,6 +365,18 @@ make `cbl agents list` sit for minutes. The session-presence calls
 5s: they run from a Stop hook on every turn, so a firewall that DROPs rather
 than refuses would stall the turn itself. An unparseable value fails the CLI
 the same way it aborts the daemon, rather than silently falling back to 30.
+
+**Detached tasks.** `cbl dispatch --detach <agent> "text"` returns at once with the task id
+(A2A `returnImmediately`, issue #277); `cbl task <id>` reads it and `cbl task <id> --wait
+[--interval S] [--timeout S]` polls until it ends. The daemon runs the task, so a client
+restart or network blip does not lose it, and `cbl`'s own ceiling does not apply. The
+daemon's does: a detached task's call to a federated peer goes through the same HTTP client
+as a blocking dispatch, so `CABAL_DISPATCH_TIMEOUT_S` still bounds it, and a peer that takes
+longer fails the task. Raise the variable on the daemon for long peer tasks; the doom-loop
+TTL widening above applies unchanged. A local persona has no such ceiling. `cbl task`
+exits 1 for a task that did not complete and 3 when `--timeout` runs out first.
+`cbl task` finds the persona through the operator's conversation view; with a persona token,
+pass `--target <agent>`.
 
 ## Recovering a lost master key
 

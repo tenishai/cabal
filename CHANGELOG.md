@@ -6,6 +6,13 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+### Added
+
+- `cbl dispatch --detach <target> <message>` sends with A2A `returnImmediately` and prints the
+  task id and state. `cbl task <id>` prints a task's state and message (`--raw` for the JSON);
+  `--wait [--interval S] [--timeout S]` polls until it ends, exits 1 unless it completed, and
+  exits 3 on `--timeout` (issue #391).
+
 ## [0.4.0] — 2026-10-26
 
 ### Upgrading

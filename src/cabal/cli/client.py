@@ -432,3 +432,71 @@ def dispatch(
         )
     resp.raise_for_status()
     return resp.json()
+
+
+class A2AError(Exception):
+    """A JSON-RPC error answered by an A2A v1.0 endpoint."""
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _a2a_v1(*, token: str, target: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    """One A2A v1.0 JSON-RPC call to /agents/{target}/a2a; returns `result`.
+
+    Short client timeout: SendMessage with returnImmediately and GetTask both
+    answer from the database, so neither needs the federated-dispatch ceiling.
+    """
+    import uuid
+
+    body = {"jsonrpc": "2.0", "id": f"req-{uuid.uuid4().hex[:8]}", "method": method, "params": params}
+    with make_client() as c:
+        resp = c.post(
+            f"/agents/{target}/a2a",
+            json=body,
+            headers={"Authorization": f"Bearer {token}", "A2A-Version": "1.0"},
+        )
+    resp.raise_for_status()
+    reply = resp.json()
+    if "error" in reply:
+        err = reply["error"]
+        raise A2AError(err.get("code", 0), err.get("message", "unknown error"))
+    result: dict[str, Any] = reply["result"]
+    return result
+
+
+def dispatch_detached(
+    *, token: str, target: str, message_text: str, context_id: str | None = None
+) -> dict[str, Any]:
+    """SendMessage with returnImmediately (#277): returns the v1.0 Task, in
+    `submitted`, once the daemon has authorised it and recorded it. The persona
+    runs on, owned by the daemon; read it back with `get_task`."""
+    import uuid
+
+    message: dict[str, Any] = {
+        "messageId": f"m-{uuid.uuid4().hex[:12]}",
+        "role": "ROLE_USER",
+        "parts": [{"text": message_text}],
+    }
+    if context_id:
+        message["contextId"] = context_id
+    result = _a2a_v1(
+        token=token,
+        target=target,
+        method="SendMessage",
+        params={"message": message, "configuration": {"returnImmediately": True}},
+    )
+    task: dict[str, Any] = result["task"]
+    return task
+
+
+def get_task(*, token: str, target: str, task_id: str) -> dict[str, Any]:
+    """GetTask: the v1.0 Task as the daemon has it now."""
+    return _a2a_v1(token=token, target=target, method="GetTask", params={"id": task_id})
+
+
+def task_target(*, token: str, task_id: str) -> str:
+    """The persona a task was sent to. GetTask is served per persona, so a
+    caller that only has the id asks the operator's conversation view."""
+    return str(get_conversation(token=token, task_id=task_id)["conversation"]["target_agent"])
