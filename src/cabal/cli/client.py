@@ -462,7 +462,8 @@ def _a2a_v1(*, token: str, target: str, method: str, params: dict[str, Any]) -> 
     if "error" in reply:
         err = reply["error"]
         raise A2AError(err.get("code", 0), err.get("message", "unknown error"))
-    return reply["result"]
+    result: dict[str, Any] = reply["result"]
+    return result
 
 
 def dispatch_detached(
