@@ -4,6 +4,7 @@ Phase 1 surface (per cabal-handoff.md §4):
     cbl daemon up        — launch Cabal Core (solo mode by default)
     cbl login            — trade a bootstrap code for an operator JWT
     cbl dispatch         — send a one-shot A2A Task and print the result
+    cbl task <id>        — read a detached task (`dispatch --detach`), or --wait for it
     cbl version          — print version
     cbl guide [name]     — list or print the guides bundled in the package
     cbl token mint       — (Phase 2) mint a session_token
@@ -14,8 +15,10 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 import typer
@@ -232,6 +235,17 @@ def dispatch(
             "caller-wide one."
         ),
     ),
+    detach: bool = typer.Option(
+        False,
+        "--detach",
+        help=(
+            "Return at once with the task id (A2A returnImmediately) instead of "
+            "waiting for the answer; read it with `cbl task <id>`. The daemon "
+            "runs the task, so it survives this client. A federated peer's call "
+            "still ends at the daemon's CABAL_DISPATCH_TIMEOUT_S, so raise that "
+            "(on the daemon) for a peer task that runs longer than 30s."
+        ),
+    ),
 ) -> None:
     """Send a one-shot A2A Task and print the response."""
     token = api.TokenStore().load()
@@ -239,9 +253,21 @@ def dispatch(
         typer.echo("no token; run `cbl login` first.", err=True)
         raise typer.Exit(code=1)
     try:
+        if detach:
+            task = api.dispatch_detached(
+                token=token, target=target, message_text=message, context_id=context
+            )
+            if raw:
+                typer.echo(json.dumps(task, indent=2))
+            else:
+                typer.echo(f"{task['id']} [{_state_name(task)}]")
+            return
         response = api.dispatch(
             token=token, target=target, message_text=message, context_id=context
         )
+    except api.A2AError as exc:
+        typer.echo(f"dispatch failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     except httpx.HTTPStatusError as exc:
         try:
             detail = exc.response.json().get("detail", exc.response.text)
@@ -263,6 +289,89 @@ def dispatch(
         if p.get("kind") == "text"
     ]
     typer.echo(f"[{state}] {' '.join(text_parts)}")
+
+
+# v1.0 states after which nothing more happens without the caller: the task is
+# done, or paused waiting on a caller `cbl task` cannot answer.
+_TASK_STOP_STATES = frozenset(
+    {"completed", "failed", "canceled", "rejected", "input-required", "auth-required"}
+)
+EXIT_TASK_TIMEOUT = 3
+
+
+def _state_name(task: dict[str, Any]) -> str:
+    """`TASK_STATE_INPUT_REQUIRED` -> `input-required`."""
+    return str(task["status"]["state"]).removeprefix("TASK_STATE_").lower().replace("_", "-")
+
+
+@app.command("task")
+def task_cmd(
+    task_id: str = typer.Argument(..., help="Task id printed by `cbl dispatch --detach`."),
+    raw: bool = typer.Option(False, "--raw", help="Print the full Task JSON."),
+    wait: bool = typer.Option(
+        False, "--wait", help="Poll until the task ends. Exit 1 unless it completed."
+    ),
+    interval: float = typer.Option(2.0, "--interval", min=0.05, help="Seconds between polls."),
+    timeout: float | None = typer.Option(
+        None,
+        "--timeout",
+        min=0.0,
+        help=f"With --wait, give up after this many seconds (exit {EXIT_TASK_TIMEOUT}).",
+    ),
+    target: str | None = typer.Option(
+        None,
+        "--target",
+        help="Persona the task was sent to. Default: looked up (operator token).",
+    ),
+) -> None:
+    """Show a task's state and, once it has ended, its message."""
+    token = api.TokenStore().load()
+    if token is None:
+        typer.echo("no token; run `cbl login` first.", err=True)
+        raise typer.Exit(code=1)
+    deadline = None if timeout is None else time.monotonic() + timeout
+    try:
+        if target is None:
+            target = api.task_target(token=token, task_id=task_id)
+        while True:
+            try:
+                task = api.get_task(token=token, target=target, task_id=task_id)
+            except httpx.RequestError as exc:
+                # A restart or blip is what --detach exists to survive: keep waiting.
+                if not wait:
+                    raise
+                typer.echo(f"daemon unreachable ({exc}); retrying", err=True)
+                task = None
+            if task is not None and (not wait or _state_name(task) in _TASK_STOP_STATES):
+                break
+            if deadline is not None and time.monotonic() + interval > deadline:
+                state = _state_name(task) if task is not None else "unknown"
+                typer.echo(f"timed out after {timeout:g}s; task {task_id} is {state}", err=True)
+                raise typer.Exit(code=EXIT_TASK_TIMEOUT)
+            time.sleep(interval)
+    except api.A2AError as exc:
+        typer.echo(f"task failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get("detail", exc.response.text)
+        except Exception:  # noqa: BLE001
+            detail = exc.response.text
+        typer.echo(f"task failed: {_auth_hint(detail)}", err=True)
+        raise typer.Exit(code=1) from exc
+    except httpx.RequestError as exc:
+        typer.echo(f"could not reach daemon at {api.base_url()}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    state = _state_name(task)
+    if raw:
+        typer.echo(json.dumps(task, indent=2))
+    else:
+        parts = task["status"].get("message", {}).get("parts", [])
+        text = " ".join(p["text"] for p in parts if p.get("text"))
+        typer.echo(f"[{state}] {text}".rstrip())
+    if wait and state != "completed":
+        raise typer.Exit(code=1)
 
 
 @app.command("chat")
