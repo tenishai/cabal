@@ -979,6 +979,12 @@ class MintServiceRequest(BaseModel):
     aud: str
     ttl_days: int
     persona: str | None = None
+    # liminal handlers the token may call, carried as
+    # `cabal_tool_extras["liminal.allowed_handlers"]` exactly as a persona's
+    # dispatch token carries them (persona_factory). None (the default) leaves
+    # the claim out, which liminal reads as unrestricted; [] denies every
+    # handler (#390).
+    allowed_handlers: list[str] | None = None
 
     def ttl_seconds(self) -> int:
         # Cap at 365 days to avoid silly-long lifetimes.
@@ -1011,6 +1017,15 @@ async def mint_service_token(
 
     if not req.sub or not req.scope or not req.aud:
         raise HTTPException(400, detail="sub, scope, and aud must all be non-empty")
+    if req.allowed_handlers is not None and not all(
+        isinstance(h, str) and h.strip() for h in req.allowed_handlers
+    ):
+        raise HTTPException(400, detail="allowed_handlers entries must be non-empty names")
+    tool_extras = (
+        {"liminal.allowed_handlers": list(dict.fromkeys(req.allowed_handlers))}
+        if req.allowed_handlers is not None
+        else None
+    )
 
     async with open_session(request.app.state.sessionmaker) as session:
         from cabal.core.auth.keys import load_active_signing_key
@@ -1038,6 +1053,7 @@ async def mint_service_token(
         aud=req.aud,
         persona=req.persona,
         scope=req.scope,
+        tool_extras=tool_extras,
         ttl_seconds=ttl,
     )
     expires_at = (datetime.now(UTC) + timedelta(seconds=ttl)).isoformat()
@@ -1046,6 +1062,7 @@ async def mint_service_token(
         "sub": req.sub,
         "scope": req.scope,
         "aud": req.aud,
+        "allowed_handlers": tool_extras["liminal.allowed_handlers"] if tool_extras else None,
         "expires_at": expires_at,
         "kid": stored.kid,
     }
