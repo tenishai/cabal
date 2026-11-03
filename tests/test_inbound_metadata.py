@@ -153,3 +153,25 @@ async def test_a_caller_cannot_skip_the_session_start_hook(app, client: AsyncCli
                           headers={"Authorization": f"Bearer {await _colleague(app)}"})
     assert r.status_code == 200, r.text
     assert [p["task_id"] for p in starts] == ["t-3"]
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_message_stream_filters_caller_metadata(app, client: AsyncClient) -> None:
+    """The streaming door (Prudence on PR 402: before this test, removing its filter left
+    every test passing)."""
+
+    class StreamRecorder(_Recorder):
+        async def astream_task(self, task: Task):
+            self.seen.append(dict(task.metadata))
+            yield "ok"
+
+    rec = StreamRecorder()
+    app.state.dispatch_router.register_local(rec)
+    body = {"jsonrpc": "2.0", "id": 1, "method": "message/stream", "params": {
+        "message": {"role": "user", "parts": [{"kind": "text", "text": "hi"}]}, "metadata": SENT}}
+    async with client.stream("POST", "/agents/echo/stream", json=body,
+                             headers={"Authorization": f"Bearer {await _colleague(app)}"}) as resp:
+        assert resp.status_code == 200
+        text = "".join([chunk async for chunk in resp.aiter_text()])
+    assert rec.seen, text
+    _assert_filtered(rec.seen[-1])
