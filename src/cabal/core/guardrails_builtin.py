@@ -976,7 +976,8 @@ class DelegationDepthGuardrail:
     the two numbers are one number.
 
     WHAT ARRIVES FROM OUTSIDE IS STILL ONLY WHAT A CALLER PUT ON THE WIRE. The
-    JSON-RPC and REST routes copy ``params.metadata`` verbatim, and a federated
+    routes keep a caller's ``cabal_delegation_depth`` (core/a2a/inbound.py drops the
+    other ``cabal_*`` keys, #401), and a federated
     hop forwards ``task.model_dump(...)`` whole WITHOUT incrementing -- so an
     EXTERNAL chain accumulates depth only if the client increments, which is
     what the companion daedalus#40 does. That half is unchanged by #171, which

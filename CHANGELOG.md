@@ -6,6 +6,16 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+### Security
+
+- The `cabal_` metadata prefix is cabal's on a task that arrives from the wire (issue #401). A caller's
+  `cabal_token_budget` set the persona's token budget to any value, `cabal_parent_task` placed its task
+  under any task in the AbortGraph, and `cabal_session_started` skipped the SESSION_START hook. Every door
+  (`POST /a2a/tasks`, JSON-RPC `message/send` and `message/stream`, v1 `SendMessage`) now drops every
+  `cabal_*` key a caller sends except `cabal_delegation_depth` and `cabal_trace_id`, with one INFO log
+  line naming them (`core/a2a/inbound.py`). A non-numeric `cabal_token_budget` from an in-process caller
+  no longer raises. Other caller metadata is unchanged.
+
 ### Added
 
 - `cbl dispatch --metadata '<json object>'` sends the object as the task's metadata, on both the
