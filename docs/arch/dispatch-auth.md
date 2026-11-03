@@ -5,14 +5,14 @@ anchor: src/cabal/core/routes/tasks.py sha=b0d3527a787d42b6f4e768704533662dcb4db
 anchor: src/cabal/core/routes/a2a_jsonrpc.py sha=8176d14d168f9ec583b10d8ea52abbc1f41b6692
 anchor: src/cabal/core/auth/jwt.py sha=881c1df69514f389ef2f431cc3626f5e0aef0aa2
 anchor: src/cabal/core/dispatch_pairs.py sha=c580d7a9995a6e97fda673b030f5495cc056e366
-anchor: src/cabal/core/routes/auth.py sha=337a52d0c0f0958044b05c044de48a687cd42e7b
+anchor: src/cabal/core/routes/auth.py sha=92ec8e562b10b072d165e977a7851749bd68394f
 anchor: src/cabal/core/routes/_dispatch_auth.py sha=93b96afcd3843c04cd2435eb4b97194071e864b1
 ---
 # dispatch-auth — JWT realms, scopes, and the re-mint doors
 
 WHAT / SEAM: every credential is an RS256 JWT minted by `jwt.mint` (core/auth/jwt.py; iss "cabal-core", claims `cabal_persona`, `cabal_scope`, `cabal_tool_extras`; default TTL 5 min) and checked by `jwt.verify` (alg pinned RS256) against the JWKS served at `/.well-known/jwks.json`. Revocation: `revocations.refusal(...)` by subject+iat, checked at every door.
 TOKEN KINDS (who mints → aud / scope):
-- operator: POST /auth/bootstrap with the one-shot startup code → sub `operator:<operator_id>`, aud "cabal-core", scope [operator], 1h (`routes/auth.py` `bootstrap`).
+- operator: POST /auth/bootstrap with the one-shot startup code → sub `operator:<operator_id>`, aud "cabal-core", scope [operator], `[cabal] operator_token_ttl_seconds` (default 1h) (`routes/auth.py` `bootstrap`). POST /auth/renew swaps a still-valid, unrevoked operator token for a fresh one with the same subject (`renew`); `cbl` renews a saved one with under 10 min left (`cli/client.py` `TokenStore.load`) (#395).
 - persona bootstrap: same route, persona code → aud=<persona>, scope [dispatch].
 - colleague: minted OUTSIDE cabal by the room (kobo), sub `agent:<name>`, aud "cabal-core", scope [colleague]. Grants GET /directory, dispatch re-mint, and POST /auth/liminal-token (15-min aud=gateway token).
 - service: POST /admin/token/mint-service (operator only; ≤365 days), e.g. scope secrets-fetch for liminal.

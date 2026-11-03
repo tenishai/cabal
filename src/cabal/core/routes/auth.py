@@ -1,6 +1,7 @@
 """Authentication routes.
 
 POST /auth/bootstrap — consume a bootstrap code, mint a JWT.
+POST /auth/renew — swap a still-valid operator token for a fresh one (#395).
 
 The code is one-shot: it succeeds exactly once or returns 401 with a
 specific error code so the client can distinguish unknown/expired/used.
@@ -88,10 +89,76 @@ async def bootstrap(req: BootstrapRequest, request: Request) -> BootstrapRespons
             aud=aud,
             persona=persona_name,
             scope=scope,
-            ttl_seconds=60 * 60,  # 1h — operator token; Tasks use session_token for >5min
+            ttl_seconds=_operator_ttl(request) if persona_name is None else 60 * 60,
         )
 
     return BootstrapResponse(access_token=token, persona=persona_name)
+
+
+def _operator_ttl(request: Request) -> int:
+    identity = getattr(request.app.state, "identity", None)
+    return identity.cabal.operator_token_ttl_seconds if identity is not None else 60 * 60
+
+
+# ---- operator token renewal (#395) -----------------------------------------
+
+
+@router.post("/renew", response_model=BootstrapResponse)
+async def renew(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> BootstrapResponse:
+    """Swap a valid, unexpired operator token for a new one.
+
+    Bootstrap codes are single-use and minted only at daemon start, so
+    without this an operator's session ended an hour after login and the
+    only way back was a restart, which fails every task in flight. The new
+    token has the old one's subject, aud cabal-core and the operator scope,
+    so nothing is gained that wasn't held. An expired or revoked token is
+    refused: a lapsed session still needs a code.
+
+    Gates in `liminal_token`'s order: bearer, `verify()` (signature,
+    issuer, expiry) and revocation are 401; audience and scope are 403.
+    """
+    try:
+        claims = verify(
+            extract_bearer(authorization),
+            key_set=request.app.state.jwks_provider(),
+            expected_audience=None,  # checked by hand below: 403, not 401 (D-017)
+        )
+    except JWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
+        ) from exc
+    # The new token's iat would fall after a revocation cutoff, so a revoked
+    # token must not be renewed.
+    if (why := refusal(getattr(request.app.state, "revocations", None), claims)) is not None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=why)
+    if claims.get("aud") != "cabal-core":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="invalid_audience")
+    sub = str(claims.get("sub") or "")
+    if "operator" not in (claims.get("cabal_scope") or []) or not sub.startswith(
+        OPERATOR_SUB_PREFIX
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="only an operator token renews"
+        )
+
+    async with open_session(request.app.state.sessionmaker) as session:
+        stored = await load_active_signing_key(session, master_key=request.app.state.master_key)
+    if stored is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="no active signing key",
+        )
+    token = mint(
+        signing_key=stored,
+        sub=sub,
+        aud="cabal-core",
+        scope=["operator"],
+        ttl_seconds=_operator_ttl(request),
+    )
+    return BootstrapResponse(access_token=token)
 
 
 # ---- gateway token exchange (external-MCP arc, C1) ------------------------

@@ -74,6 +74,10 @@ class CabalConfig(_Open):
     # ($CABAL_HOME/bootstrap_code, mode 0600, with only its path logged) or
     # "off" (mint nothing). $CABAL_BOOTSTRAP_CODE wins over this.
     bootstrap_code: Literal["log", "file", "off"] = "log"
+    # How long an operator token lasts, from `POST /auth/bootstrap` or
+    # `POST /auth/renew` (#395). A token renewed before it expires gets a fresh
+    # one this long; a lapsed one needs a new bootstrap code.
+    operator_token_ttl_seconds: int = Field(default=60 * 60, ge=60)
 
 
 #: Keyword names cabal itself binds on the way to the provider. An

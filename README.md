@@ -198,6 +198,10 @@ cbl login --code <CODE>
 cbl dispatch echo "hello cabal"
 ```
 
+The operator token lasts an hour (`[cabal] operator_token_ttl_seconds`). `cbl` renews it by
+itself when it has under ten minutes left, and `cbl token renew` renews it now. One that has
+already expired needs a new bootstrap code, which means a daemon restart.
+
 Run the unit suite (no sibling deps needed):
 
 ```bash
