@@ -28,6 +28,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from cabal.core.a2a.inbound import inbound_metadata
 from cabal.core.a2a.types import Task
 from cabal.core.a2a.version import requested_version
 from cabal.core.auth.jwt import extract_bearer
@@ -113,6 +114,7 @@ async def submit_task(
                 ),
             )
 
+    req.task.metadata = inbound_metadata(req.task.metadata)  # #401: the cabal_ prefix is cabal's
     dispatch_token = await _resolve_dispatch_token(request, raw_token, target)
     if isinstance(dispatch_token, JSONResponse):
         return dispatch_token

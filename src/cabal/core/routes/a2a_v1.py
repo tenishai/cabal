@@ -49,6 +49,7 @@ from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select, update
 
 from cabal.config.identity import CabalConfig, resolve_public_url
+from cabal.core.a2a.inbound import inbound_metadata
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.a2a.v1 import (
     STATE_FROM_V1,
@@ -373,7 +374,7 @@ async def _send_message(
             "contextId": context_id,
             "status": TaskStatus(state="submitted", message=message),
             "history": history,
-            "metadata": req.metadata or {},
+            "metadata": inbound_metadata(req.metadata),
         }
     )
     detach = cfg is not None and bool(cfg.return_immediately)

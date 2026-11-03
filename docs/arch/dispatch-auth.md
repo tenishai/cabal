@@ -1,8 +1,8 @@
 ---
 card: arch-card:cabal-dispatch-auth
-updated: 2026-10-13
-anchor: src/cabal/core/routes/tasks.py sha=b0d3527a787d42b6f4e768704533662dcb4db15d
-anchor: src/cabal/core/routes/a2a_jsonrpc.py sha=8176d14d168f9ec583b10d8ea52abbc1f41b6692
+updated: 2026-11-03
+anchor: src/cabal/core/routes/tasks.py sha=9a07dd6ff4ffb90fd89a6f9026312781b245323a
+anchor: src/cabal/core/routes/a2a_jsonrpc.py sha=cff3561a212470b6f02e5744d897ed8e3d15f74b
 anchor: src/cabal/core/auth/jwt.py sha=881c1df69514f389ef2f431cc3626f5e0aef0aa2
 anchor: src/cabal/core/dispatch_pairs.py sha=c580d7a9995a6e97fda673b030f5495cc056e366
 anchor: src/cabal/core/routes/auth.py sha=92ec8e562b10b072d165e977a7851749bd68394f
@@ -23,6 +23,7 @@ INVARIANTS:
 - ONE POLICY, MANY DOORS. The re-mint policy lives once in `routes/_dispatch_auth.dispatch_token` (cabal#234, #285); the REST door (routes/tasks.py `_resolve_dispatch_token`, POST /a2a/tasks), the legacy JSON-RPC door (routes/a2a_jsonrpc.py `_resolve_dispatch_token`, POST /agents/{name}) and the A2A v1.0 door (routes/a2a_v1.py) only translate a `DispatchRefusal` into their own wire form. Change policy there, never in a door: the old per-door copies drifted, and a pairs check once missing from one was a full bypass. The TUI's in-process client (tui/client/inprocess.py `InProcessBrokerClient`) keeps its own operator-only re-mint but takes the audience from `dispatch_audience`.
 - Wire forms differ on purpose: REST answers 401/403/500 with `{"detail": message}`; legacy JSON-RPC maps a pairs refusal to FORBIDDEN, other refusals to UNAUTHORIZED (`legacy_forbidden`), server faults to INTERNAL. A refusal with a `remedy` code (only the pairs check today: `colleague_invite`, cabal#329) carries it next to the message: a top-level `remedy` beside `detail` on REST and v1.0 (`DispatchRefusal.body_fields`), and the error's `data` on legacy JSON-RPC, both `message/send` and the `/stream` door's SSE error event. `detail` stays a string, because daedalus 0.5.0's `_refusal_detail` (tools/colleagues.py) passes the body's `detail` through `str()` into the text the model sees. A `federated` target's token gets aud=`federation_audience` at every door; a federated row with none is a 500/INTERNAL.
 - A token with no `sub` is refused (401), not re-minted as "operator" (cabal#184).
+- The `cabal_` metadata prefix is cabal's on an inbound task (cabal#401): every door (REST /a2a/tasks, JSON-RPC message/send and message/stream, v1 SendMessage) passes caller metadata through `core/a2a/inbound.inbound_metadata`, which drops every `cabal_*` key except `cabal_delegation_depth` and `cabal_trace_id` (CALLER_DECLARED). So a caller can't set its own token budget, place its task under another in the AbortGraph, or skip SESSION_START. A new door must call it too.
 - Re-mint hard-codes scope=["dispatch"]; the caller's operator scope does not survive into the router (open, cabal#164). A router-level guard cannot ask "is this the operator?".
 - dispatch_pairs: EMPTY TABLE = OPEN (D-018). Room syncs the whole set atomically with PUT /admin/dispatch-pairs (operator), which logs the stored count, as a `dispatch_pairs.replaced_empty` warning when it is zero (cabal#315). Operators skip the check. WHY: deploy-safe; cabal stores policy, kobo decides it. GET /directory applies the same pairs to a colleague via `dispatch_pairs.allowed_targets` (None = empty table = everyone), so it lists only targets re-mint would allow; operators see the full roster (cabal#321).
 - 401 = no/bad signature, expired, revoked; 403 = valid token, wrong audience or scope (D-017), uniformly across guards. Admin guards all go through `admin._require_scope`; /auth/liminal-token still inlines its own gate (noted in its docstring as a follow-up).

@@ -290,9 +290,14 @@ class LLMPersona:
         with the checkpointed history — same code path as the tool-use
         iteration, hence the unified loop below.
         """
+        # Never from a caller since #401 (core/a2a/inbound.py drops it at the door); an
+        # in-process caller's unreadable value is ignored rather than failing the task.
         budget_override = task.metadata.get("cabal_token_budget")
         if budget_override is not None and getattr(self.llm_client, "budget", None) is not None:
-            self.llm_client.budget.set_budget(task.id, int(budget_override))
+            try:
+                self.llm_client.budget.set_budget(task.id, int(budget_override))
+            except (TypeError, ValueError, OverflowError):
+                pass
 
         session_id = self.session_tracker.start(external_id=task.id, agent_identity=self.name)
         try:

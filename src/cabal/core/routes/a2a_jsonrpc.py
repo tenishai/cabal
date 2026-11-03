@@ -22,6 +22,7 @@ from fastapi import APIRouter, Header, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
+from cabal.core.a2a.inbound import inbound_metadata
 from cabal.core.a2a.jsonrpc import (
     ERROR_AGENT_NOT_FOUND,
     ERROR_FORBIDDEN,
@@ -260,7 +261,7 @@ async def per_agent_stream(
             "id": task_id,
             "contextId": params.context_id,
             "status": TaskStatus(state="submitted", message=params.message),
-            "metadata": params.metadata or {},
+            "metadata": inbound_metadata(params.metadata),
         }
     )
 
@@ -412,7 +413,7 @@ async def _message_send(
             "id": str(uuid.uuid4()),
             "contextId": params.context_id,
             "status": TaskStatus(state="submitted", message=params.message),
-            "metadata": params.metadata or {},
+            "metadata": inbound_metadata(params.metadata),
         }
     )
 
