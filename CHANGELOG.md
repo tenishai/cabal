@@ -8,6 +8,11 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- `cbl dispatch --metadata '<json object>'` sends the object as the task's metadata, on both the
+  waiting path and `--detach` (where it goes in `SendMessage`'s request metadata, which becomes
+  the task's). It reaches the agent unchanged, so a caller can name per-task values such as a
+  daedalus bundle's `daedalus_workspace` and its bound review target (tenishai/agents#171,
+  tenishai/daedalus#247). Anything but a JSON object exits 2 before a request is sent.
 - `cbl dispatch --detach <target> <message>` sends with A2A `returnImmediately` and prints the
   task id and state. `cbl task <id>` prints a task's state and message (`--raw` for the JSON);
   `--wait [--interval S] [--timeout S]` polls until it ends, exits 1 unless it completed, and

@@ -537,7 +537,12 @@ def _a2a_v1(*, token: str, target: str, method: str, params: dict[str, Any]) -> 
 
 
 def dispatch_detached(
-    *, token: str, target: str, message_text: str, context_id: str | None = None
+    *,
+    token: str,
+    target: str,
+    message_text: str,
+    context_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """SendMessage with returnImmediately (#277): returns the v1.0 Task, in
     `submitted`, once the daemon has authorised it and recorded it. The persona
@@ -551,12 +556,11 @@ def dispatch_detached(
     }
     if context_id:
         message["contextId"] = context_id
-    result = _a2a_v1(
-        token=token,
-        target=target,
-        method="SendMessage",
-        params={"message": message, "configuration": {"returnImmediately": True}},
-    )
+    params: dict[str, Any] = {"message": message, "configuration": {"returnImmediately": True}}
+    if metadata:
+        # The request's metadata, which SendMessage makes the task's (routes/a2a_v1.py).
+        params["metadata"] = metadata
+    result = _a2a_v1(token=token, target=target, method="SendMessage", params=params)
     task: dict[str, Any] = result["task"]
     return task
 

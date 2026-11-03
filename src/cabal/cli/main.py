@@ -221,6 +221,20 @@ def login(
     )
 
 
+def _metadata_option(raw: str | None) -> dict[str, Any]:
+    """`--metadata` as keyword arguments for the client: none when the flag is absent,
+    and a usage error (exit 2) before any request when it isn't a JSON object."""
+    if raw is None:
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter(f"not JSON: {exc}", param_hint="--metadata") from exc
+    if not isinstance(value, dict):
+        raise typer.BadParameter("must be a JSON object", param_hint="--metadata")
+    return {"metadata": value}
+
+
 @app.command("dispatch")
 def dispatch(
     target: str = typer.Argument(..., help="Target agent name (e.g. 'echo')."),
@@ -246,8 +260,18 @@ def dispatch(
             "(on the daemon) for a peer task that runs longer than 30s."
         ),
     ),
+    metadata: str | None = typer.Option(
+        None,
+        "--metadata",
+        help=(
+            "A JSON object sent as the task's metadata, which reaches the agent "
+            "unchanged, e.g. '{\"daedalus_workspace\": \"r-1\"}' for a daedalus "
+            "bundle with tools.workspace."
+        ),
+    ),
 ) -> None:
     """Send a one-shot A2A Task and print the response."""
+    extra = _metadata_option(metadata)
     token = api.TokenStore().load()
     if token is None:
         typer.echo("no token; run `cbl login` first.", err=True)
@@ -255,7 +279,7 @@ def dispatch(
     try:
         if detach:
             task = api.dispatch_detached(
-                token=token, target=target, message_text=message, context_id=context
+                token=token, target=target, message_text=message, context_id=context, **extra
             )
             if raw:
                 typer.echo(json.dumps(task, indent=2))
@@ -263,7 +287,7 @@ def dispatch(
                 typer.echo(f"{task['id']} [{_state_name(task)}]")
             return
         response = api.dispatch(
-            token=token, target=target, message_text=message, context_id=context
+            token=token, target=target, message_text=message, context_id=context, **extra
         )
     except api.A2AError as exc:
         typer.echo(f"dispatch failed: {exc}", err=True)
