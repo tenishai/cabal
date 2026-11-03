@@ -296,3 +296,16 @@ def test_the_in_process_tui_loads_the_token_without_renewing(monkeypatch, store)
     client = inprocess.InProcessBrokerClient()
     assert client._operator_token == old
     assert calls == []
+
+
+def test_a_renewal_that_cannot_be_saved_is_still_used(monkeypatch, store) -> None:
+    old = _unsigned(sub=OPERATOR, cabal_scope=["operator"], exp=int(time.time()) + 60)
+    store.save(old)
+    _fake_renew(monkeypatch, "fresh")
+
+    def readonly(token):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(store, "save", readonly)
+    assert store.load() == "fresh"
+    assert store.path.read_text() == old

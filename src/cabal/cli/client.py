@@ -84,7 +84,10 @@ class TokenStore:
         except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
             log.debug("operator token renewal failed: %s", exc)
             return token
-        self.save(fresh)
+        try:
+            self.save(fresh)
+        except OSError as exc:  # e.g. a read-only CABAL_HOME: use it, unsaved
+            log.debug("renewed operator token not saved: %s", exc)
         log.debug("operator token renewed (%ds were left)", left)
         return fresh
 
@@ -134,6 +137,8 @@ def make_client(*, timeout: httpx.Timeout | None = None) -> httpx.Client:
 #: wrong here: a firewall that DROPs rather than refuses would stall the turn.
 #: `beat` can make two of these back to back (heartbeat, then register on
 #: 404), so this bounds that pair at 10s rather than 60s (PR #148 review nit).
+#: In an operator token's last ten minutes each call's token load may also try a
+#: renewal under this same timeout (#395), so the pair's worst case is 20s.
 SESSION_TIMEOUT_S = 5.0
 
 
