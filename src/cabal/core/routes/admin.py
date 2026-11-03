@@ -1021,8 +1021,9 @@ async def mint_service_token(
         isinstance(h, str) and h.strip() for h in req.allowed_handlers
     ):
         raise HTTPException(400, detail="allowed_handlers entries must be non-empty names")
+    # Stored stripped: liminal matches names exactly, so " web" would match nothing.
     tool_extras = (
-        {"liminal.allowed_handlers": list(dict.fromkeys(req.allowed_handlers))}
+        {"liminal.allowed_handlers": list(dict.fromkeys(h.strip() for h in req.allowed_handlers))}
         if req.allowed_handlers is not None
         else None
     )

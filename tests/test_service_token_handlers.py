@@ -58,7 +58,7 @@ def _claims(app: FastAPI, token: str) -> dict:
 async def test_allowed_handlers_land_in_the_tool_extras_claim(
     app: FastAPI, client: AsyncClient
 ) -> None:
-    r = await _mint(app, client, allowed_handlers=["files", "web", "files"])
+    r = await _mint(app, client, allowed_handlers=["files", "web", " files "])
     assert r.status_code == 200, r.text
     assert r.json()["allowed_handlers"] == ["files", "web"]
     claims = _claims(app, r.json()["access_token"])
@@ -176,10 +176,13 @@ async def test_liminal_lists_and_calls_only_the_tokens_handlers(
     listed = await rpc(scoped, "tools/list", {})
     names = {t["name"] for t in listed["result"]["tools"]}
     assert names and all(n.startswith("web.") for n in names), names
-    refused = await rpc(scoped, "tools/call", {"name": "scratchpad.write", "arguments": {"text": "x"}})
-    assert "error" in refused or refused["result"].get("isError"), refused
+    call = {"name": "scratchpad.set", "arguments": {"key": "k", "value": "v"}}
+    refused = await rpc(scoped, "tools/call", call)
+    assert refused.get("error", {}).get("code") == -32002, refused  # liminal: handler not allowed
 
     # Control: the same mint without the flag reaches scratchpad.
     open_token = (await _mint(app, client, op)).json()["access_token"]
     listed = await rpc(open_token, "tools/list", {})
-    assert any(t["name"].startswith("scratchpad.") for t in listed["result"]["tools"])
+    assert "scratchpad.set" in {t["name"] for t in listed["result"]["tools"]}
+    allowed = await rpc(open_token, "tools/call", call)
+    assert "error" not in allowed and not allowed["result"].get("isError"), allowed
