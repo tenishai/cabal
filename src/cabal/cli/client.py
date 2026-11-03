@@ -54,9 +54,13 @@ class TokenStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
-        with os.fdopen(fd, "w") as f:
-            f.write(token.strip())
-        os.replace(tmp, self.path)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(token.strip())
+            os.replace(tmp, self.path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def load(self, *, renew: bool = True) -> str | None:
         """The saved token. An operator token close to expiry is renewed
@@ -70,9 +74,14 @@ class TokenStore:
         left = _operator_seconds_left(token)
         if left is None or left <= 0 or left > RENEW_WITHIN_S:
             return token
+        # Opportunistic, and on the per-turn presence hook's path, so held to
+        # the presence calls' short timeout: a daemon that accepts and never
+        # answers must not stall a turn for the 30s default (PR 397 review).
         try:
-            fresh = renew_token(token=token)["access_token"]
-        except (httpx.HTTPError, KeyError) as exc:
+            fresh = renew_token(token=token, timeout=httpx.Timeout(SESSION_TIMEOUT_S))["access_token"]
+            if not isinstance(fresh, str) or not fresh:
+                raise ValueError("no access_token in the renewal response")
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
             log.debug("operator token renewal failed: %s", exc)
             return token
         self.save(fresh)
@@ -135,9 +144,9 @@ def bootstrap(code: str) -> dict[str, Any]:
     return resp.json()
 
 
-def renew_token(*, token: str) -> dict[str, Any]:
+def renew_token(*, token: str, timeout: httpx.Timeout | None = None) -> dict[str, Any]:
     """Swap a valid operator token for a fresh one (`POST /auth/renew`)."""
-    with make_client() as c:
+    with make_client(timeout=timeout) as c:
         resp = c.post("/auth/renew", headers={"Authorization": f"Bearer {token}"})
     resp.raise_for_status()
     return resp.json()

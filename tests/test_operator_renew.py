@@ -156,7 +156,7 @@ def store(monkeypatch, tmp_path):
 def _fake_renew(monkeypatch, result):
     calls: list[str] = []
 
-    def fake(*, token: str):
+    def fake(*, token: str, timeout=None):
         calls.append(token)
         if isinstance(result, Exception):
             raise result
@@ -244,3 +244,55 @@ def test_cbl_task_wait_picks_up_a_renewed_token(monkeypatch, store) -> None:
     )
     assert result.exit_code == 0, result.output
     assert seen == ["t0", "t1", "t2"]
+
+
+def test_a_daemon_that_never_answers_doesnt_stall_load(monkeypatch, store) -> None:
+    """The presence hook loads the token every turn, so a renewal against a
+    daemon that accepts and never replies is held to the presence timeout,
+    not the 30s default (PR 397 review)."""
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        s.listen()  # the kernel accepts; nothing ever replies
+        monkeypatch.setenv("CABAL_URL", f"http://127.0.0.1:{s.getsockname()[1]}")
+        monkeypatch.setattr(api, "SESSION_TIMEOUT_S", 0.5)
+        old = _unsigned(sub=OPERATOR, cabal_scope=["operator"], exp=int(time.time()) + 300)
+        store.save(old)
+        started = time.monotonic()
+        assert store.load() == old
+        assert time.monotonic() - started < 3
+
+
+@pytest.mark.parametrize("body", [["not", "a", "dict"], {"access_token": None}, {}])
+def test_a_strange_renewal_answer_keeps_the_old_token(monkeypatch, store, body) -> None:
+    old = _unsigned(sub=OPERATOR, cabal_scope=["operator"], exp=int(time.time()) + 60)
+    store.save(old)
+    monkeypatch.setattr(api, "renew_token", lambda **kw: body)
+    assert store.load() == old
+
+
+def test_a_failed_write_leaves_no_temp_file(monkeypatch, store) -> None:
+    store.save("one")
+
+    def boom(*a, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(api.os, "replace", boom)
+    with pytest.raises(OSError):
+        store.save("two")
+    assert store.path.read_text() == "one"
+    assert not [p for p in store.path.parent.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_the_in_process_tui_loads_the_token_without_renewing(monkeypatch, store) -> None:
+    """It runs its own app, so renewing would ask whichever daemon
+    CABAL_URL names."""
+    from cabal.tui.client import inprocess
+
+    old = _unsigned(sub=OPERATOR, cabal_scope=["operator"], exp=int(time.time()) + 60)
+    store.save(old)
+    calls = _fake_renew(monkeypatch, "new")
+    client = inprocess.InProcessBrokerClient()
+    assert client._operator_token == old
+    assert calls == []
