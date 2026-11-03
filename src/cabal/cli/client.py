@@ -293,10 +293,13 @@ def mint_service_token(
     aud: str,
     ttl_days: int,
     persona: str | None = None,
+    allowed_handlers: list[str] | None = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {"sub": sub, "scope": scope, "aud": aud, "ttl_days": ttl_days}
     if persona is not None:
         body["persona"] = persona
+    if allowed_handlers is not None:
+        body["allowed_handlers"] = allowed_handlers
     with make_client() as c:
         resp = c.post(
             "/admin/token/mint-service",

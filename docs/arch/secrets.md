@@ -3,7 +3,7 @@ card: arch-card:cabal-secrets
 updated: 2026-10-07
 anchor: src/cabal/core/secrets_backend.py sha=efab23f140e315ec24c695f392b73a7e80c92b71
 anchor: src/cabal/core/secrets.py sha=d071247288bc276cc285844b863fc3b314f33195
-anchor: src/cabal/core/routes/admin.py sha=a1193d29d4a1512c5b73966e3217cfe814e568da
+anchor: src/cabal/core/routes/admin.py sha=3004cc6ab75251c74f4be42210e55e8771dd433b
 ---
 # secrets — the platform's solo credential store (Fernet + SQLite)
 
@@ -19,7 +19,7 @@ INVARIANTS:
 - List never returns values; get skips rows that fail decryption (InvalidToken) instead of failing the fetch. WHY: one row under a rotated key must not take down the whole credential set — but it also means a wrong master key reads as "no secret", not an error.
 - Renaming a persona orphans its secrets; no migration by decision (D-016).
 - `cbl reset-auth` keeps secrets unless `--purge-secrets` (cli/main.py `reset_auth_cmd`); they are unreadable after a master-key change anyway.
-- Read auth = `_require_secrets_fetch`: aud ∈ {"cabal-core", gateway aud (`[liminal] jwt_aud`, default "liminal")} AND scope ∈ {operator, secrets-fetch}. Mint the service token with `cbl token mint-service --scope secrets-fetch` (POST /admin/token/mint-service, admin.py `mint_service_token`).
+- Read auth = `_require_secrets_fetch`: aud ∈ {"cabal-core", gateway aud (`[liminal] jwt_aud`, default "liminal")} AND scope ∈ {operator, secrets-fetch}. Mint the service token with `cbl token mint-service --scope secrets-fetch` (POST /admin/token/mint-service, admin.py `mint_service_token`). `--allowed-handler NAME` (repeatable) puts `cabal_tool_extras["liminal.allowed_handlers"]` on the token, as a persona's dispatch token carries it; without it the claim is absent and liminal allows every handler (#390).
 CONSUMERS: liminal `CabalCoreCredentialResolver` (liminal src/liminal/server/credentials.py) calls GET /admin/secrets over HTTP with `LIMINAL_CABAL_TOKEN` and caches 15 min; so a `cbl secret set` can take up to 15 min to reach a handler through liminal. Handlers declare needed keys in their card's `credential_keys` (cabal's own four declare none).
 API: the 4 /admin/secrets routes above; the Protocol for new backends.
 NO PLUGIN DISCOVERY (cabal#235): the secrets_backend.py docstring now says so. Nothing reads an entry-point group `cabal.secrets_backends`; app.py hard-codes `SqliteFernetBackend`. A new backend today means editing app.py.

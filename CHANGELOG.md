@@ -12,6 +12,11 @@ Pull requests and issues are in tenishai/cabal.
   task id and state. `cbl task <id>` prints a task's state and message (`--raw` for the JSON);
   `--wait [--interval S] [--timeout S]` polls until it ends, exits 1 unless it completed, and
   exits 3 on `--timeout` (issue #391).
+- `cbl token mint-service --allowed-handler NAME` (repeatable; `allowed_handlers` on
+  `POST /admin/token/mint-service`) limits a service token to those liminal handlers. It is
+  carried as `cabal_tool_extras["liminal.allowed_handlers"]`, as a persona's dispatch token
+  carries it. Without the flag the claim is absent and liminal allows every handler, as before
+  (issue #390).
 - An operator token can be renewed (issue #395). `POST /auth/renew` swaps a valid, unexpired,
   unrevoked operator token for a fresh one; `cbl` renews a saved operator token by itself when it
   has under ten minutes left, and `cbl token renew` does it now. `cbl task --wait` reloads the

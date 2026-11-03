@@ -1127,6 +1127,15 @@ def token_mint_service(
             "--aud liminal`). Omit for secrets-fetch service tokens."
         ),
     ),
+    allowed_handler: list[str] = typer.Option(
+        [],
+        "--allowed-handler",
+        help=(
+            "A liminal handler the token may call (e.g. `web`); repeat for more. "
+            "Without it the token carries no handler list, and liminal lets it "
+            "call every handler."
+        ),
+    ),
 ) -> None:
     """Mint a long-lived service JWT for liminal (or any peer service).
 
@@ -1152,6 +1161,7 @@ def token_mint_service(
             aud=aud,
             ttl_days=ttl_days,
             persona=persona,
+            allowed_handlers=list(allowed_handler) or None,
         )
     except httpx.HTTPStatusError as exc:
         try:
@@ -1166,7 +1176,8 @@ def token_mint_service(
 
     typer.echo(body["access_token"])
     typer.echo(
-        f"# sub={body['sub']} scope={body['scope']} aud={body['aud']} expires={body['expires_at']}",
+        f"# sub={body['sub']} scope={body['scope']} aud={body['aud']} expires={body['expires_at']}"
+        + (f" handlers={body['allowed_handlers']}" if body.get("allowed_handlers") is not None else ""),
         err=True,
     )
 
