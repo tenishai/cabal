@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import json
+import logging
 import os
 import stat
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,6 +21,12 @@ DEFAULT_BASE_URL = "http://127.0.0.1:7400"
 #: An override for the token file; None means ``cabal_home()/token``. Tests
 #: monkeypatch it.
 DEFAULT_TOKEN_PATH: Path | None = None
+#: A saved operator token with less than this long left is renewed when it is
+#: loaded (#395), so a long `cbl task --wait` or a set left running keeps its
+#: operator session.
+RENEW_WITHIN_S = 10 * 60
+
+log = logging.getLogger(__name__)
 
 
 def _default_token_path() -> Path:
@@ -39,14 +49,49 @@ class TokenStore:
     path: Path = field(default_factory=_default_token_path)
 
     def save(self, token: str) -> None:
+        # Written to a 0600 temp file and renamed over: several `cbl` processes
+        # may renew at once, and none may read a half-written token.
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(token.strip())
-        self.path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, "w") as f:
+            f.write(token.strip())
+        os.replace(tmp, self.path)
 
-    def load(self) -> str | None:
+    def load(self, *, renew: bool = True) -> str | None:
+        """The saved token. An operator token close to expiry is renewed
+        first and the new one saved; if renewal fails the old token is
+        returned, and the call it is used for reports why."""
         if not self.path.exists():
             return None
-        return self.path.read_text().strip() or None
+        token = self.path.read_text().strip() or None
+        if token is None or not renew:
+            return token
+        left = _operator_seconds_left(token)
+        if left is None or left <= 0 or left > RENEW_WITHIN_S:
+            return token
+        try:
+            fresh = renew_token(token=token)["access_token"]
+        except (httpx.HTTPError, KeyError) as exc:
+            log.debug("operator token renewal failed: %s", exc)
+            return token
+        self.save(fresh)
+        log.debug("operator token renewed (%ds were left)", left)
+        return fresh
+
+
+def _operator_seconds_left(token: str) -> int | None:
+    """Seconds until an operator token expires, or None for any other token.
+    Reads the payload without verifying it; the daemon verifies on renewal."""
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (IndexError, ValueError):
+        return None
+    if not isinstance(claims, dict) or "operator" not in (claims.get("cabal_scope") or []):
+        return None
+    exp = claims.get("exp")
+    return int(exp - time.time()) if isinstance(exp, (int, float)) else None
 
 
 def base_url() -> str:
@@ -86,6 +131,14 @@ SESSION_TIMEOUT_S = 5.0
 def bootstrap(code: str) -> dict[str, Any]:
     with make_client() as c:
         resp = c.post("/auth/bootstrap", json={"code": code})
+    resp.raise_for_status()
+    return resp.json()
+
+
+def renew_token(*, token: str) -> dict[str, Any]:
+    """Swap a valid operator token for a fresh one (`POST /auth/renew`)."""
+    with make_client() as c:
+        resp = c.post("/auth/renew", headers={"Authorization": f"Bearer {token}"})
     resp.raise_for_status()
     return resp.json()
 

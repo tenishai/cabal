@@ -334,6 +334,9 @@ def task_cmd(
         if target is None:
             target = api.task_target(token=token, task_id=task_id)
         while True:
+            # Reloaded each poll, so a wait longer than the token's life keeps
+            # going on the renewed one (#395).
+            token = api.TokenStore().load() or token
             try:
                 task = api.get_task(token=token, target=target, task_id=task_id)
             except httpx.RequestError as exc:
@@ -1062,6 +1065,35 @@ def token_mint() -> None:
     """Mint a session_token for long-running Tasks. (Phase 2)"""
     typer.echo("cbl token mint: not yet implemented (Phase 2)", err=True)
     raise typer.Exit(code=2)
+
+
+@token_app.command("renew")
+def token_renew() -> None:
+    """Swap the saved operator token for a fresh one, before it expires.
+
+    `cbl` does this by itself when a saved token has under ten minutes
+    left; this is for doing it now. An expired token can't be renewed: log
+    in again with a bootstrap code.
+    """
+    store = api.TokenStore()
+    token = store.load(renew=False)
+    if token is None:
+        typer.echo("no token; run `cbl login` first.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        body = api.renew_token(token=token)
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get("detail", exc.response.text)
+        except Exception:  # noqa: BLE001
+            detail = exc.response.text
+        typer.echo(f"renew failed: {_auth_hint(detail)}", err=True)
+        raise typer.Exit(code=1) from exc
+    except httpx.RequestError as exc:
+        typer.echo(f"could not reach daemon at {api.base_url()}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    store.save(body["access_token"])
+    typer.echo(f"Operator token renewed. Saved to {store.path}.")
 
 
 @token_app.command("mint-service")

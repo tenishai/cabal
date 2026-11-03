@@ -12,6 +12,18 @@ Pull requests and issues are in tenishai/cabal.
   task id and state. `cbl task <id>` prints a task's state and message (`--raw` for the JSON);
   `--wait [--interval S] [--timeout S]` polls until it ends, exits 1 unless it completed, and
   exits 3 on `--timeout` (issue #391).
+- An operator token can be renewed (issue #395). `POST /auth/renew` swaps a valid, unexpired,
+  unrevoked operator token for a fresh one; `cbl` renews a saved operator token by itself when it
+  has under ten minutes left, and `cbl token renew` does it now. `cbl task --wait` reloads the
+  token on every poll, so a wait longer than the token's life keeps going. Before, a session
+  ended an hour after `cbl login`, and the only way to a new bootstrap code was a restart.
+- `[cabal] operator_token_ttl_seconds` sets the operator token's lifetime (default 3600, at
+  least 60), for `cbl login` and renewal alike.
+
+### Changed
+
+- The token file is written to an owner-only temp file and renamed into place, so `cbl`
+  processes renewing at once never read a half-written token.
 
 ## [0.4.0] — 2026-10-26
 

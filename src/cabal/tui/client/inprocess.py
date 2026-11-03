@@ -73,7 +73,9 @@ class InProcessBrokerClient:
         # verification: minting around it would also mint around a revoked
         # or wrong-cabal token, which should be reported instead.
         if operator_token is None:
-            operator_token = TokenStore().load()
+            # renew=False: this client runs its own app; renewing would ask
+            # whichever daemon CABAL_URL names.
+            operator_token = TokenStore().load(renew=False)
         #: None means "mint one per message once booted" (`_self_minted_token`).
         self._operator_token: str | None = operator_token
 
