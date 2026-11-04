@@ -78,6 +78,9 @@ class CabalConfig(_Open):
     # `POST /auth/renew` (#395). A token renewed before it expires gets a fresh
     # one this long; a lapsed one needs a new bootstrap code.
     operator_token_ttl_seconds: int = Field(default=60 * 60, ge=60)
+    # The longest a `POST /admin/token/mint-service` token may last, in days
+    # (#403). A longer request is cut to this; the response's expires_at shows it.
+    service_token_max_ttl_days: int = Field(default=365, ge=1, le=365)
 
 
 #: Keyword names cabal itself binds on the way to the provider. An
