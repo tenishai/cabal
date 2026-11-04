@@ -8,6 +8,11 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Security
 
+- `POST /admin/token/mint-service` no longer mints operator tokens (issue #403). It minted any `sub`,
+  `aud` and `scope` for up to 365 days, so an operator could mint `operator:<x>` / `cabal-core` /
+  `operator`, which passes `POST /auth/renew` and so never had to expire. It now refuses `400` for a
+  scope holding `operator` or a `sub` of `operator` or `operator:<x>`, on any audience. Operator tokens
+  come from bootstrap and `/auth/renew` only.
 - The `cabal_` metadata prefix is cabal's on a task that arrives from the wire (issue #401). A caller's
   `cabal_token_budget` set the persona's token budget to any value, `cabal_parent_task` placed its task
   under any task in the AbortGraph, and `cabal_session_started` skipped the SESSION_START hook. Every door
