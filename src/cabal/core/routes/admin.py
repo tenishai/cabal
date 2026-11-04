@@ -986,9 +986,9 @@ class MintServiceRequest(BaseModel):
     # handler (#390).
     allowed_handlers: list[str] | None = None
 
-    def ttl_seconds(self) -> int:
-        # Cap at 365 days to avoid silly-long lifetimes.
-        return max(1, min(self.ttl_days, 365)) * 24 * 60 * 60
+    def ttl_seconds(self, max_days: int = 365) -> int:
+        # Capped by [cabal] service_token_max_ttl_days (#403), 365 at most.
+        return max(1, min(self.ttl_days, max_days, 365)) * 24 * 60 * 60
 
 
 @router.post("/token/mint-service")
@@ -1054,7 +1054,8 @@ async def mint_service_token(
 
     from cabal.core.auth.jwt import mint as _mint
 
-    ttl = req.ttl_seconds()
+    identity = getattr(request.app.state, "identity", None)
+    ttl = req.ttl_seconds(identity.cabal.service_token_max_ttl_days if identity is not None else 365)
     token = _mint(
         signing_key=stored,
         sub=req.sub,

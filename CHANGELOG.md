@@ -13,6 +13,9 @@ Pull requests and issues are in tenishai/cabal.
   `operator`, which passes `POST /auth/renew` and so never had to expire. It now refuses `400` for a
   scope holding `operator` or a `sub` of `operator` or `operator:<x>`, on any audience. Operator tokens
   come from bootstrap and `/auth/renew` only.
+- `[cabal] service_token_max_ttl_days` caps how long a mint-service token lasts (default 365, the old
+  fixed cap; 1 to 365). A longer request is cut to the cap, as before; the response's `expires_at` shows it
+  (issue #403).
 - The `cabal_` metadata prefix is cabal's on a task that arrives from the wire (issue #401). A caller's
   `cabal_token_budget` set the persona's token budget to any value, `cabal_parent_task` placed its task
   under any task in the AbortGraph, and `cabal_session_started` skipped the SESSION_START hook. Every door

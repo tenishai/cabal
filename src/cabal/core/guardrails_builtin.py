@@ -783,9 +783,9 @@ class DelegationEdgeGuardrail:
     (``admin.py:_require_operator_claims``), which is the signal this SHOULD
     use -- but ``routes/tasks.py`` re-mints the dispatch token with
     ``scope=["dispatch"]``, so operator scope does not survive to the router
-    and the prefix is all that reaches here. Tracked separately; until then a
-    deliberately-minted service token with an ``operator:`` sub is exempt,
-    which requires operator power to create in the first place.
+    and the prefix is all that reaches here. Tracked separately. mint-service
+    no longer mints an ``operator:`` sub (#403), so only bootstrap and
+    /auth/renew produce one.
 
     **AN ``agent:<name>`` SUB IS A CALLER IN ITS OWN RIGHT (cabal#189).** Room
     colleagues and outside agents normally carry no ``cabal_persona`` -- the
