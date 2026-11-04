@@ -1017,7 +1017,7 @@ async def mint_service_token(
 
     if not req.sub or not req.scope or not req.aud:
         raise HTTPException(400, detail="sub, scope, and aud must all be non-empty")
-    # Operator tokens come from bootstrap and /auth/renew only. One minted here
+    # Over HTTP, operator tokens come from bootstrap and /auth/renew only. One minted here
     # would last up to 365 days and pass /auth/renew forever (#403).
     if "operator" in req.scope or req.sub == "operator" or req.sub.startswith("operator:"):
         raise HTTPException(

@@ -1,7 +1,7 @@
 """#403: `POST /admin/token/mint-service` refuses to mint an operator token.
 
 One minted there would last up to 365 days and pass `/auth/renew` without
-end. Operator tokens come from bootstrap and `/auth/renew` only.
+end. Over HTTP, operator tokens come from bootstrap and `/auth/renew` only.
 """
 
 from __future__ import annotations

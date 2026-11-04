@@ -784,8 +784,9 @@ class DelegationEdgeGuardrail:
     use -- but ``routes/tasks.py`` re-mints the dispatch token with
     ``scope=["dispatch"]``, so operator scope does not survive to the router
     and the prefix is all that reaches here. Tracked separately. mint-service
-    no longer mints an ``operator:`` sub (#403), so only bootstrap and
-    /auth/renew produce one.
+    no longer mints an ``operator:`` sub (#403). Over HTTP only bootstrap and
+    /auth/renew produce one; the in-process TUI client also mints one from the
+    signing key (``tui/client/inprocess.py`` ``_self_minted_token``).
 
     **AN ``agent:<name>`` SUB IS A CALLER IN ITS OWN RIGHT (cabal#189).** Room
     colleagues and outside agents normally carry no ``cabal_persona`` -- the

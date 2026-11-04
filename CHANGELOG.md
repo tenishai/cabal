@@ -12,7 +12,7 @@ Pull requests and issues are in tenishai/cabal.
   `aud` and `scope` for up to 365 days, so an operator could mint `operator:<x>` / `cabal-core` /
   `operator`, which passes `POST /auth/renew` and so never had to expire. It now refuses `400` for a
   scope holding `operator` or a `sub` of `operator` or `operator:<x>`, on any audience. Operator tokens
-  come from bootstrap and `/auth/renew` only.
+  come over HTTP from bootstrap and `/auth/renew` only.
 - `[cabal] service_token_max_ttl_days` caps how long a mint-service token lasts (default 365, the old
   fixed cap; 1 to 365). A longer request is cut to the cap, as before; the response's `expires_at` shows it
   (issue #403).
