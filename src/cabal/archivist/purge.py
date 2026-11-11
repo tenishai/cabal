@@ -132,7 +132,21 @@ def purge(db_path: Path, resource_name: str, *, apply: bool = False) -> PurgeRes
         raise
 
     # Runs even when nothing matched, so re-running an apply that failed here
-    # finishes the cleanup. Autocommit: VACUUM refuses to run in a transaction.
+    # finishes the cleanup.
+    compact(conn)
+    logger.info(
+        "archivist purge: removed resource=%r entries=%d relations=%d",
+        resource_name,
+        len(ids),
+        relations,
+    )
+    return result
+
+
+def compact(conn) -> None:
+    """Merge the FTS segments so deleted tokens leave the b-tree, then VACUUM so
+    freed pages do not keep the text. Closes `conn`. Autocommit: VACUUM refuses
+    to run in a transaction. Shared with erase (cabal#410)."""
     conn.isolation_level = None
     try:
         conn.execute("INSERT INTO memory_entries_fts(memory_entries_fts) VALUES ('optimize')")
@@ -141,10 +155,3 @@ def purge(db_path: Path, resource_name: str, *, apply: bool = False) -> PurgeRes
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     finally:
         conn.close()
-    logger.info(
-        "archivist purge: removed resource=%r entries=%d relations=%d",
-        resource_name,
-        len(ids),
-        relations,
-    )
-    return result

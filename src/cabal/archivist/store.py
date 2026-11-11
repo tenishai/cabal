@@ -27,6 +27,7 @@ class PublishResult:
     """What happened to a publish() call."""
 
     outcome: str  # "new" | "duplicate_l0" | "duplicate_l1" | "related" | "superseded"
+    #               | "refused_erased"
     entry_id: str
     related_ids: list[str]
 
@@ -52,6 +53,7 @@ class ArchivistStore:
         *,
         supersede: bool = False,
         supersede_scope: SupersedeScope = "type",
+        derived_from: list[str] | None = None,
     ) -> PublishResult:
         """Write an entry through the dedup pipeline.
 
@@ -86,6 +88,14 @@ class ArchivistStore:
               superseded    — entry was written AND it retired prior same-resource
                               active entries (supersede=True); related_ids holds
                               the now-superseded ids.
+              refused_erased — nothing written: the content, the entry's refs or
+                              a ``derived_from`` source was erased (cabal#410).
+                              entry_id is empty; related_ids holds the erased
+                              references that matched.
+
+            derived_from: the sources this entry was made from, recorded as
+                lineage so erasing any of them reaches this entry (cabal#410).
+                The entry's ``refs`` are recorded too.
         """
         if supersede_scope not in SUPERSEDE_SCOPES:
             raise ValueError(
@@ -102,10 +112,20 @@ class ArchivistStore:
         conn = connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
+            sources = _dedupe([*(derived_from or []), *entry.refs])
+            if not entry.content_hash:
+                entry.content_hash = entry.compute_hash()
+            erased = _erased_refs(conn, [entry.content_hash, entry.text_hash(), *sources])
+            if erased:
+                conn.commit()
+                return PublishResult(outcome="refused_erased", entry_id="", related_ids=erased)
             result = self._dedup.check(entry, conn=conn)
 
             if result.outcome in ("duplicate_l0", "duplicate_l1"):
                 assert result.entry_id is not None
+                # A new source for content already held still joins its lineage,
+                # so erasing that source reaches the entry (cabal#410).
+                _insert_lineage(conn, result.entry_id, sources)
                 retired = (
                     self._supersede_from_match(result.entry_id, supersede_scope, conn)
                     if supersede
@@ -127,6 +147,7 @@ class ArchivistStore:
                 # half-applied supersession, and not capped by the dedup LIMIT-5
                 # sample.
                 self._insert(entry, conn=conn)
+                _insert_lineage(conn, entry.id, sources)
                 superseded_ids = self._supersede_all(entry, conn, scope=supersede_scope)
                 conn.commit()
                 self._dedup.record_new(entry)
@@ -137,6 +158,7 @@ class ArchivistStore:
                 )
 
             self._insert(entry, conn=conn)
+            _insert_lineage(conn, entry.id, sources)
             if result.outcome == "related" and result.related_ids:
                 edges = make_related_edges(entry.id, result.related_ids)
                 self._insert_relations(edges, conn=conn)
@@ -168,12 +190,14 @@ class ArchivistStore:
                     id, resource_name, summary, entry_type, tags,
                     details, gotchas, commands, refs, importance,
                     source_thread, content_hash, status, processing_state,
-                    written_by, access_count, created_at, updated_at
+                    written_by, origin_house, origin_cabal, origin_agent,
+                    origin_role, access, access_count, created_at, updated_at
                 ) VALUES (
                     :id, :resource_name, :summary, :entry_type, :tags,
                     :details, :gotchas, :commands, :refs, :importance,
                     :source_thread, :content_hash, :status, :processing_state,
-                    :written_by, :access_count, :created_at, :updated_at
+                    :written_by, :origin_house, :origin_cabal, :origin_agent,
+                    :origin_role, :access, :access_count, :created_at, :updated_at
                 )""",
                 row,
             )
@@ -293,11 +317,18 @@ class ArchivistStore:
         entry_type: str | None = None,
         tags: list[str] | None = None,
         top_k: int = 10,
+        caller_cabal: str | None = None,
+        caller_role: str | None = None,
     ) -> list[Entry]:
         """FTS5 search across resource_name + summary + details + gotchas + tags.
 
         Optionally filtered by `entry_type` (exact match) and `tags`
         (every supplied tag must appear in the row's tags list).
+
+        Ranked by origin first when the caller names its cabal or role
+        (cabal#410): the caller's own cabal, then the same role in other
+        cabals, then everything else, with bm25 inside each group. Nothing is
+        hidden by origin; it only orders.
         """
         fts_query = _sanitize_fts(query)
         if not fts_query:
@@ -319,7 +350,15 @@ class ArchivistStore:
         for tag in tags or []:
             sql.append("  AND EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)")
             params.append(tag)
-        sql.append("ORDER BY bm25(memory_entries_fts) LIMIT ?")
+        order = ["bm25(memory_entries_fts)"]
+        if caller_cabal or caller_role:
+            order.insert(
+                0,
+                "CASE WHEN ? <> '' AND e.origin_cabal = ? THEN 0 "
+                "WHEN ? <> '' AND e.origin_role = ? THEN 1 ELSE 2 END",
+            )
+            params.extend([caller_cabal or "", caller_cabal or "", caller_role or "", caller_role or ""])
+        sql.append("ORDER BY " + ", ".join(order) + " LIMIT ?")
         params.append(top_k)
 
         conn = connect(self.db_path)
@@ -376,6 +415,18 @@ class ArchivistStore:
             conn.close()
         return [r["src_id"] for r in rows]
 
+    def lineage(self, entry_id: str) -> list[str]:
+        """The sources an entry was derived from, as recorded on publish."""
+        conn = connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT source_ref FROM memory_lineage WHERE derived_id = ? ORDER BY source_ref",
+                (entry_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [r["source_ref"] for r in rows]
+
     # ---- introspection ----------------------------------------------------
 
     def schema(self) -> dict[str, Any]:
@@ -419,10 +470,43 @@ class ArchivistStore:
                 "tags",
             ],
             "filters": ["entry_type", "tags"],
+            "ranking": ["caller_cabal", "caller_role"],
+            "access_labels": ["house", "public"],
         }
 
 
 # ---- internals ------------------------------------------------------------
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: dict[str, None] = {}
+    for v in values:
+        if v and v not in seen:
+            seen[v] = None
+    return list(seen)
+
+
+def _erased_refs(conn: sqlite3.Connection, refs: list[str]) -> list[str]:
+    """The members of `refs` (content hashes, entry ids or outside references)
+    that have been erased."""
+    refs = _dedupe(refs)
+    if not refs:
+        return []
+    marks = ",".join("?" * len(refs))
+    rows = conn.execute(
+        f"SELECT ref FROM memory_erasures WHERE ref IN ({marks}) ORDER BY ref", refs
+    ).fetchall()
+    return [r["ref"] for r in rows]
+
+
+def _insert_lineage(conn: sqlite3.Connection, derived_id: str, sources: list[str]) -> None:
+    now = datetime.now(UTC).isoformat()
+    for ref in sources:
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_lineage (derived_id, source_ref, created_at) "
+            "VALUES (?, ?, ?)",
+            (derived_id, ref, now),
+        )
 
 
 def _sanitize_fts(query: str) -> str:

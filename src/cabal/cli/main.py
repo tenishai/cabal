@@ -1476,3 +1476,76 @@ def archivist_purge(
     )
     if not apply and result.entries:
         typer.echo("re-run with --apply to delete")
+
+
+def _archivist_db(db: Path | None) -> Path:
+    if db is not None:
+        return db
+    env = os.environ.get("CABAL_ARCHIVIST_DB", "")
+    if not env:
+        typer.echo("no database: pass --db or set CABAL_ARCHIVIST_DB", err=True)
+        raise typer.Exit(code=2)
+    return Path(env)
+
+
+@archivist_app.command("erase")
+def archivist_erase(
+    ref: str = typer.Argument(
+        ..., help="Entry id, or an outside source ref such as techne:poe@dimartin:knowledge/4255."
+    ),
+    reason: str = typer.Option("", "--reason", help="Why, recorded with the erasure."),
+    db: Path = typer.Option(None, "--db", help="Archivist database file. Default: $CABAL_ARCHIVIST_DB."),
+    apply: bool = typer.Option(False, "--apply", help="Erase. Without it, only list what it reaches."),
+) -> None:
+    """Erase an entry or a source and every entry derived from it (#410).
+
+    Reached entries keep their id and content hash with status 'erased' and
+    lose their text; publish and the git sync refuse to bring them back. A
+    merged entry is erased, not re-derived: its other sources are listed so
+    the writer can republish from them.
+    """
+    from cabal.archivist.erase import erase
+
+    try:
+        result = erase(_archivist_db(db), ref, reason=reason, apply=apply)
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    for e in result.entries:
+        others = f"  other sources: {', '.join(e.other_sources)}" if e.other_sources else ""
+        later = f"  not erased, supersedes it: {', '.join(e.successors)}" if e.successors else ""
+        typer.echo(f"{e.id}  {e.status:<10} {e.resource_name}  via {e.via}{others}{later}")
+    verb = "erased" if apply else "would erase"
+    typer.echo(f"{verb} {len(result.entries)} entries for {ref!r}")
+    if not apply and result.entries:
+        typer.echo("re-run with --apply to erase")
+
+
+@archivist_app.command("backfill-origin")
+def archivist_backfill_origin(
+    house: str = typer.Option(..., "--house", help="House to stamp where origin_house is empty."),
+    cabal: str = typer.Option("", "--cabal", help="Cabal (or host) to stamp where origin_cabal is empty."),
+    ref_prefix: str = typer.Option(
+        "", "--ref-prefix", help="Only stamp --cabal on entries with a ref starting with this."
+    ),
+    db: Path = typer.Option(None, "--db", help="Archivist database file. Default: $CABAL_ARCHIVIST_DB."),
+    apply: bool = typer.Option(False, "--apply", help="Write. Without it, only count."),
+) -> None:
+    """Give entries written before #410 their origin and lineage. Fills only
+    empty fields, so re-running it changes nothing."""
+    from cabal.archivist.backfill import backfill_origin
+
+    try:
+        r = backfill_origin(
+            _archivist_db(db), house=house, cabal=cabal, ref_prefix=ref_prefix, apply=apply
+        )
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    verb = "set" if apply else "would set"
+    typer.echo(
+        f"{verb}: house on {r.house}, cabal on {r.cabal}, agent on {r.agent}; "
+        f"lineage rows {r.lineage}"
+    )
+    if not apply:
+        typer.echo("re-run with --apply to write")

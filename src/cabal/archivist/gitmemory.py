@@ -20,7 +20,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from cabal.archivist.gitsync import export_corpus, materialize_corpus
+from cabal.archivist.gitsync import export_corpus, materialize_corpus, prune_erased_files
 from cabal.archivist.store import ArchivistStore
 
 
@@ -76,6 +76,11 @@ def push(
         return False  # nothing new to share
     _git(repo_dir, "commit", "-m", message)
     _git(repo_dir, "pull", "--no-edit", "--no-rebase")  # absorb others' commits (union)
+    # An erasure marker that arrived in that merge wins over an entry file this
+    # commit carried, so the push never re-shares erased text (cabal#410).
+    if prune_erased_files(repo_dir):
+        _git(repo_dir, "add", "-A")
+        _git(repo_dir, "commit", "-m", "drop entries covered by erasure markers")
     _git(repo_dir, "push")
     return True
 
