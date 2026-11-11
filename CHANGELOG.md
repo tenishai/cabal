@@ -6,6 +6,22 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+## [0.5.0rc1] — 2026-11-11
+
+A release candidate: the wright set runs it before `0.5.0` is tagged.
+
+### Upgrading
+
+- One database migration, applied at startup like the others: `f3b6c1d2e4a5` adds
+  `conversations.not_before` and `conversations.schedule_json` for scheduled tasks. An archivist
+  database gains its origin columns and two new tables (`memory_lineage`, `memory_erasures`) when it is
+  opened; the change only adds, and an older server still works against the upgraded file.
+- An archivist shared across cabals: set `$CABAL_ARCHIVIST_HOUSE` on its server (unset, new entries
+  record `origin_house` as `''`), then run `cbl archivist backfill-origin --house <h> --apply` once to
+  fill in entries written before the upgrade (a dry run without `--apply`). See the issue #410 entry.
+- ergon pins `tenish-cabal[full]` exactly; a set needs an ergon whose pin names this release to get
+  running tasks, drain and scheduling.
+
 ### Security
 
 - `POST /admin/token/mint-service` no longer mints operator tokens (issue #403). It minted any `sub`,
@@ -20,12 +36,37 @@ Pull requests and issues are in tenishai/cabal.
   `cabal_token_budget` set the persona's token budget to any value, `cabal_parent_task` placed its task
   under any task in the AbortGraph, and `cabal_session_started` skipped the SESSION_START hook. Every door
   (`POST /a2a/tasks`, JSON-RPC `message/send` and `message/stream`, v1 `SendMessage`) now drops every
-  `cabal_*` key a caller sends except `cabal_delegation_depth` and `cabal_trace_id`, with one INFO log
-  line naming them (`core/a2a/inbound.py`). A non-numeric `cabal_token_budget` from an in-process caller
+  `cabal_*` key a caller sends except `cabal_delegation_depth`, `cabal_trace_id` and `cabal_not_before`
+  (which only delays the caller's own task, and is honoured only on v1 `SendMessage`; issue #406), with
+  one INFO log line naming them (`core/a2a/inbound.py`). A non-numeric `cabal_token_budget` from an in-process caller
   no longer raises. Other caller metadata is unchanged.
 
 ### Added
 
+- Running tasks and a drain (issue #405). The router keeps an in-process list of the dispatches
+  running now, on every path (sync, detached, streaming, a local resume), from the moment a task is
+  admitted until its result is written. `GET /admin/tasks/running` and `cbl tasks --running` show
+  it; `/healthz` reports `draining`. `POST /admin/drain` (`cbl drain [--deadline S] [--wait]`) stops
+  cabal starting new top-level work while running tasks finish, and aborts nothing; a dispatch from
+  an agent that is itself running a task is still let through, judged by its token subject.
+  `POST /admin/drain/cancel` ends it. While draining, a new dispatch is refused as "retry later": 503
+  with `Retry-After` on `/a2a/tasks`, `-32004` on JSON-RPC, `UnsupportedOperation` on v1. A task id
+  that is already running is refused (`409` on `/a2a/tasks` and on `POST /admin/tasks/{id}/resume`).
+  The restart sweep marks the tasks it fails with `cabal_interrupted`. ergon's busy-aware `down`
+  and `status` (ergon issue 35) read this list.
+- Scheduled tasks (issue #406). A v1 `SendMessage` with `returnImmediately` and metadata
+  `cabal_not_before` (ISO 8601 with an offset) is stored as a `scheduled` task with the caller's
+  claims and no token, and started by cabal's scheduler when due, with a freshly minted token after
+  re-checking the claims' expiry and revocation. It survives restarts, records how late it started
+  (`cabal_started_late_s`), waits while draining or at the detached cap, and can be cancelled with
+  `CancelTask`. `GET /admin/tasks/scheduled`, `cbl dispatch --detach --not-before`, `cbl tasks
+  --scheduled` and `cbl task --cancel`. Other doors refuse `cabal_not_before` rather than start at
+  once. `[cabal] schedule_poll_seconds` sets the scheduler's tick.
+- A "waiting" outcome, reason code 705 (issue #406). An agent that stops to wait for a condition
+  ends its turn with 705 and `cabal_waiting = {condition, until?}`. With `until` and the caller's
+  claims, cabal schedules a continuation in the same context, keeping the delegation depth and
+  trace, and marks the first task completed with `cabal_continued_by`; otherwise the task pauses as
+  `input-required` with the reason. `[cabal] max_wait_continuations` (default 5) caps the chain.
 - The archivist records where each entry came from and what it was made from, for an archivist shared
   across cabals (issue #410). Each entry has an origin: `origin_house`, set by the server from
   `$CABAL_ARCHIVIST_HOUSE`, plus `origin_cabal`, `origin_agent` and `origin_role`, declared by the caller
