@@ -8,7 +8,9 @@ every entry derived from those, and so on.
 
 Erasure is a state, not a delete. Each reached entry keeps its row with
 ``status='erased'``, its id, resource_name and content_hash, and loses its
-text: summary, details, gotchas, commands, refs and tags. The reference, each
+text: summary, details, gotchas, commands, refs and tags. Its lineage rows stay
+on purpose: they hold identifiers, not text, the walk and ``other_sources``
+need them, and ``archivist.get`` still reports them as ``derived_from``. The reference, each
 entry id and each content hash go into ``memory_erasures``, which publish and
 the git-corpus sync both check, so neither can bring the text back. A hash
 of the text alone is recorded too, so the same words under other refs, tags or
@@ -17,6 +19,14 @@ a new resource_name are refused as well.
 A merged entry is erased, not re-derived: re-deriving it from its remaining
 sources needs the writer's consolidation step. The result names those entries
 so the writer can republish from what is left.
+
+Erase does not follow SUPERSEDES edges: a successor is a correction, not a
+copy. The result lists each reached entry's unreached successors so an operator
+can see them, and use purge on that resource_name when every version must go.
+
+Neither erase nor purge reaches git history. In the git corpus the erased text
+leaves the tip, but ``git log -p`` on the corpus repo still shows it; removing
+it there needs a history rewrite of that repo.
 
 Admin-only, like purge: no handler or HTTP route imports it. It runs as
 ``cbl archivist erase`` on the host that holds the database file. For text
@@ -46,6 +56,10 @@ class ErasedEntry:
     status: str  # status before the erase
     via: str  # the reference that reached it: the erased ref, or a source entry id
     other_sources: list[str] = field(default_factory=list)  # lineage left after the erase
+    # Entries that SUPERSEDE this one and are not reached. Not erased, since a
+    # correction is not a copy; listed so an operator who wants every version
+    # gone can use purge on purpose.
+    successors: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -82,6 +96,15 @@ def erase(db_path: Path, ref: str, *, reason: str = "", apply: bool = False) -> 
                 r["source_ref"]
                 for r in rows
                 if r["source_ref"] != ref and r["source_ref"] not in erased_ids
+            ]
+            e.successors = [
+                r["src_id"]
+                for r in conn.execute(
+                    "SELECT src_id FROM memory_relations WHERE dst_id = ? "
+                    "AND relation_type = 'SUPERSEDES' ORDER BY src_id",
+                    (e.id,),
+                ).fetchall()
+                if r["src_id"] not in erased_ids
             ]
         result = EraseResult(ref=ref, applied=apply, entries=reached)
         logger.debug(

@@ -118,10 +118,23 @@ def test_ranking_hides_nothing(tmp_path: Path) -> None:
 
 def test_empty_caller_role_does_not_match_entries_without_a_role(tmp_path: Path) -> None:
     store = ArchivistStore(tmp_path / "a.db")
-    norole = store.publish(_entry("a", "lesson lesson lesson", cabal="x"))
+    # Without the "? <> ''" guard an empty caller role equals every empty
+    # origin_role, lifting the no-role entry into the same-role group ahead of
+    # the role-bearing one, which has the better bm25 score.
+    norole = store.publish(_entry("a", "lesson in a long sentence about other things", cabal="x"))
+    withrole = store.publish(_entry("c", "lesson lesson lesson", cabal="y", role="coder"))
     mine = store.publish(_entry("b", "lesson", cabal="mine"))
     ranked = [e.id for e in store.search("lesson", caller_cabal="mine")]
-    assert ranked == [mine.entry_id, norole.entry_id]
+    assert ranked == [mine.entry_id, withrole.entry_id, norole.entry_id]
+
+
+def test_empty_caller_cabal_does_not_match_entries_without_a_cabal(tmp_path: Path) -> None:
+    store = ArchivistStore(tmp_path / "a.db")
+    nocabal = store.publish(_entry("a", "lesson in a long sentence about other things"))
+    withcabal = store.publish(_entry("c", "lesson lesson lesson", cabal="y", role="other"))
+    mine = store.publish(_entry("b", "lesson", cabal="z", role="reviewer"))
+    ranked = [e.id for e in store.search("lesson", caller_role="reviewer")]
+    assert ranked == [mine.entry_id, withcabal.entry_id, nocabal.entry_id]
 
 
 # ---- lineage -------------------------------------------------------------
@@ -242,6 +255,21 @@ def test_erase_is_idempotent(tmp_path: Path) -> None:
     assert _rows(db, "INSERT INTO memory_entries_fts(memory_entries_fts) VALUES ('integrity-check')") == []
 
 
+def test_erase_lists_unreached_successors_and_keeps_them(tmp_path: Path) -> None:
+    db = tmp_path / "a.db"
+    store = ArchivistStore(db)
+    old = store.publish(
+        Entry(resource_name="f", summary="old wording", entry_type="fact", refs=["src:old"])
+    ).entry_id
+    new = store.publish(
+        Entry(resource_name="f", summary="corrected wording", entry_type="fact", refs=["src:new"]),
+        supersede=True,
+    ).entry_id
+    result = erase(db, "src:old", apply=True)
+    assert [(e.id, e.successors) for e in result.entries] == [(old, [new])]
+    assert dict(_rows(db, "SELECT id, status FROM memory_entries"))[new] == "active"
+
+
 def test_erase_by_entry_id(tmp_path: Path) -> None:
     db = tmp_path / "a.db"
     store = ArchivistStore(db)
@@ -347,3 +375,98 @@ def test_cli_erase_and_backfill(tmp_path: Path) -> None:
 
     missing = runner.invoke(app, ["archivist", "erase", "x", "--db", str(tmp_path / "none.db")])
     assert missing.exit_code == 2
+
+
+def test_replica_refuses_a_publish_from_an_erased_source(tmp_path: Path) -> None:
+    db = tmp_path / "a.db"
+    store = ArchivistStore(db)
+    _seed_chain(store)
+    erase(db, "src:1", apply=True)
+    corpus = tmp_path / "corpus"
+    export_corpus(ArchivistStore(db), corpus)
+    view = materialize_corpus(corpus, tmp_path / "view.db")
+    reworded = view.publish(
+        Entry(resource_name="r", summary="reworded entirely", entry_type="fact", refs=["src:1"])
+    )
+    assert reworded.outcome == "refused_erased"
+    assert reworded.related_ids == ["src:1"]
+
+
+def test_export_from_a_stale_store_does_not_rewrite_an_erased_entry(tmp_path: Path) -> None:
+    db = tmp_path / "a.db"
+    store = ArchivistStore(db)
+    _seed_chain(store)
+    corpus = tmp_path / "corpus"
+    export_corpus(store, corpus)
+    stale_db = tmp_path / "stale.db"
+    stale = materialize_corpus(corpus, stale_db)  # a teammate, before the erase
+
+    erase(db, "src:1", apply=True)
+    export_corpus(ArchivistStore(db), corpus)  # markers land in the shared tree
+    counts = export_corpus(stale, corpus)  # the teammate exports its stale store
+    assert counts["skipped_erased"] == 3
+    for f in (corpus / "entries").glob("*.json"):
+        assert SECRET not in f.read_text()
+
+
+def test_stale_teammate_push_through_a_hub_cannot_bring_erased_text_back(tmp_path: Path) -> None:
+    import subprocess
+
+    from cabal.archivist import gitmemory
+    from tests.test_archivist_gitmemory import _init_remote
+
+    hub = _init_remote(tmp_path)
+    a_dir, t_dir = tmp_path / "a", tmp_path / "t"
+    gitmemory.ensure_clone(str(hub), a_dir)
+    a_db = tmp_path / "a.db"
+    a = gitmemory.pull(a_dir, a_db)
+    a.publish(Entry(resource_name="x", summary=f"x holds {SECRET}", entry_type="fact", refs=["src:x"]))
+    gitmemory.push(a, a_dir, message="seed")
+
+    gitmemory.ensure_clone(str(hub), t_dir)
+    t = gitmemory.pull(t_dir, tmp_path / "t.db")  # the teammate holds the entry
+
+    erase(a_db, "src:x", apply=True)
+    gitmemory.push(ArchivistStore(a_db), a_dir, message="erase")
+
+    for i in range(2):  # the teammate keeps working without re-materialising
+        t.publish(Entry(resource_name=f"n{i}", summary=f"new fact {i}", entry_type="fact"))
+        gitmemory.push(t, t_dir, message=f"t{i}")
+
+    fresh = tmp_path / "fresh"
+    subprocess.run(["git", "clone", "-q", str(hub), str(fresh)], check=True)
+    for f in (fresh / "entries").glob("*.json"):
+        assert SECRET not in f.read_text()
+    assert list((fresh / "erasures").glob("*.json"))
+
+
+def test_push_drops_an_entry_file_its_own_commit_added_before_the_marker_arrived(
+    tmp_path: Path,
+) -> None:
+    import subprocess
+
+    from cabal.archivist import gitmemory
+    from tests.test_archivist_gitmemory import _init_remote
+
+    hub = _init_remote(tmp_path)
+    a_dir, t_dir = tmp_path / "a", tmp_path / "t"
+    gitmemory.ensure_clone(str(hub), a_dir)
+    gitmemory.ensure_clone(str(hub), t_dir)
+    a_db = tmp_path / "a.db"
+    a = gitmemory.pull(a_dir, a_db)
+    t = gitmemory.pull(t_dir, tmp_path / "t.db")
+    words = f"y holds {SECRET}"
+    a.publish(Entry(resource_name="y", summary=words, entry_type="fact", refs=["src:y"]))
+    gitmemory.push(a, a_dir, message="seed")
+    erase(a_db, "src:y", apply=True)
+    gitmemory.push(ArchivistStore(a_db), a_dir, message="erase")
+
+    # The teammate never pulled, and writes the same words on its own. Its
+    # export runs before the merge that brings the marker in.
+    t.publish(Entry(resource_name="y2", summary=words, entry_type="fact"))
+    gitmemory.push(t, t_dir, message="t")
+
+    fresh = tmp_path / "fresh"
+    subprocess.run(["git", "clone", "-q", str(hub), str(fresh)], check=True)
+    for f in (fresh / "entries").glob("*.json"):
+        assert SECRET not in f.read_text()

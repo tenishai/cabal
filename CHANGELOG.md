@@ -41,8 +41,13 @@ Pull requests and issues are in tenishai/cabal.
   An erased entry keeps its id and hashes with status `erased` and loses its text. Its content hash, its
   text hash and the ref are recorded in `memory_erasures`. A later `publish` of that content, that text
   or a source derived from the ref returns outcome `refused_erased`. The git corpus writes
-  `erasures/<hash>.json` in place of the entry file, and materialize skips any entry file a marker
-  covers. A merged entry is erased, not re-derived, and the command lists its other sources.
+  `erasures/<hash>.json` in place of the entry file. That marker holds hashes and identifiers (the erased
+  entry ids and sources), never text. Materialize skips any entry file a marker covers and records the
+  marker's ids and sources, so a replica refuses the same publishes. Export skips entries already covered
+  by a marker in the tree, so a teammate's stale store can't write the text back, and `push` removes any
+  covered entry file left after its merge. A merged entry is erased, not re-derived: the command lists its
+  other sources, and the newer entries that superseded it, which it leaves alone. Erase doesn't reach git
+  history, so `git log -p` on the corpus repo still shows the text until that history is rewritten.
 
 - `cbl dispatch --metadata '<json object>'` sends the object as the task's metadata, on both the
   waiting path and `--detach` (where it goes in `SendMessage`'s request metadata, which becomes

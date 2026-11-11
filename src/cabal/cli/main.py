@@ -1319,7 +1319,8 @@ def archivist_erase(
         raise typer.Exit(code=2) from exc
     for e in result.entries:
         others = f"  other sources: {', '.join(e.other_sources)}" if e.other_sources else ""
-        typer.echo(f"{e.id}  {e.status:<10} {e.resource_name}  via {e.via}{others}")
+        later = f"  not erased, supersedes it: {', '.join(e.successors)}" if e.successors else ""
+        typer.echo(f"{e.id}  {e.status:<10} {e.resource_name}  via {e.via}{others}{later}")
     verb = "erased" if apply else "would erase"
     typer.echo(f"{verb} {len(result.entries)} entries for {ref!r}")
     if not apply and result.entries:
