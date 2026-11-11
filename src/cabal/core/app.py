@@ -714,6 +714,9 @@ def create_app(
             # The read ceiling is passed through so the doom-loop TTL can be
             # kept above it -- see _doom_loop_ttl.
             input_guardrails=router_guardrails,
+            max_wait_continuations=(
+                identity.cabal if identity is not None else CabalConfig()
+            ).max_wait_continuations,
         )
         dispatch_router.register_local(EchoAgent())
         if _tck_persona_enabled():

@@ -34,6 +34,7 @@ from cabal.core.abort import KIND_DISPATCH, AbortCoordinator, TaskAborted
 from cabal.core.auth.jwt import JWTError, verify
 from cabal.core.auth.revocations import RevocationList, refusal
 from cabal.core.broker.bookkeeping import Bookkeeper
+from cabal.core.broker.waiting import handle_waiting
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.bulletin.store import AgentRow
 from cabal.core.db import open_session
@@ -126,6 +127,10 @@ class _Started:
     target_agent: str
     caller_jwt: str
     running_entry: RunningTask | None = None
+    # The caller's own claims (sub, persona, scope, aud, iat, exp), when the
+    # door passed them: what a 705 "waiting" reply's continuation is
+    # scheduled under (issue 406). None on doors that don't.
+    caller_claims: dict[str, Any] | None = None
 
 
 def _with_context(task: Task, response: Task) -> Task:
@@ -200,6 +205,7 @@ class DispatchRouter:
         input_guardrails: list[Guardrail] | None = None,
         revocations: RevocationList | None = None,
         running: RunningTasks | None = None,
+        max_wait_continuations: int = 5,
     ) -> None:
         self._sessionmaker = sessionmaker
         self._bookkeeper = bookkeeper
@@ -213,6 +219,7 @@ class DispatchRouter:
         self._abort = abort_coordinator or AbortCoordinator()
         # cabal issue 405 — the dispatches running now, and the drain flag.
         self._running = running or RunningTasks()
+        self._max_wait_continuations = max_wait_continuations
         self._local: dict[str, LocalHandler] = {}
         # Capability tags per agent — populated at startup from identity.toml.
         # Used by select_by_capabilities() for late-binding task dispatch.
@@ -345,13 +352,16 @@ class DispatchRouter:
         target_generation: int | None,
         task: Task,
         caller_jwt: str,
+        caller_claims: dict[str, Any] | None = None,
     ) -> Task:
         """Send `task` to `target_agent`.
 
         `target_generation` of None means "the active generation"; an explicit
         integer routes to that exact generation (used by subordinate returns).
         """
-        started = await self._start_dispatch(target_agent, target_generation, task, caller_jwt)
+        started = await self._start_dispatch(
+            target_agent, target_generation, task, caller_jwt, caller_claims=caller_claims
+        )
         return await self._run_dispatch(started)
 
     async def start_detached(
@@ -362,6 +372,7 @@ class DispatchRouter:
         task: Task,
         caller_jwt: str,
         scheduled: bool = False,
+        caller_claims: dict[str, Any] | None = None,
     ) -> tuple[Task, Coroutine[Any, Any, Task]]:
         """Begin a dispatch whose persona call runs later (#277).
 
@@ -372,7 +383,8 @@ class DispatchRouter:
         the AbortCoordinator, like any dispatch.
         """
         started = await self._start_dispatch(
-            target_agent, target_generation, task, caller_jwt, detached=True, scheduled=scheduled
+            target_agent, target_generation, task, caller_jwt, detached=True, scheduled=scheduled,
+            caller_claims=caller_claims,
         )
         return started.task, self._run_dispatch(started)
 
@@ -385,6 +397,7 @@ class DispatchRouter:
         *,
         detached: bool = False,
         scheduled: bool = False,
+        caller_claims: dict[str, Any] | None = None,
     ) -> _Started:
         """Everything before the persona call: auth, trace ids, the AbortGraph
         node, the conversations row, the session hook."""
@@ -427,6 +440,7 @@ class DispatchRouter:
             is_session_root=is_session_root,
             target_agent=target_agent,
             caller_jwt=caller_jwt,
+            caller_claims=caller_claims,
         )
 
     async def schedule(
@@ -565,6 +579,10 @@ class DispatchRouter:
             self._abort.complete(task.id)
 
         response = _with_context(task, response)
+        # cabal issue 406: a 705 "waiting" reply is continued or paused.
+        response = await handle_waiting(
+            self, started, task, response, max_continuations=self._max_wait_continuations
+        )
         await self._bookkeeper.on_dispatch_success(task, response)
         if is_session_root and response.status.state in {
             "completed",

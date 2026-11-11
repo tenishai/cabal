@@ -229,7 +229,7 @@ class Scheduler:
             try:
                 started_task, run = await router.start_detached(
                     target_agent=row.target_agent, target_generation=None, task=task,
-                    caller_jwt=token, scheduled=True,
+                    caller_jwt=token, scheduled=True, caller_claims=row.schedule_json,
                 )
             except DrainingError:
                 # A drain began between the check above and this start.

@@ -362,6 +362,12 @@ _PUBLIC_CABAL_KEYS = {
     "cabal_not_before": "cabalNotBefore",
     "cabal_started_late_s": "cabalStartedLateS",
     "cabal_interrupted": "cabalInterrupted",
+    # A waiting agent (reason 705, issue 406): what it waits for, and the
+    # continuation cabal scheduled for it, or the task it continues.
+    "cabal_waiting": "cabalWaiting",
+    "cabal_continued_by": "cabalContinuedBy",
+    "cabal_continues": "cabalContinues",
+    "cabal_wait_count": "cabalWaitCount",
 }
 
 

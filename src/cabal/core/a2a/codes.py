@@ -14,9 +14,15 @@ Code families:
                                  meaning as daedalus's ReasonCode.TOOL_BLOCKED)
     704  escalation             (subordinate handed back to caller; primus
                                  should pass to operator)
+    705  waiting                (the agent stopped at a step it may not run
+                                 yet; metadata.cabal_waiting names the
+                                 condition and, optionally, `until`. cabal
+                                 issue 406.)
 
 Numbers are intentionally non-contiguous to leave room. State on the wire
-mirrors A2A: 700 → `input-required`, 701/702/703 → `failed`, 704 → `failed`.
+mirrors A2A: 700 → `input-required`, 701/702/703 → `failed`, 704 → `failed`,
+705 → `input-required`, or `completed` once cabal has scheduled the
+continuation itself (broker/waiting.py).
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ CODE_POLICY_VIOLATION = 701
 CODE_BUDGET_EXHAUSTED = 702
 CODE_TOOL_BLOCKED = 703
 CODE_ESCALATION = 704
+CODE_WAITING = 705
 
 
 _STATE_FOR: dict[int, str] = {
@@ -38,6 +45,7 @@ _STATE_FOR: dict[int, str] = {
     CODE_BUDGET_EXHAUSTED: "failed",
     CODE_TOOL_BLOCKED: "failed",
     CODE_ESCALATION: "failed",
+    CODE_WAITING: "input-required",
 }
 
 
