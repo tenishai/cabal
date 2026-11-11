@@ -56,16 +56,30 @@ class Bookkeeper:
         caller_agent: str | None,
     ) -> None:
         async with open_session(self._sessionmaker) as session:
-            session.add(
-                Conversation(
-                    task_id=task.id,
-                    target_agent=target.name,
-                    target_generation=target.generation,
-                    caller_agent=caller_agent,
-                    state=task.status.state,
-                    cabal_escalated_from=task.metadata.get("cabal_escalated_from"),
+            existing = await session.get(Conversation, task.id)
+            if (
+                existing is not None
+                and existing.schedule_json is not None
+                and existing.state == "submitted"
+            ):
+                # A scheduled task the Scheduler just claimed (cabal issue
+                # 406): its row exists, so this start updates it. Any other
+                # existing row still collides, as before.
+                existing.target_generation = target.generation
+                existing.caller_agent = caller_agent
+                existing.state = task.status.state
+                existing.updated_at = datetime.now(UTC)
+            else:
+                session.add(
+                    Conversation(
+                        task_id=task.id,
+                        target_agent=target.name,
+                        target_generation=target.generation,
+                        caller_agent=caller_agent,
+                        state=task.status.state,
+                        cabal_escalated_from=task.metadata.get("cabal_escalated_from"),
+                    )
                 )
-            )
             session.add(
                 Event(
                     task_id=task.id,
@@ -100,6 +114,44 @@ class Bookkeeper:
                 "metadata": task.metadata,
             },
         )
+
+    async def on_dispatch_scheduled(
+        self,
+        task: Task,
+        target: AgentRow,
+        caller_agent: str | None,
+        *,
+        not_before: datetime,
+        claims: dict,
+    ) -> None:
+        """A dispatch that starts at `not_before` (cabal issue 406): its row,
+        in state `scheduled`, with the submitted Task (for GetTask and the
+        start) and the caller's claims. No token is stored."""
+        async with open_session(self._sessionmaker) as session:
+            session.add(
+                Conversation(
+                    task_id=task.id,
+                    target_agent=target.name,
+                    target_generation=target.generation,
+                    caller_agent=caller_agent,
+                    state="scheduled",
+                    result_json=task.model_dump(by_alias=True, exclude_none=True),
+                    not_before=not_before,
+                    schedule_json=claims,
+                )
+            )
+            session.add(
+                Event(
+                    task_id=task.id,
+                    event_type="dispatch_scheduled",
+                    payload_json={
+                        "target": target.name,
+                        "caller": caller_agent,
+                        "not_before": not_before.isoformat(),
+                    },
+                )
+            )
+        log.info("dispatch.scheduled", task_id=task.id, target=target.name, not_before=not_before.isoformat())
 
     async def on_dispatch_working(self, task: Task) -> None:
         """The persona is about to be called: `submitted` becomes `working`,

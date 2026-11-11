@@ -32,6 +32,7 @@ from cabal.core.broker.router import TaskAlreadyRunning
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 from cabal.core.models import Agent, Conversation, Event, Persona, TaskCheckpoint
+from cabal.core.scheduler import count_scheduled, scheduled_rows
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 log = structlog.get_logger(__name__)
@@ -654,6 +655,9 @@ async def _running_body(request: Request) -> dict[str, Any]:
             for t in tasks
         ],
         "orphan_rows": sum(1 for task_id in states if task_id not in live),
+        # Waiting for their start time (issue 406). Rows, so they survive a
+        # restart: a drain doesn't wait for them.
+        "scheduled": await count_scheduled(request.app.state.sessionmaker),
     }
 
 
@@ -666,6 +670,32 @@ async def running_tasks(
     draining. An empty `tasks` list is the "safe to restart" signal."""
     _require_operator_claims(request, extract_bearer(authorization))
     return await _running_body(request)
+
+
+@router.get("/tasks/scheduled")
+async def list_scheduled_tasks(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Tasks waiting for their not-before time, soonest first (issue 406)."""
+    _require_operator_claims(request, extract_bearer(authorization))
+    rows = await scheduled_rows(request.app.state.sessionmaker)
+    return {
+        "tasks": [
+            {
+                "task_id": r.task_id,
+                "target_agent": r.target_agent,
+                "caller_agent": r.caller_agent,
+                "not_before": (
+                    r.not_before if r.not_before.tzinfo else r.not_before.replace(tzinfo=UTC)
+                ).isoformat()
+                if r.not_before
+                else None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    }
 
 
 class DrainRequest(BaseModel):

@@ -69,6 +69,9 @@ class CabalConfig(_Open):
     # long to stop before it is cancelled.
     detached_task_limit: int = Field(default=16, ge=0)
     detached_drain_seconds: float = Field(default=10.0, ge=0)
+    # How often the Scheduler looks for scheduled dispatches that are due
+    # (cabal issue 406). A task starts up to this long after its time.
+    schedule_poll_seconds: float = Field(default=15.0, gt=0)
     # Where the operator bootstrap code minted at startup goes (#325): "log"
     # (the warning line `make bootstrap` and the k8s steps read), "file"
     # ($CABAL_HOME/bootstrap_code, mode 0600, with only its path logged) or

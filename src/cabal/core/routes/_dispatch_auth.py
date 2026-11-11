@@ -118,6 +118,30 @@ async def dispatch_token(request: Request, raw_token: str, target: str) -> str |
     return result
 
 
+async def scheduled_dispatch_token(
+    state: Any, target: str, claims: dict[str, Any]
+) -> str | DispatchRefusal:
+    """A dispatch token for a scheduled task starting now (cabal issue 406).
+
+    No token was kept, only the caller's claims. The revocation list is
+    checked against THOSE claims: a "tokens issued before X" cutoff set after
+    the task was scheduled must stop it, and a token minted now would pass.
+    Then the same policy as a live request (scope, sub, pairs) decides, and a
+    fresh dispatch token is minted."""
+    import time
+
+    exp = claims.get("exp")
+    if isinstance(exp, (int, float)) and time.time() >= exp:
+        # Scheduling checks the start is before exp, but a start can run late
+        # (cabal was down at the time).
+        return DispatchRefusal(
+            "unauthenticated", "the caller's token expired before the task started", check="token"
+        )
+    if (why := refusal(getattr(state, "revocations", None), claims)) is not None:
+        return DispatchRefusal("unauthenticated", why, check="revoked")
+    return await _mint_for(state, target, claims, None)
+
+
 #: Longest caller, target or reason recorded. `target` comes from the request
 #: body and is otherwise unbounded; agent names are at most 64 characters.
 _RECORD_MAX = 128
@@ -161,8 +185,17 @@ async def _record_refusal(
 async def _dispatch_token(
     request: Request, raw_token: str, target: str, claims: dict[str, Any]
 ) -> str | DispatchRefusal:
+    return await _mint_for(request.app.state, target, claims, raw_token)
 
-    async with open_session(request.app.state.sessionmaker) as session:
+
+async def _mint_for(
+    state: Any, target: str, claims: dict[str, Any], raw_token: str | None
+) -> str | DispatchRefusal:
+    """The dispatch-token policy, for a live request (`raw_token` is the
+    caller's bearer) or a scheduled start (`raw_token` is None: only the
+    stored claims are left, so a token aimed at the target is minted afresh
+    rather than reused)."""
+    async with open_session(state.sessionmaker) as session:
         audience = await dispatch_audience(session, target)
         if audience is None:
             return DispatchRefusal(
@@ -171,7 +204,18 @@ async def _dispatch_token(
                 check="audience",
             )
         if claims.get("aud") == audience:
-            return raw_token
+            if raw_token is not None:
+                return raw_token
+            stored = await load_active_signing_key(session, master_key=state.master_key)
+            if stored is None:
+                return DispatchRefusal("internal", "no active signing key", check="signing_key")
+            return mint(
+                signing_key=stored,
+                sub=claims.get("sub") or "",
+                aud=audience,
+                persona=claims.get("cabal_persona"),
+                scope=["dispatch"],
+            )
 
         scope = claims.get("cabal_scope") or []
         if not ({"operator", "colleague"} & set(scope)):
@@ -205,7 +249,7 @@ async def _dispatch_token(
                 check="pair",
                 remedy="colleague_invite",
             )
-        stored = await load_active_signing_key(session, master_key=request.app.state.master_key)
+        stored = await load_active_signing_key(session, master_key=state.master_key)
     if stored is None:
         return DispatchRefusal("internal", "no active signing key", check="signing_key")
     return mint(

@@ -37,7 +37,7 @@ def test_only_the_caller_declared_cabal_keys_survive() -> None:
     assert not REFUSED & set(kept)
     assert kept["cabal_delegation_depth"] == 3 and kept["cabal_trace_id"] == "trace-from-caller"
     assert kept["daedalus_workspace"] == "r-1" and kept["review"] == {"repo": "o/r", "pr": "7"}
-    assert CALLER_DECLARED == {"cabal_delegation_depth", "cabal_trace_id"}
+    assert CALLER_DECLARED == {"cabal_delegation_depth", "cabal_trace_id", "cabal_not_before"}
 
 
 @pytest.mark.parametrize("empty", [None, {}])

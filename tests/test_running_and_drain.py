@@ -159,6 +159,7 @@ async def test_a_detached_and_a_sync_dispatch_are_listed_while_they_run(
         "deadline_passed": False,
         "tasks": [],
         "orphan_rows": 0,
+        "scheduled": 0,
     }
     detached = (await _send(client, alice)).json()["result"]["task"]
     sync = asyncio.create_task(_send(client, alice, detach=False))

@@ -830,6 +830,13 @@ def create_app(
             running=dispatch_router.running,
         )
 
+        # Scheduled dispatches (issue 406): rows in `scheduled`, started when due.
+        from cabal.core.scheduler import Scheduler
+
+        scheduler = Scheduler(app_state=_app.state, interval_seconds=cabal_cfg.schedule_poll_seconds)
+        _app.state.scheduler = scheduler
+        await scheduler.start()
+
         heartbeat = HeartbeatScheduler(sessionmaker)
         heartbeat.watch(registered_persona_names)
         await heartbeat.start()
@@ -843,6 +850,7 @@ def create_app(
         try:
             yield
         finally:
+            await scheduler.stop()  # before the drain, so nothing new starts under it
             await _app.state.detached.drain(cabal_cfg.detached_drain_seconds)
             await heartbeat.stop()
             await http_client.aclose()
