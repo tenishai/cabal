@@ -30,11 +30,11 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     status          TEXT NOT NULL DEFAULT 'active',
     processing_state TEXT NOT NULL DEFAULT 'indexed',
     written_by      TEXT NOT NULL,
-    origin_house    TEXT NOT NULL DEFAULT '',
+    origin_archivist    TEXT NOT NULL DEFAULT '',
     origin_cabal    TEXT NOT NULL DEFAULT '',
     origin_agent    TEXT NOT NULL DEFAULT '',
     origin_role     TEXT NOT NULL DEFAULT '',
-    access          TEXT NOT NULL DEFAULT 'house',
+    access          TEXT NOT NULL DEFAULT 'internal',
     access_count    INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
@@ -100,11 +100,11 @@ CREATE TABLE IF NOT EXISTS memory_erasures (
 # database created before it. CREATE TABLE IF NOT EXISTS leaves an existing
 # table alone, so init_db adds whatever is missing.
 _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("origin_house", "TEXT NOT NULL DEFAULT ''"),
+    ("origin_archivist", "TEXT NOT NULL DEFAULT ''"),
     ("origin_cabal", "TEXT NOT NULL DEFAULT ''"),
     ("origin_agent", "TEXT NOT NULL DEFAULT ''"),
     ("origin_role", "TEXT NOT NULL DEFAULT ''"),
-    ("access", "TEXT NOT NULL DEFAULT 'house'"),
+    ("access", "TEXT NOT NULL DEFAULT 'internal'"),
 )
 
 

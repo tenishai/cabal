@@ -3,7 +3,7 @@
 Entries published before origin existed have empty origin fields and no
 lineage rows. This fills them, and changes nothing that is already set:
 
-  - origin_house: the house given, on every entry where it is empty.
+  - origin_archivist: the archivist name given, on every entry where it is empty.
   - origin_cabal: the cabal given, on entries where it is empty and one of
     whose refs starts with ``ref_prefix`` (or on all of them if no prefix).
   - origin_agent: the techne instance in a ``techne:<instance>:knowledge/<id>``
@@ -33,7 +33,7 @@ _TECHNE_REF = re.compile(r"^techne:([^:]+):knowledge/")
 @dataclass(slots=True)
 class BackfillResult:
     applied: bool
-    house: int = 0
+    archivist: int = 0
     cabal: int = 0
     agent: int = 0
     lineage: int = 0
@@ -42,7 +42,7 @@ class BackfillResult:
 def backfill_origin(
     db_path: Path,
     *,
-    house: str,
+    archivist: str,
     cabal: str = "",
     ref_prefix: str = "",
     apply: bool = False,
@@ -57,7 +57,7 @@ def backfill_origin(
     try:
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
-            "SELECT id, refs, origin_house, origin_cabal, origin_agent FROM memory_entries"
+            "SELECT id, refs, origin_archivist, origin_cabal, origin_agent FROM memory_entries"
         ).fetchall()
         for r in rows:
             try:
@@ -65,9 +65,9 @@ def backfill_origin(
             except (json.JSONDecodeError, TypeError):
                 refs = []
             sets: dict[str, str] = {}
-            if house and not r["origin_house"]:
-                sets["origin_house"] = house
-                result.house += 1
+            if archivist and not r["origin_archivist"]:
+                sets["origin_archivist"] = archivist
+                result.archivist += 1
             if cabal and not r["origin_cabal"] and (
                 not ref_prefix or any(x.startswith(ref_prefix) for x in refs)
             ):

@@ -103,9 +103,9 @@ _VALID_ENTRY_TYPES = (
 class ArchivistConfig:
     db_path: Path | None = None
     default_top_k: int = 10
-    # The house this archivist serves (cabal#410), stamped on every entry it
-    # writes. Set by the server ($CABAL_ARCHIVIST_HOUSE), never by a caller.
-    house: str = ""
+    # This archivist's name (cabal#410), stamped on every entry it
+    # writes. Set by the server ($CABAL_ARCHIVIST_NAME), never by a caller.
+    name: str = ""
 
 
 @dataclass
@@ -189,7 +189,7 @@ class ArchivistHandler:
                                 "Who wrote this entry: 'cabal' (or the host, for "
                                 "an agent outside any cabal), 'agent' and 'role'. "
                                 "Declared by the caller and used to rank search; "
-                                "the house is set by the server."
+                                "the archivist is set by the server."
                             ),
                             "properties": {
                                 "cabal": {"type": "string"},
@@ -201,7 +201,7 @@ class ArchivistHandler:
                             "type": "string",
                             "enum": list(ACCESS_LABELS),
                             "description": (
-                                "Who may read it: 'house' (the default) or "
+                                "Who may read it: 'internal' (the default) or "
                                 "'public' within the company. 'cabal' and 'role' "
                                 "are refused until this archivist verifies callers."
                             ),
@@ -384,11 +384,11 @@ class ArchivistHandler:
                 f"got {supersede_scope!r}"
             )
 
-        access = payload.get("access", "house")
+        access = payload.get("access", "internal")
         if access in RESERVED_ACCESS_LABELS:
             return ToolResult.failure(
                 f"'access' {access!r} is not enforced yet: this archivist cannot verify "
-                "who is calling, so the label would hide nothing. Use 'house' or 'public'."
+                "who is calling, so the label would hide nothing. Use 'internal' or 'public'."
             )
         if access not in ACCESS_LABELS:
             return ToolResult.failure(
@@ -409,7 +409,7 @@ class ArchivistHandler:
             importance=_importance(payload),
             source_thread=_opt_str(payload, "source_thread"),
             written_by=ctx.identity or "unknown",
-            origin_house=self.default_config.house,
+            origin_archivist=self.default_config.name,
             origin_cabal=origin.get("cabal", ""),
             origin_agent=origin.get("agent", ""),
             origin_role=origin.get("role", ""),
@@ -499,9 +499,9 @@ def get_handler() -> Handler:
     every call. A per-persona ``ctx.extra['archivist.db_path']`` still overrides it.
     """
     db_env = os.environ.get("CABAL_ARCHIVIST_DB")
-    house = os.environ.get("CABAL_ARCHIVIST_HOUSE", "").strip()
+    name = os.environ.get("CABAL_ARCHIVIST_NAME", "").strip()
     config = ArchivistConfig(
-        db_path=Path(db_env).expanduser() if db_env else None, house=house
+        db_path=Path(db_env).expanduser() if db_env else None, name=name
     )
     return ArchivistHandler(default_config=config)
 
@@ -623,7 +623,7 @@ def _entry_to_dict(entry: Entry) -> dict[str, Any]:
         "source_thread": entry.source_thread,
         "written_by": entry.written_by,
         "origin": {
-            "house": entry.origin_house,
+            "archivist": entry.origin_archivist,
             "cabal": entry.origin_cabal,
             "agent": entry.origin_agent,
             "role": entry.origin_role,
