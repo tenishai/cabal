@@ -246,7 +246,7 @@ def materialize_corpus(corpus_dir: Path, db_path: Path) -> ArchivistStore:
         for f in sorted(edir.glob("*.json")):
             d = json.loads(f.read_text())
             h = d.get("content_hash") or f.stem
-            if h in erased or _covered({"content_hash": h, **d}, erased, erased_text):
+            if _covered({"content_hash": h, **d}, erased, erased_text):
                 continue  # an erasure marker wins over a stale entry file
             present.add(h)
             store._insert(

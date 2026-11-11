@@ -282,7 +282,7 @@ def test_erase_by_entry_id(tmp_path: Path) -> None:
 def test_git_sync_cannot_bring_an_erased_entry_back(tmp_path: Path) -> None:
     db = tmp_path / "a.db"
     store = ArchivistStore(db)
-    _seed_chain(store)
+    a, _b, merged, top = _seed_chain(store)
     corpus = tmp_path / "corpus"
     export_corpus(store, corpus)  # before the erase: entry files hold the text
     stale = {f.name for f in (corpus / "entries").glob("*.json")}
@@ -314,6 +314,20 @@ def test_git_sync_cannot_bring_an_erased_entry_back(tmp_path: Path) -> None:
     )
     view = materialize_corpus(other, tmp_path / "view.db")
     assert view.search(SECRET) == []
+    # Each marker names its erased entry, and the clone records that id. The
+    # kind is whichever mark reached the ref first (an entry id can also be a
+    # lineage source); the publish refusal matches on ref alone.
+    marker_ids = set()
+    for f in (corpus / "erasures").glob("*.json"):
+        m = json.loads(f.read_text())
+        assert m["content_hash"] in m["entry_ids"]
+        marker_ids.update(m["entry_ids"])
+    assert {a, merged, top} <= marker_ids
+    recorded = {
+        r for (r,) in _rows(tmp_path / "view.db",
+                            "SELECT ref FROM memory_erasures")
+    }
+    assert marker_ids <= recorded
     again = view.publish(Entry(resource_name="a", summary=f"a holds {SECRET}", entry_type="fact"))
     assert again.outcome == "refused_erased"
 
