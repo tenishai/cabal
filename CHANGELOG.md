@@ -13,8 +13,12 @@ A release candidate: the wright set runs it before `0.5.0` is tagged.
 ### Upgrading
 
 - One database migration, applied at startup like the others: `f3b6c1d2e4a5` adds
-  `conversations.not_before` and `conversations.schedule_json` for scheduled tasks. The archivist's
-  databases gain their origin and lineage columns when they are opened.
+  `conversations.not_before` and `conversations.schedule_json` for scheduled tasks. An archivist
+  database gains its origin columns and two new tables (`memory_lineage`, `memory_erasures`) when it is
+  opened; the change only adds, and an older server still works against the upgraded file.
+- An archivist shared across cabals: set `$CABAL_ARCHIVIST_HOUSE` on its server (unset, new entries
+  record `origin_house` as `''`), then run `cbl archivist backfill-origin --house <h> --apply` once to
+  fill in entries written before the upgrade (a dry run without `--apply`). See the issue #410 entry.
 - ergon pins `tenish-cabal[full]` exactly; a set needs an ergon whose pin names this release to get
   running tasks, drain and scheduling.
 
@@ -32,8 +36,9 @@ A release candidate: the wright set runs it before `0.5.0` is tagged.
   `cabal_token_budget` set the persona's token budget to any value, `cabal_parent_task` placed its task
   under any task in the AbortGraph, and `cabal_session_started` skipped the SESSION_START hook. Every door
   (`POST /a2a/tasks`, JSON-RPC `message/send` and `message/stream`, v1 `SendMessage`) now drops every
-  `cabal_*` key a caller sends except `cabal_delegation_depth` and `cabal_trace_id`, with one INFO log
-  line naming them (`core/a2a/inbound.py`). A non-numeric `cabal_token_budget` from an in-process caller
+  `cabal_*` key a caller sends except `cabal_delegation_depth`, `cabal_trace_id` and `cabal_not_before`
+  (which only delays the caller's own task, and is honoured only on v1 `SendMessage`; issue #406), with
+  one INFO log line naming them (`core/a2a/inbound.py`). A non-numeric `cabal_token_budget` from an in-process caller
   no longer raises. Other caller metadata is unchanged.
 
 ### Added
