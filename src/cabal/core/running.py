@@ -12,8 +12,9 @@ stopping cabal. While draining, a new top-level dispatch is refused with
 `DrainingError`. A dispatch from an agent that is itself the target of a
 running task is let through, because it is part of the work the drain is
 waiting for (a coder asking a reviewer, a persona fanning out). That check
-uses the caller's verified token subject, never the task's
-`cabal_parent_task` metadata, which a caller can set itself. A passed
+uses the caller's verified token subject, never task metadata such as
+`cabal_parent_task`. Inbound routes strip `cabal_*` keys since PR 402, and
+the rule must not depend on that. A passed
 deadline is only reported: cabal aborts nothing, and the caller decides
 whether to stop anyway. Drain state is in memory, so a restart ends it.
 

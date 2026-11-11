@@ -364,27 +364,32 @@ class DispatchRouter:
         ctx = await self._prepare(target_agent, target_generation, caller_jwt)
         self._admit(ctx)
         task = _ensure_trace(task)
-        # cabal#11 — register this invocation in the AbortGraph. Parent comes
-        # from cabal_parent_task (set by Mason fan-out); top-level tasks have none.
-        self._abort.register(
-            task.id, parent_id=task.metadata.get("cabal_parent_task"), kind=KIND_DISPATCH
-        )
-        await self._bookkeeper.on_dispatch_start(task, ctx.target, ctx.caller_agent)
-
-        is_session_root = "cabal_session_started" not in task.metadata
-        if is_session_root:
-            task.metadata["cabal_session_started"] = True
-            await self._hooks.fire(
-                HookName.SESSION_START,
-                {
-                    "task_id": task.id,
-                    "target": ctx.target.name,
-                    "caller": ctx.caller_agent,
-                    "trace_id": task.metadata.get("cabal_trace_id"),
-                },
-            )
-
+        # Listed from the moment it is admitted (issue 405, PR 407 review): a drain
+        # that starts while the row is being written must still see it.
         self._track(task, ctx, detached=detached)
+        try:
+            # cabal#11 — register this invocation in the AbortGraph. Parent comes
+            # from cabal_parent_task (set by Mason fan-out); top-level tasks have none.
+            self._abort.register(
+                task.id, parent_id=task.metadata.get("cabal_parent_task"), kind=KIND_DISPATCH
+            )
+            await self._bookkeeper.on_dispatch_start(task, ctx.target, ctx.caller_agent)
+
+            is_session_root = "cabal_session_started" not in task.metadata
+            if is_session_root:
+                task.metadata["cabal_session_started"] = True
+                await self._hooks.fire(
+                    HookName.SESSION_START,
+                    {
+                        "task_id": task.id,
+                        "target": ctx.target.name,
+                        "caller": ctx.caller_agent,
+                        "trace_id": task.metadata.get("cabal_trace_id"),
+                    },
+                )
+        except BaseException:
+            self._running.remove(task.id)
+            raise
         return _Started(
             ctx=ctx,
             task=task,
@@ -395,7 +400,16 @@ class DispatchRouter:
 
     async def _run_dispatch(self, started: _Started) -> Task:
         """Router guardrails, the persona call, and the success or failure
-        bookkeeping. Records `working` just before the persona is called."""
+        bookkeeping. Records `working` just before the persona is called.
+        The task stays on the running list until its result is written and
+        SESSION_END has fired, so an empty list means nothing is left to
+        lose (issue 405, PR 407 review)."""
+        try:
+            return await self._run_dispatch_body(started)
+        finally:
+            self._running.remove(started.task.id)
+
+    async def _run_dispatch_body(self, started: _Started) -> Task:
         ctx, task, is_session_root = started.ctx, started.task, started.is_session_root
         target_agent, caller_jwt = started.target_agent, started.caller_jwt
         try:
@@ -495,7 +509,6 @@ class DispatchRouter:
         finally:
             # The invocation is no longer in-flight; drop it from the graph.
             self._abort.complete(task.id)
-            self._running.remove(task.id)
 
         response = _with_context(task, response)
         await self._bookkeeper.on_dispatch_success(task, response)
@@ -557,6 +570,8 @@ class DispatchRouter:
         """
         ctx = await self._prepare(target_agent, target_generation, caller_jwt)
         self._admit(ctx)
+        # Listed from admission; dispatch_streaming's finally removes it.
+        self._track(task, ctx, streaming=True)
 
         # Symmetric with dispatch()'s guard: a federated target is a sovereign
         # peer and must never be served locally — even via streaming, even if a
@@ -606,7 +621,6 @@ class DispatchRouter:
         # "Conversation/Event bookkeeping".
         task = _ensure_trace(task)
         await self._bookkeeper.on_dispatch_start(task, ctx.target, ctx.caller_agent)
-        self._track(task, ctx, streaming=True)
 
         if self._input_guardrails:
             guard_ctx = GuardrailContext(
@@ -745,15 +759,17 @@ class DispatchRouter:
             )
         )
         try:
-            response = await handler.handle_task(task, resume_from=resume_from)
-        except Exception as exc:
-            await self._bookkeeper.on_dispatch_failure(task, exc)
-            raise
+            try:
+                response = await handler.handle_task(task, resume_from=resume_from)
+            except Exception as exc:
+                await self._bookkeeper.on_dispatch_failure(task, exc)
+                raise
+            response = _with_context(task, response)
+            await self._bookkeeper.on_dispatch_success(task, response)
+            return response
         finally:
+            # After the result is written, as in _run_dispatch.
             self._running.remove(task.id)
-        response = _with_context(task, response)
-        await self._bookkeeper.on_dispatch_success(task, response)
-        return response
 
     # --- internal pieces --------------------------------------------------
 

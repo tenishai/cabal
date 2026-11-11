@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.auth.jwt import mint
 from cabal.core.auth.keys import load_active_signing_key
+from cabal.core.broker.router import DrainingError
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 from cabal.core.models import BootstrapCode, Conversation
@@ -256,8 +257,19 @@ async def test_draining_refuses_new_work_on_every_route(app: FastAPI, client: As
         body = (await _send(client, alice, detach=detach)).json()
         assert body["error"]["code"] == -32004, body
         assert "draining" in body["error"]["message"]
-    assert app.state.detached.try_reserve()  # the refused detach gave its slot back
-    app.state.detached.release()
+    assert app.state.detached._reserved == 0  # the refused detach gave its slot back
+
+    # A stream is refused before it yields, and leaves nothing listed.
+    task = Task(
+        id="t-stream-refused",
+        status=TaskStatus(state="submitted", message=Message(role="user", parts=[TextPart(text="hi")])),
+    )
+    stream = app.state.dispatch_router.dispatch_streaming(
+        target_agent="echo", target_generation=None, task=task, caller_jwt=await _token(app, "agent:alice", aud="echo")
+    )
+    with pytest.raises(DrainingError):
+        await stream.__anext__()
+    assert "t-stream-refused" not in app.state.dispatch_router.running
 
     # Legacy JSON-RPC message/send.
     envelope = {
@@ -299,7 +311,7 @@ async def test_draining_refuses_new_work_on_every_route(app: FastAPI, client: As
 
 
 @pytest.mark.asyncio
-async def test_a_busy_agent_may_still_dispatch_and_a_forged_parent_may_not(
+async def test_a_busy_agent_may_still_dispatch_and_a_parent_claim_counts_for_nothing(
     app: FastAPI, client: AsyncClient, gated: _Gated
 ) -> None:
     op = await _operator(app, client)
@@ -308,8 +320,9 @@ async def test_a_busy_agent_may_still_dispatch_and_a_forged_parent_may_not(
     await asyncio.wait_for(gated.started.wait(), timeout=5)
     await client.post("/admin/drain", json={"deadline_s": 0}, headers={"Authorization": f"Bearer {op}"})
 
-    # alice dispatched the work but isn't doing it; claiming the running task
-    # as a parent doesn't change that.
+    # alice dispatched the work but isn't doing it. A parent claim in metadata
+    # doesn't change that: inbound strips it (PR 402), and the rule keys on the
+    # token subject regardless, which is what this guards.
     forged = (await _send(client, alice, metadata={"cabal_parent_task": first["id"]})).json()
     assert forged["error"]["code"] == -32004, forged
 
@@ -429,3 +442,141 @@ def test_cbl_status_shows_the_running_line(cli, monkeypatch) -> None:
     monkeypatch.setattr("cabal.cli.main.api.running_tasks", lambda **_: _BUSY)
     out = runner.invoke(cli, ["status"])
     assert out.exit_code == 0 and "running: 1 task (draining)" in out.output
+
+
+# ---- the registry's lifetime covers the task's (PR 407 review) -----------------
+
+
+class _Hold:
+    """Wraps one Bookkeeper method so a test can hold it mid-call."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, bookkeeper: Any, method: str) -> None:
+        self.reached = asyncio.Event()
+        self.release = asyncio.Event()
+        real = getattr(bookkeeper, method)
+
+        async def held(*args: Any, **kw: Any) -> Any:
+            self.reached.set()
+            await self.release.wait()
+            return await real(*args, **kw)
+
+        monkeypatch.setattr(bookkeeper, method, held)
+
+
+@pytest.mark.asyncio
+async def test_a_task_is_listed_until_its_result_is_written(
+    app: FastAPI, client: AsyncClient, gated: _Gated, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    op = await _operator(app, client)
+    hold = _Hold(monkeypatch, app.state.dispatch_router._bookkeeper, "on_dispatch_success")
+    gated.release.set()  # the persona answers at once; the result write is held
+    sync = asyncio.create_task(_send(client, await _token(app, "agent:alice"), detach=False))
+    await asyncio.wait_for(hold.reached.wait(), timeout=5)
+    (listed,) = (await _running(client, op))["tasks"]
+    assert listed["state"] == "working"  # the row isn't written yet, so stopping now would lose it
+    hold.release.set()
+    assert (await sync).status_code == 200
+    await _until_empty(client, op)
+    async with app.state.sessionmaker() as s:
+        assert [r.state for r in (await s.execute(select(Conversation))).scalars()] == ["completed"]
+
+
+@pytest.mark.asyncio
+async def test_a_drain_sees_a_task_admitted_before_its_row_is_written(
+    app: FastAPI, client: AsyncClient, gated: _Gated, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    op = await _operator(app, client)
+    hold = _Hold(monkeypatch, app.state.dispatch_router._bookkeeper, "on_dispatch_start")
+    sync = asyncio.create_task(_send(client, await _token(app, "agent:alice"), detach=False))
+    await asyncio.wait_for(hold.reached.wait(), timeout=5)
+    r = await client.post("/admin/drain", json={}, headers={"Authorization": f"Bearer {op}"})
+    assert len(r.json()["tasks"]) == 1
+    hold.release.set()
+    gated.release.set()
+    assert (await sync).status_code == 200
+    await _until_empty(client, op)
+
+
+@pytest.mark.asyncio
+async def test_a_start_that_fails_after_admission_leaves_nothing_listed(
+    app: FastAPI, gated: _Gated, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    router = app.state.dispatch_router
+
+    async def boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(router._bookkeeper, "on_dispatch_start", boom)
+    task = Task(
+        id="t-boom",
+        status=TaskStatus(state="submitted", message=Message(role="user", parts=[TextPart(text="x")])),
+    )
+    with pytest.raises(RuntimeError):
+        await router.start_detached(
+            target_agent="echo", target_generation=None, task=task, caller_jwt=await _token(app, "agent:alice", aud="echo")
+        )
+    assert "t-boom" not in router.running
+
+
+@pytest.mark.asyncio
+async def test_a_detached_run_cancelled_before_its_first_step_leaves_the_list(
+    app: FastAPI, gated: _Gated
+) -> None:
+    router, detached = app.state.dispatch_router, app.state.detached
+    task = Task(
+        id="t-early",
+        status=TaskStatus(state="submitted", message=Message(role="user", parts=[TextPart(text="x")])),
+    )
+    task, run = await router.start_detached(
+        target_agent="echo", target_generation=None, task=task, caller_jwt=await _token(app, "agent:alice", aud="echo")
+    )
+    assert task.id in router.running
+    assert detached.try_reserve()
+    detached.spawn(task.id, run)
+    detached._running[task.id].cancel()  # before the loop ever runs it, so no finally of its own
+    for _ in range(50):
+        if task.id not in router.running:
+            break
+        await asyncio.sleep(0.01)
+    assert task.id not in router.running
+    assert gated.calls == 0
+
+
+class _Resumable:
+    name = "echo"
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def handle_task(self, task: Task, resume_from: Any = None) -> Task:
+        self.started.set()
+        await self.release.wait()
+        return _done(task)
+
+
+@pytest.mark.asyncio
+async def test_a_resume_is_listed_until_its_result_is_written(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    router = app.state.dispatch_router
+    persona = _Resumable()
+    router.register_local(persona)
+    written: list[str] = []
+
+    async def success(task: Task, response: Task) -> None:
+        assert task.id in router.running  # still listed while the result is written
+        written.append(response.status.state)
+
+    monkeypatch.setattr(router._bookkeeper, "on_dispatch_success", success)
+    task = Task(
+        id="t-resume",
+        status=TaskStatus(state="working", message=Message(role="user", parts=[TextPart(text="x")])),
+    )
+    run = asyncio.create_task(router.resume_local(target_agent="echo", task=task, resume_from=None))
+    await asyncio.wait_for(persona.started.wait(), timeout=5)
+    (listed,) = router.running.list()
+    assert (listed.task_id, listed.caller_agent) == ("t-resume", None)
+    persona.release.set()
+    await run
+    assert written == ["completed"] and "t-resume" not in router.running
