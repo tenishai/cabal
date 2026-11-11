@@ -13,10 +13,15 @@ and stops, instead of sleeping on the clock.
   `cabal_continued_by`, so the caller has nothing to do.
 - Without `until`, or when cabal can't continue it, the task reads
   `input-required` with 705, and the dispatcher re-dispatches when the condition
-  holds. cabal can't continue a task when it doesn't hold the caller's own claims
-  (a dispatch through a door that doesn't pass them), when `until` is after the
-  caller's token expires, or after `cabal.max_wait_continuations` continuations
-  in a row. The reason is in `cabal_reason_message`.
+  holds. cabal can't continue a task when `until` isn't a usable time (ISO 8601
+  with a UTC offset), when it doesn't hold the caller's own claims (a dispatch
+  through a door that doesn't pass them), when `until` is after the caller's
+  token expires, after `cabal.max_wait_continuations` continuations in a row, or
+  when scheduling the continuation fails. In each of those cases the reason is in
+  `cabal_reason_message`; with no `until` at all there is no reason to give.
+- The continuation keeps the caller-declared keys (`cabal_delegation_depth`,
+  `cabal_trace_id`): it is the same piece of work, so it runs at the same
+  delegation depth and on the same trace.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from cabal.core.a2a.codes import CODE_WAITING
+from cabal.core.a2a.inbound import CALLER_DECLARED
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 
 if TYPE_CHECKING:
@@ -75,7 +81,9 @@ async def handle_waiting(
     try:
         until = parse_not_before(raw_until)
     except ValueError as exc:
-        return _paused(response, f"cabal can't continue this task: {exc}")
+        # parse_not_before names its own field; the agent sent `until`.
+        why = str(exc).replace("cabal_not_before", "cabal_waiting.until")
+        return _paused(response, f"cabal can't continue this task: {why}")
     claims = started.caller_claims
     if not claims:
         return _paused(response, "cabal can't continue this task: it doesn't hold the caller's claims")
@@ -111,6 +119,7 @@ async def handle_waiting(
         ),
         history=history,
         metadata={
+            **{k: task.metadata[k] for k in CALLER_DECLARED - {"cabal_not_before"} if k in task.metadata},
             "cabal_continues": task.id,
             "cabal_wait_count": count + 1,
             "cabal_not_before": until.isoformat(),

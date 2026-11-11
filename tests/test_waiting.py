@@ -66,19 +66,19 @@ class _Waiter:
         )
 
 
-async def _send(client: AsyncClient, token: str) -> dict[str, Any]:
+async def _send(
+    client: AsyncClient, token: str, *, detach: bool = True, metadata: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "message": {"messageId": "m-1", "role": "ROLE_USER", "parts": [{"text": "port it"}]},
+        "configuration": {"returnImmediately": detach},
+    }
+    if metadata:
+        params["metadata"] = metadata
     body = (
         await client.post(
             "/agents/echo/a2a",
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "SendMessage",
-                "params": {
-                    "message": {"messageId": "m-1", "role": "ROLE_USER", "parts": [{"text": "port it"}]},
-                    "configuration": {"returnImmediately": True},
-                },
-            },
+            json={"jsonrpc": "2.0", "id": 1, "method": "SendMessage", "params": params},
             headers={"A2A-Version": "1.0", "Authorization": f"Bearer {token}"},
         )
     ).json()
@@ -169,6 +169,10 @@ async def test_waiting_without_a_usable_time_pauses_for_the_caller(
     assert row.state == "input-required"
     assert "cabal_continued_by" not in row.result_json["metadata"]
     assert why in _reason(row)
+    if waiting is None or "until" not in waiting:
+        assert "cabal_reason_message" not in row.result_json["metadata"]  # nothing to explain
+    else:
+        assert "cabal_waiting.until" in _reason(row) and "cabal_not_before" not in _reason(row)
     assert list(await _rows(app)) == [first["id"]]
 
 
@@ -219,3 +223,57 @@ async def test_a_door_without_the_callers_claims_pauses(app: FastAPI, client: As
     assert r.status_code == 200, r.text
     row = (await _rows(app))["t-legacy"]
     assert row.state == "input-required" and "claims" in _reason(row)
+
+
+@pytest.mark.asyncio
+async def test_the_continuation_keeps_the_delegation_depth_and_trace(app: FastAPI, client: AsyncClient) -> None:
+    until = datetime.now(UTC) + UNTIL
+    agent = _Waiter({"condition": "x", "until": until.isoformat()})
+    app.state.dispatch_router.register_local(agent)
+    trace = "ab" * 16
+    first = await _send(client, await _token(app), metadata={"cabal_delegation_depth": 3, "cabal_trace_id": trace})
+    nxt = (await _until_ended(app, first["id"])).result_json["metadata"]["cabal_continued_by"]
+    assert await app.state.scheduler.tick(now=until) == 1
+    await _until_ended(app, nxt)
+    before, after = agent.seen[0].metadata, agent.seen[1].metadata
+    assert before["cabal_delegation_depth"] == 3 and before["cabal_trace_id"] == trace
+    assert after["cabal_delegation_depth"] == 3 and after["cabal_trace_id"] == trace
+
+
+@pytest.mark.asyncio
+async def test_a_blocking_send_is_continued_too(app: FastAPI, client: AsyncClient) -> None:
+    until = datetime.now(UTC) + UNTIL
+    app.state.dispatch_router.register_local(_Waiter({"condition": "x", "until": until.isoformat()}))
+    first = await _send(client, await _token(app), detach=False)
+    assert first["status"]["state"] == "TASK_STATE_COMPLETED"
+    assert first["metadata"]["cabalContinuedBy"] in await _rows(app)
+
+
+@pytest.mark.asyncio
+async def test_a_long_condition_is_cut_on_the_continuation(app: FastAPI, client: AsyncClient) -> None:
+    from cabal.core.broker.waiting import CONDITION_MAX
+
+    until = datetime.now(UTC) + UNTIL
+    condition = "c" * (CONDITION_MAX + 100)
+    agent = _Waiter({"condition": condition, "until": until.isoformat()})
+    app.state.dispatch_router.register_local(agent)
+    first = await _send(client, await _token(app))
+    nxt = (await _until_ended(app, first["id"])).result_json["metadata"]["cabal_continued_by"]
+    assert await app.state.scheduler.tick(now=until) == 1
+    await _until_ended(app, nxt)
+    text = agent.seen[1].status.message.parts[0].text
+    assert "c" * CONDITION_MAX in text and "c" * (CONDITION_MAX + 1) not in text
+
+
+@pytest.mark.asyncio
+async def test_max_wait_continuations_comes_from_identity_toml(tmp_path) -> None:
+    import os
+
+    from cabal.core.app import create_app
+
+    cfg = tmp_path / "identity.toml"
+    cfg.write_text("[cabal]\nmax_wait_continuations = 1\n")
+    db_url = os.environ["CABAL_DB_URL"].replace("sqlite://", "sqlite+aiosqlite://", 1)
+    second = create_app(agent="all", config_path=str(cfg), db_url=db_url)
+    async with second.router.lifespan_context(second):
+        assert second.state.dispatch_router._max_wait_continuations == 1
