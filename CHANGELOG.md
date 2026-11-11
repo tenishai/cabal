@@ -26,6 +26,24 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- The archivist records where each entry came from and what it was made from, for an archivist shared
+  across cabals (issue #410). Each entry has an origin: `origin_house`, set by the server from
+  `$CABAL_ARCHIVIST_HOUSE`, plus `origin_cabal`, `origin_agent` and `origin_role`, declared by the caller
+  in `publish`'s `origin` object. Each entry also has an `access` label, `house` (the default) or
+  `public`. `cabal` and `role` are refused, because the archivist can't verify callers while liminal auth
+  is off, so those labels would hide nothing. `search` takes an optional `caller` (`cabal`, `role`). It
+  ranks the caller's cabal first, then the same role in other cabals, then the rest, and hides nothing.
+  Existing databases gain the columns on open. Run `cbl archivist backfill-origin --house <h>` (a dry run
+  unless `--apply`) to fill in entries written before the upgrade.
+- Lineage and erasure (issue #410). `publish` records each of an entry's `refs`, and the sources in a new
+  `derived_from` list, in `memory_lineage`. `cbl archivist erase <entry-id|source-ref>` walks that
+  lineage and erases every entry derived from the ref, at every depth. It's a dry run unless `--apply`.
+  An erased entry keeps its id and hashes with status `erased` and loses its text. Its content hash, its
+  text hash and the ref are recorded in `memory_erasures`. A later `publish` of that content, that text
+  or a source derived from the ref returns outcome `refused_erased`. The git corpus writes
+  `erasures/<hash>.json` in place of the entry file, and materialize skips any entry file a marker
+  covers. A merged entry is erased, not re-derived, and the command lists its other sources.
+
 - `cbl dispatch --metadata '<json object>'` sends the object as the task's metadata, on both the
   waiting path and `--detach` (where it goes in `SendMessage`'s request metadata, which becomes
   the task's). It reaches the agent unchanged, so a caller can name per-task values such as a

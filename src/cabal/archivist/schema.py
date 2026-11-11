@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     status          TEXT NOT NULL DEFAULT 'active',
     processing_state TEXT NOT NULL DEFAULT 'indexed',
     written_by      TEXT NOT NULL,
+    origin_house    TEXT NOT NULL DEFAULT '',
+    origin_cabal    TEXT NOT NULL DEFAULT '',
+    origin_agent    TEXT NOT NULL DEFAULT '',
+    origin_role     TEXT NOT NULL DEFAULT '',
+    access          TEXT NOT NULL DEFAULT 'house',
     access_count    INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
@@ -66,7 +71,52 @@ CREATE INDEX IF NOT EXISTS idx_memory_relations_src
     ON memory_relations(src_id);
 CREATE INDEX IF NOT EXISTS idx_memory_relations_dst
     ON memory_relations(dst_id);
+
+-- Lineage (cabal#410): which sources an entry was derived from. A source is
+-- another entry's id or an outside reference such as
+-- "techne:poe@dimartin:knowledge/4255". Erasing a source walks this table.
+CREATE TABLE IF NOT EXISTS memory_lineage (
+    derived_id      TEXT NOT NULL,
+    source_ref      TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    PRIMARY KEY (derived_id, source_ref)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_lineage_source
+    ON memory_lineage(source_ref);
+
+-- Erasures (cabal#410): every reference and content hash that was erased, so
+-- a later publish or a git-corpus sync cannot bring the text back.
+CREATE TABLE IF NOT EXISTS memory_erasures (
+    ref             TEXT PRIMARY KEY,
+    kind            TEXT NOT NULL,
+    entry_id        TEXT NOT NULL DEFAULT '',
+    reason          TEXT NOT NULL DEFAULT '',
+    erased_at       TEXT NOT NULL
+);
 """
+
+# Columns added after the first release, with the DDL that adds each one to a
+# database created before it. CREATE TABLE IF NOT EXISTS leaves an existing
+# table alone, so init_db adds whatever is missing.
+_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("origin_house", "TEXT NOT NULL DEFAULT ''"),
+    ("origin_cabal", "TEXT NOT NULL DEFAULT ''"),
+    ("origin_agent", "TEXT NOT NULL DEFAULT ''"),
+    ("origin_role", "TEXT NOT NULL DEFAULT ''"),
+    ("access", "TEXT NOT NULL DEFAULT 'house'"),
+)
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    have = {r[1] for r in conn.execute("PRAGMA table_info(memory_entries)")}
+    for name, ddl in _ADDED_COLUMNS:
+        if name not in have:
+            conn.execute(f"ALTER TABLE memory_entries ADD COLUMN {name} {ddl}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_entries_origin "
+        "ON memory_entries(origin_cabal, origin_role)"
+    )
 
 
 def init_db(db_path: Path) -> sqlite3.Connection:
@@ -75,6 +125,7 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.executescript(ARCHIVIST_SCHEMA_SQL)
+    _add_missing_columns(conn)
     conn.commit()
     return conn
 

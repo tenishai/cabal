@@ -22,16 +22,19 @@ a git hub work.
 
 Liminal-free: SQLite + json + files only.
 
-export_corpus(store, dir)         SQLite -> files (entries + markers).
+export_corpus(store, dir)         SQLite -> files (entries + markers). An erased
+                                  entry is written as erasures/<hash>.json, never
+                                  as an entry file (cabal#410).
 materialize_corpus(dir, db_path)  files -> a fresh local SQLite (status derived).
 """
 
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
-from cabal.archivist.models import Entry, Relation
+from cabal.archivist.models import Entry, Relation, text_hash
 from cabal.archivist.schema import connect
 from cabal.archivist.store import ArchivistStore
 
@@ -51,6 +54,11 @@ def _entry_to_doc(row: dict) -> dict:
         "tags": json.loads(row["tags"] or "[]"),
         "importance": row["importance"],
         "written_by": row["written_by"],
+        "origin_house": row.get("origin_house") or "",
+        "origin_cabal": row.get("origin_cabal") or "",
+        "origin_agent": row.get("origin_agent") or "",
+        "origin_role": row.get("origin_role") or "",
+        "access": row.get("access") or "house",
         "source_thread": row["source_thread"],
         "created_at": row["created_at"],
         "content_hash": row["content_hash"],
@@ -64,6 +72,7 @@ def export_corpus(store: ArchivistStore, out_dir: Path) -> dict:
     out_dir = Path(out_dir)
     entries_dir = out_dir / "entries"
     supersedes_dir = out_dir / "supersedes"
+    erasures_dir = out_dir / "erasures"
     entries_dir.mkdir(parents=True, exist_ok=True)
     supersedes_dir.mkdir(parents=True, exist_ok=True)
 
@@ -71,11 +80,38 @@ def export_corpus(store: ArchivistStore, out_dir: Path) -> dict:
     try:
         rows = [dict(r) for r in conn.execute("SELECT * FROM memory_entries").fetchall()]
         id_to_hash = {r["id"]: r["content_hash"] for r in rows}
+        erased = 0
         for r in rows:
+            entry_file = entries_dir / f"{r['content_hash']}.json"
+            if r["status"] == "erased":
+                # An erased entry leaves the corpus and a marker takes its place,
+                # so a later materialize cannot bring the text back (cabal#410).
+                entry_file.unlink(missing_ok=True)
+                erasures_dir.mkdir(parents=True, exist_ok=True)
+                text_hashes = [
+                    x["ref"]
+                    for x in conn.execute(
+                        "SELECT ref FROM memory_erasures WHERE kind = 'text' AND entry_id = ? "
+                        "ORDER BY ref",
+                        (r["id"],),
+                    ).fetchall()
+                ]
+                (erasures_dir / f"{r['content_hash']}.json").write_text(
+                    json.dumps(
+                        {
+                            "content_hash": r["content_hash"],
+                            "text_hashes": text_hashes,
+                            "at": r["updated_at"],
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+                erased += 1
+                continue
             doc = _entry_to_doc(r)
-            (entries_dir / f"{r['content_hash']}.json").write_text(
-                json.dumps(doc, indent=2, sort_keys=True) + "\n"
-            )
+            entry_file.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
 
         markers = 0
         rels = conn.execute(
@@ -94,7 +130,7 @@ def export_corpus(store: ArchivistStore, out_dir: Path) -> dict:
             markers += 1
     finally:
         conn.close()
-    return {"entries": len(rows), "markers": markers}
+    return {"entries": len(rows) - erased, "markers": markers, "erased": erased}
 
 
 def materialize_corpus(corpus_dir: Path, db_path: Path) -> ArchivistStore:
@@ -115,12 +151,38 @@ def materialize_corpus(corpus_dir: Path, db_path: Path) -> ArchivistStore:
             edges.append((m["by"], m["supersedes"], m.get("at")))
     superseded = _superseded_hashes(edges)
 
+    erased: set[str] = set()
+    marks: list[tuple[str, str]] = []
+    xdir = corpus_dir / "erasures"
+    if xdir.exists():
+        for f in sorted(xdir.glob("*.json")):
+            m = json.loads(f.read_text())
+            h = m.get("content_hash") or f.stem
+            erased.add(h)
+            marks.append((h, "content"))
+            marks.extend((t, "text") for t in m.get("text_hashes") or [] if isinstance(t, str))
+    erased_text = {ref for ref, kind in marks if kind == "text"}
+    if marks:
+        now = datetime.now(UTC).isoformat()
+        conn = connect(db_path)
+        try:
+            conn.executemany(
+                "INSERT OR IGNORE INTO memory_erasures (ref, kind, reason, erased_at) "
+                "VALUES (?, ?, 'git corpus erasure marker', ?)",
+                [(ref, kind, now) for ref, kind in marks],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     present: set[str] = set()
     edir = corpus_dir / "entries"
     if edir.exists():
         for f in sorted(edir.glob("*.json")):
             d = json.loads(f.read_text())
             h = d.get("content_hash") or f.stem
+            if h in erased or text_hash(d.get("summary"), d.get("details"), d.get("gotchas")) in erased_text:
+                continue  # an erasure marker wins over a stale entry file
             present.add(h)
             store._insert(
                 Entry(
@@ -136,6 +198,11 @@ def materialize_corpus(corpus_dir: Path, db_path: Path) -> ArchivistStore:
                     tags=d.get("tags", []),
                     importance=d.get("importance", 1.0),
                     written_by=d.get("written_by", "unknown"),
+                    origin_house=d.get("origin_house", ""),
+                    origin_cabal=d.get("origin_cabal", ""),
+                    origin_agent=d.get("origin_agent", ""),
+                    origin_role=d.get("origin_role", ""),
+                    access=d.get("access", "house"),
                     source_thread=d.get("source_thread"),
                     created_at=d.get("created_at"),
                     status="superseded" if h in superseded else "active",

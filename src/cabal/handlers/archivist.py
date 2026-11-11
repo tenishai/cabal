@@ -15,6 +15,8 @@ Cabal-shipped liminal handler. Four tools:
                     related_ids holds them
       superseded    written with supersede, retiring active entries in
                     scope; related_ids holds the retired ids
+      refused_erased nothing written: the content, a ref or a derived_from
+                    source was erased (cabal#410); related_ids holds them
 
   archivist.search(query, entry_type?, tags?, top_k?)
     FTS5 search across the active entries of the team-memory corpus.
@@ -55,6 +57,7 @@ import structlog
 from liminal.protocol import Context, Handler, ToolResult, ToolSpec
 
 from cabal.archivist import ArchivistStore, Entry
+from cabal.archivist.models import ACCESS_LABELS, RESERVED_ACCESS_LABELS
 from cabal.archivist.store import SUPERSEDE_SCOPES
 from cabal.core.observability.failures import log_failure
 
@@ -100,6 +103,9 @@ _VALID_ENTRY_TYPES = (
 class ArchivistConfig:
     db_path: Path | None = None
     default_top_k: int = 10
+    # The house this archivist serves (cabal#410), stamped on every entry it
+    # writes. Set by the server ($CABAL_ARCHIVIST_HOUSE), never by a caller.
+    house: str = ""
 
 
 @dataclass
@@ -177,6 +183,39 @@ class ArchivistHandler:
                                 "scope and lists them in related_ids."
                             ),
                         },
+                        "origin": {
+                            "type": "object",
+                            "description": (
+                                "Who wrote this entry: 'cabal' (or the host, for "
+                                "an agent outside any cabal), 'agent' and 'role'. "
+                                "Declared by the caller and used to rank search; "
+                                "the house is set by the server."
+                            ),
+                            "properties": {
+                                "cabal": {"type": "string"},
+                                "agent": {"type": "string"},
+                                "role": {"type": "string"},
+                            },
+                        },
+                        "access": {
+                            "type": "string",
+                            "enum": list(ACCESS_LABELS),
+                            "description": (
+                                "Who may read it: 'house' (the default) or "
+                                "'public' within the company. 'cabal' and 'role' "
+                                "are refused until this archivist verifies callers."
+                            ),
+                        },
+                        "derived_from": {
+                            "type": "array", "items": {"type": "string"},
+                            "description": (
+                                "Sources this entry was made from: entry ids or "
+                                "outside references. Recorded as lineage with the "
+                                "refs, so erasing a source erases this entry. A "
+                                "publish whose content or sources were erased is "
+                                "refused with outcome 'refused_erased'."
+                            ),
+                        },
                         "supersede_scope": {
                             "type": "string",
                             "enum": list(SUPERSEDE_SCOPES),
@@ -222,6 +261,19 @@ class ArchivistHandler:
                                 "Every tag must be on the entry (exact match). "
                                 "A comma-separated string is also accepted."
                             ),
+                        },
+                        "caller": {
+                            "type": "object",
+                            "description": (
+                                "The caller's 'cabal' and 'role'. With either, "
+                                "results rank the caller's cabal first, then the "
+                                "same role elsewhere, then the rest. Nothing is "
+                                "hidden by origin."
+                            ),
+                            "properties": {
+                                "cabal": {"type": "string"},
+                                "role": {"type": "string"},
+                            },
                         },
                         "top_k": {
                             "type": "integer", "minimum": 1, "maximum": 50,
@@ -332,6 +384,19 @@ class ArchivistHandler:
                 f"got {supersede_scope!r}"
             )
 
+        access = payload.get("access", "house")
+        if access in RESERVED_ACCESS_LABELS:
+            return ToolResult.failure(
+                f"'access' {access!r} is not enforced yet: this archivist cannot verify "
+                "who is calling, so the label would hide nothing. Use 'house' or 'public'."
+            )
+        if access not in ACCESS_LABELS:
+            return ToolResult.failure(
+                f"'access' must be one of {list(ACCESS_LABELS)}; got {access!r}"
+            )
+        origin = _str_map(payload, "origin", ("cabal", "agent", "role"))
+        derived_from = _str_list(payload, "derived_from")
+
         entry = Entry(
             resource_name=payload["resource_name"].strip(),
             summary=payload["summary"].strip(),
@@ -344,9 +409,19 @@ class ArchivistHandler:
             importance=_importance(payload),
             source_thread=_opt_str(payload, "source_thread"),
             written_by=ctx.identity or "unknown",
+            origin_house=self.default_config.house,
+            origin_cabal=origin.get("cabal", ""),
+            origin_agent=origin.get("agent", ""),
+            origin_role=origin.get("role", ""),
+            access=access,
         )
 
-        result = store.publish(entry, supersede=supersede, supersede_scope=supersede_scope)
+        result = store.publish(
+            entry,
+            supersede=supersede,
+            supersede_scope=supersede_scope,
+            derived_from=derived_from,
+        )
         return ToolResult.json({
             "outcome": result.outcome,
             "entry_id": result.entry_id,
@@ -367,9 +442,11 @@ class ArchivistHandler:
             )
         tags = _str_list(payload, "tags", allow_csv=True) or None
         top_k = _top_k(payload, self.default_config.default_top_k)
+        caller = _str_map(payload, "caller", ("cabal", "role"))
 
         hits = store.search(
             query, entry_type=entry_type, tags=tags, top_k=top_k,
+            caller_cabal=caller.get("cabal"), caller_role=caller.get("role"),
         )
         return ToolResult.json({
             "query": query,
@@ -392,6 +469,7 @@ class ArchivistHandler:
             "entry": _entry_to_dict(entry),
             "related": relations,
             "superseded_by": store.superseded_by(entry_id),
+            "derived_from": store.lineage(entry_id),
         })
 
     def _resolve_db_path(self, ctx: Context) -> Path | None:
@@ -421,7 +499,10 @@ def get_handler() -> Handler:
     every call. A per-persona ``ctx.extra['archivist.db_path']`` still overrides it.
     """
     db_env = os.environ.get("CABAL_ARCHIVIST_DB")
-    config = ArchivistConfig(db_path=Path(db_env).expanduser()) if db_env else ArchivistConfig()
+    house = os.environ.get("CABAL_ARCHIVIST_HOUSE", "").strip()
+    config = ArchivistConfig(
+        db_path=Path(db_env).expanduser() if db_env else None, house=house
+    )
     return ArchivistHandler(default_config=config)
 
 
@@ -452,6 +533,27 @@ def _str_list(payload: dict[str, Any], name: str, *, allow_csv: bool = False) ->
     if isinstance(value, list) and all(isinstance(x, str) for x in value):
         return list(value)
     raise _InvalidField(f"'{name}' must be a list of strings")
+
+
+def _str_map(payload: dict[str, Any], name: str, keys: tuple[str, ...]) -> dict[str, str]:
+    """An optional object whose listed keys are strings; other keys are refused."""
+    value = payload.get(name)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise _InvalidField(f"'{name}' must be an object")
+    unknown = sorted(set(value) - set(keys))
+    if unknown:
+        raise _InvalidField(f"'{name}' has unknown keys {unknown}; allowed: {list(keys)}")
+    out: dict[str, str] = {}
+    for k, v in value.items():
+        if v is None:
+            continue
+        if not isinstance(v, str):
+            raise _InvalidField(f"'{name}.{k}' must be a string; got {type(v).__name__}")
+        if v.strip():
+            out[k] = v.strip()
+    return out
 
 
 def _importance(payload: dict[str, Any]) -> float:
@@ -520,6 +622,13 @@ def _entry_to_dict(entry: Entry) -> dict[str, Any]:
         "importance": entry.importance,
         "source_thread": entry.source_thread,
         "written_by": entry.written_by,
+        "origin": {
+            "house": entry.origin_house,
+            "cabal": entry.origin_cabal,
+            "agent": entry.origin_agent,
+            "role": entry.origin_role,
+        },
+        "access": entry.access,
         "created_at": entry.created_at,
         "updated_at": entry.updated_at,
     }

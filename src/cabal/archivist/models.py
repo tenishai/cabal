@@ -31,6 +31,15 @@ EntryType = Literal[
 ]
 
 
+# Who may read an entry (cabal#410). Only labels this archivist enforces are
+# accepted on publish: with liminal auth off it cannot verify who is calling,
+# so "cabal" and "role" would be labels that hide nothing. They are reserved
+# for when tokens are verified.
+AccessLabel = Literal["house", "public"]
+ACCESS_LABELS: tuple[str, ...] = ("house", "public")
+RESERVED_ACCESS_LABELS: tuple[str, ...] = ("cabal", "role")
+
+
 RelationType = Literal[
     "SUPERSEDES",
     "CONTRADICTS",
@@ -58,6 +67,14 @@ class Entry:
     status: str = "active"  # active | superseded
     processing_state: str = "indexed"  # pending | indexed
     written_by: str = "unknown"
+    # Origin (cabal#410): which house, cabal, agent and role wrote the entry.
+    # origin_house is set by the server, never the caller. The rest is what the
+    # caller declares; until tokens are verified it is used for ranking only.
+    origin_house: str = ""
+    origin_cabal: str = ""
+    origin_agent: str = ""
+    origin_role: str = ""
+    access: str = "house"
     access_count: int = 0
     created_at: str | None = None
     updated_at: str | None = None
@@ -84,6 +101,13 @@ class Entry:
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
+    def text_hash(self) -> str:
+        """SHA-256 over the text alone: summary, details and gotchas, with
+        whitespace collapsed. An erasure records it (cabal#410) so the same text
+        republished with other refs, tags or a new name is still refused;
+        content_hash would miss that, since it covers refs and commands."""
+        return text_hash(self.summary, self.details, self.gotchas)
+
     def to_row(self) -> dict[str, Any]:
         """Adapt to INSERT parameter dict."""
         if not self.content_hash:
@@ -108,6 +132,11 @@ class Entry:
             "status": self.status,
             "processing_state": self.processing_state,
             "written_by": self.written_by,
+            "origin_house": self.origin_house,
+            "origin_cabal": self.origin_cabal,
+            "origin_agent": self.origin_agent,
+            "origin_role": self.origin_role,
+            "access": self.access,
             "access_count": self.access_count,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -133,6 +162,11 @@ class Entry:
             status=row.get("status") or "active",
             processing_state=row.get("processing_state") or "indexed",
             written_by=row.get("written_by") or "unknown",
+            origin_house=row.get("origin_house") or "",
+            origin_cabal=row.get("origin_cabal") or "",
+            origin_agent=row.get("origin_agent") or "",
+            origin_role=row.get("origin_role") or "",
+            access=row.get("access") or "house",
             access_count=int(row.get("access_count") or 0),
             created_at=row.get("created_at"),
             updated_at=row.get("updated_at"),
@@ -148,6 +182,13 @@ class Relation:
     relation_type: RelationType
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str | None = None
+
+
+def text_hash(summary: str | None, details: str | None, gotchas: str | None) -> str:
+    import hashlib
+
+    parts = [" ".join((x or "").split()) for x in (summary, details, gotchas)]
+    return "text:" + hashlib.sha256("\x01".join(parts).encode("utf-8")).hexdigest()[:32]
 
 
 def _loads_or_default(value: Any, default: Any) -> Any:
