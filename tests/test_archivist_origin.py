@@ -504,3 +504,21 @@ def test_marker_covers_an_entry_file_with_a_null_content_hash(tmp_path: Path) ->
     assert view.search("hashes") == []
     assert prune_erased_files(corpus) == 1
     assert not entry.exists()
+
+
+def test_a_corpus_without_access_or_origin_reads_as_internal(tmp_path: Path) -> None:
+    # A corpus exported before issue #410 has no access or origin keys; both
+    # materialize and a re-export give it the defaults.
+    corpus = tmp_path / "corpus"
+    (corpus / "entries").mkdir(parents=True)
+    (corpus / "entries" / "abc123.json").write_text(
+        json.dumps({"content_hash": "abc123", "resource_name": "old", "entry_type": "fact",
+                    "summary": "written before origin existed"})
+    )
+    view = materialize_corpus(corpus, tmp_path / "view.db")
+    [hit] = view.search("origin existed")
+    assert (hit.access, hit.origin_archivist, hit.origin_cabal) == ("internal", "", "")
+    out = tmp_path / "out"
+    export_corpus(view, out)
+    doc = json.loads(next((out / "entries").glob("*.json")).read_text())
+    assert doc["access"] == "internal"
