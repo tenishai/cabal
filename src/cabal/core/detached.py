@@ -29,7 +29,7 @@ from typing import Any
 import structlog
 
 from cabal.core.abort import AbortCoordinator
-from cabal.core.running import RunningTasks
+from cabal.core.running import RunningTask, RunningTasks
 
 log = structlog.get_logger(__name__)
 
@@ -63,15 +63,19 @@ class DetachedTasks:
     def spawn(self, task_id: str, run: Coroutine[Any, Any, Any]) -> None:
         """Run `run` detached, using a reserved slot."""
         self.release()
+        # The running-list entry this run's start phase added. _finished removes
+        # only that one: by the time the done-callback runs, the run's own finally
+        # has unlisted it, and a resume with the same id may be listed (PR 407 r4).
+        entry = self._tasks_running.get(task_id) if self._tasks_running is not None else None
         job = asyncio.get_running_loop().create_task(run, name=f"detached:{task_id}")
         self._running[task_id] = job
-        job.add_done_callback(lambda done: self._finished(task_id, done))
+        job.add_done_callback(lambda done: self._finished(task_id, done, entry))
         log.info("detached.started", task_id=task_id, running=len(self._running))
 
-    def _finished(self, task_id: str, job: asyncio.Task[Any]) -> None:
+    def _finished(self, task_id: str, job: asyncio.Task[Any], entry: RunningTask | None = None) -> None:
         self._running.pop(task_id, None)
-        if self._tasks_running is not None:
-            self._tasks_running.remove(task_id)
+        if self._tasks_running is not None and entry is not None:
+            self._tasks_running.remove(task_id, entry)
         if job.cancelled():
             log.warning("detached.cancelled", task_id=task_id)
         elif (exc := job.exception()) is not None:

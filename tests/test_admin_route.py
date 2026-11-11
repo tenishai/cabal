@@ -185,3 +185,46 @@ async def test_admin_resume_replays_from_checkpoint(app: FastAPI, client: AsyncC
 
     # 5. Checkpoint dropped on completion.
     assert await app.state.checkpoint_store.load("resume-me") is None
+
+
+@pytest.mark.asyncio
+async def test_admin_resume_409_while_the_task_is_still_running(app: FastAPI, client: AsyncClient) -> None:
+    """A checkpointing persona has a row and a checkpoint mid-run; resuming it
+    then would run it twice and unlist the first (PR 407 round 3)."""
+    from datetime import UTC, datetime
+
+    from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
+    from cabal.core.checkpoint import Checkpoint
+    from cabal.core.db import open_session
+    from cabal.core.models import Conversation
+    from cabal.core.running import RunningTask
+
+    token = await _operator_token(app, client)
+    saved = Task(
+        id="busy-1",
+        status=TaskStatus(state="working", message=Message(role="user", parts=[TextPart(text="x")])),
+        metadata={},
+    )
+    await app.state.checkpoint_store.save(
+        Checkpoint(
+            task_id="busy-1",
+            step_index=0,
+            messages=[{"role": "user", "content": "x"}],
+            task_json=saved.model_dump(by_alias=True, exclude_none=True),
+            persona_state={},
+        )
+    )
+    async with open_session(app.state.sessionmaker) as session:
+        session.add(
+            Conversation(
+                task_id="busy-1", target_agent="echo", target_generation=1, caller_agent=None,
+                state="working", checkpoint_id="busy-1",
+            )
+        )
+    running = app.state.dispatch_router.running
+    entry = RunningTask(task_id="busy-1", target_agent="echo", caller_agent=None, started_at=datetime.now(UTC))
+    running.add(entry)
+    resp = await client.post("/admin/tasks/busy-1/resume", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 409, resp.text
+    assert "still running" in resp.text
+    assert running.get("busy-1") is entry

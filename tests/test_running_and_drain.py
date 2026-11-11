@@ -671,3 +671,27 @@ def test_remove_with_an_entry_removes_only_that_entry() -> None:
     assert reg.get("t") is mine
     reg.remove("t", mine)
     assert "t" not in reg
+
+
+@pytest.mark.asyncio
+async def test_a_detached_runs_done_callback_leaves_a_same_id_run_listed(
+    app: FastAPI, client: AsyncClient, gated: _Gated
+) -> None:
+    """Between a detached run's own finally and its done-callback, the id is
+    free; a run listed there under the same id must stay listed (PR 407 r4)."""
+    router = app.state.dispatch_router
+    first = (await _send(client, await _token(app, "agent:alice"))).json()["result"]["task"]
+    await asyncio.wait_for(gated.started.wait(), timeout=5)
+    fresh = RunningTask(task_id=first["id"], target_agent="echo", caller_agent=None, started_at=datetime.now(UTC))
+
+    async def racer() -> None:
+        while first["id"] in router.running:  # noqa: ASYNC110 -- polls a sync registry each loop turn, as the race needs
+            await asyncio.sleep(0)
+        router.running.add(fresh)  # what _track or resume_local does once the id is free
+
+    race = asyncio.create_task(racer())
+    gated.release.set()
+    await asyncio.wait_for(race, timeout=5)
+    for _ in range(20):  # let the done-callback run
+        await asyncio.sleep(0.01)
+    assert router.running.get(first["id"]) is fresh
