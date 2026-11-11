@@ -235,6 +235,37 @@ def _metadata_option(raw: str | None) -> dict[str, Any]:
     return {"metadata": value}
 
 
+def parse_when(value: str, now: datetime | None = None) -> str:
+    """`--not-before` as an ISO 8601 time with an offset (cabal issue 406).
+
+    `HH:MM` is its next occurrence in this machine's time zone (tomorrow if it
+    has passed today). An ISO time with no offset is read in this machine's
+    zone too; one with an offset is kept as given."""
+    import re
+
+    current = (now or datetime.now().astimezone()).astimezone()
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", value.strip())
+    if m:
+        hour, minute = int(m.group(1)), int(m.group(2))
+        if hour > 23 or minute > 59:
+            raise typer.BadParameter(f"{value!r} is not a time of day", param_hint="--not-before")
+        when = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if when <= current:
+            from datetime import timedelta
+
+            when += timedelta(days=1)
+        return when.isoformat()
+    try:
+        when = datetime.fromisoformat(value.strip())
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"{value!r} is neither HH:MM nor an ISO 8601 time", param_hint="--not-before"
+        ) from exc
+    if when.tzinfo is None:
+        when = when.astimezone()  # a naive time is this machine's local time
+    return when.isoformat()
+
+
 @app.command("dispatch")
 def dispatch(
     target: str = typer.Argument(..., help="Target agent name (e.g. 'echo')."),
@@ -269,9 +300,22 @@ def dispatch(
             "bundle with tools.workspace."
         ),
     ),
+    not_before: str | None = typer.Option(
+        None,
+        "--not-before",
+        help=(
+            "Start the task at this time instead of now (needs --detach): HH:MM, "
+            "its next occurrence in this machine's time zone, or an ISO 8601 time. "
+            "It waits as `scheduled`; `cbl task <id> --cancel` cancels it before it starts."
+        ),
+    ),
 ) -> None:
     """Send a one-shot A2A Task and print the response."""
     extra = _metadata_option(metadata)
+    if not_before is not None:
+        if not detach:
+            raise typer.BadParameter("needs --detach", param_hint="--not-before")
+        extra = {"metadata": {**extra.get("metadata", {}), "cabal_not_before": parse_when(not_before)}}
     token = api.TokenStore().load()
     if token is None:
         typer.echo("no token; run `cbl login` first.", err=True)
@@ -284,7 +328,9 @@ def dispatch(
             if raw:
                 typer.echo(json.dumps(task, indent=2))
             else:
-                typer.echo(f"{task['id']} [{_state_name(task)}]")
+                when = (task.get("metadata") or {}).get("cabalNotBefore")
+                suffix = f", starts at {when}" if when else ""
+                typer.echo(f"{task['id']} [{_state_name(task)}{suffix}]")
             return
         response = api.dispatch(
             token=token, target=target, message_text=message, context_id=context, **extra
@@ -347,6 +393,9 @@ def task_cmd(
         "--target",
         help="Persona the task was sent to. Default: looked up (operator token).",
     ),
+    cancel: bool = typer.Option(
+        False, "--cancel", help="Cancel the task (A2A CancelTask), scheduled or running."
+    ),
 ) -> None:
     """Show a task's state and, once it has ended, its message."""
     token = api.TokenStore().load()
@@ -357,6 +406,10 @@ def task_cmd(
     try:
         if target is None:
             target = api.task_target(token=token, task_id=task_id)
+        if cancel:
+            task = api.cancel_task(token=token, target=target, task_id=task_id)
+            typer.echo(json.dumps(task, indent=2) if raw else f"{task_id} [{_state_name(task)}]")
+            return
         while True:
             # Reloaded each poll, so a wait longer than the token's life keeps
             # going on the renewed one (#395).
@@ -805,6 +858,8 @@ def _print_running(body: dict[str, Any]) -> None:
                 f"{(r.get('started_at') or '')[:19]:<20} {mode:<9} {r.get('caller_agent') or '-'}"
                 f"{parent}"
             )
+    if body.get("scheduled"):
+        typer.echo(f"{body['scheduled']} task(s) scheduled to start later; `cbl tasks --scheduled` lists them.")
     if body.get("orphan_rows"):
         typer.echo(
             f"{body['orphan_rows']} conversation row(s) read submitted/working with no run "
@@ -817,11 +872,33 @@ def tasks_cmd(
     running: bool = typer.Option(
         True, "--running/--no-running", help="List the tasks running now (the default)."
     ),
+    scheduled: bool = typer.Option(
+        False, "--scheduled", help="List the tasks waiting for their start time instead."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print the raw JSON body."),
 ) -> None:
     """The tasks running now, oldest first, and whether cabal is draining
     (cabal issue 405). Exits 0 either way: read the list, not the exit code.
-    Past tasks are `cbl conversations list`."""
+    `--scheduled` lists the tasks waiting to start (issue 406). Past tasks
+    are `cbl conversations list`."""
+    if scheduled:
+        body = _call_admin(api.scheduled_tasks, token=_operator_token())
+        if as_json:
+            typer.echo(json.dumps(body, indent=2))
+            return
+        rows = body.get("tasks", [])
+        if not rows:
+            typer.echo("(no tasks scheduled)")
+            return
+        header = f"{'TASK':<36} {'AGENT':<22} {'STARTS':<26} CALLER"
+        typer.echo(header)
+        typer.echo("-" * len(header))
+        for r in rows:
+            typer.echo(
+                f"{r['task_id']:<36.36} {r['target_agent']:<22.22} {(r.get('not_before') or '?'):<26.26} "
+                f"{r.get('caller_agent') or '-'}"
+            )
+        return
     if not running:
         typer.echo("only --running is supported; for past tasks use `cbl conversations list`", err=True)
         raise typer.Exit(code=2)

@@ -20,7 +20,9 @@ PREFIX = "cabal_"
 #: The `cabal_*` keys a caller may declare. Depth only ever tightens the bound a chain gets
 #: (an unreadable value counts as the top, guardrails_builtin.delegation_depth), and an
 #: external chain is bounded only if the caller declares it. A trace id is continuity.
-CALLER_DECLARED = frozenset({"cabal_delegation_depth", "cabal_trace_id"})
+#: A not-before time (issue 406) only ever delays the caller's own task; A2A v1
+#: SendMessage acts on it, and the router refuses it on every other path.
+CALLER_DECLARED = frozenset({"cabal_delegation_depth", "cabal_trace_id", "cabal_not_before"})
 
 
 def inbound_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:

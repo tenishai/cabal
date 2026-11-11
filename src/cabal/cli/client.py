@@ -593,6 +593,20 @@ def dispatch_detached(
     return task
 
 
+def cancel_task(*, token: str, target: str, task_id: str) -> dict[str, Any]:
+    """CancelTask: a scheduled task is canceled before it starts, a running one
+    through the abort graph (cabal issues 406, #277)."""
+    return _a2a_v1(token=token, target=target, method="CancelTask", params={"id": task_id})
+
+
+def scheduled_tasks(*, token: str) -> dict[str, Any]:
+    """GET /admin/tasks/scheduled (cabal issue 406)."""
+    with make_client() as c:
+        resp = c.get("/admin/tasks/scheduled", headers={"Authorization": f"Bearer {token}"})
+    resp.raise_for_status()
+    return resp.json()
+
+
 def get_task(*, token: str, target: str, task_id: str) -> dict[str, Any]:
     """GetTask: the v1.0 Task as the daemon has it now."""
     return _a2a_v1(token=token, target=target, method="GetTask", params={"id": task_id})

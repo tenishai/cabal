@@ -51,6 +51,7 @@ There are two kinds, and they live in different places.
 | Log in as the operator | `cbl login --code <CODE>`, with the code from the daemon's startup log |
 | Send one task to a persona | `cbl dispatch <agent> "text"` |
 | Send a long task without holding the request open | `cbl dispatch --detach <agent> "text"`, then `cbl task <id> --wait` |
+| Send work that starts later | `cbl dispatch --detach --not-before 17:00 <agent> "text"` (HH:MM is this machine's time zone, or give an ISO 8601 time); `cbl tasks --scheduled` lists what's waiting, `cbl task <id> --cancel` cancels one |
 | Talk to a persona | `cbl chat <agent>`, or the terminal UI `cabal` (boots its own in-process app) |
 | See who is registered | `cbl status`, which also shows live Claude Code sessions that run the presence hook |
 | Watch events as they happen | `cbl tail` |

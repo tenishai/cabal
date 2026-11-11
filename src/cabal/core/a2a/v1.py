@@ -357,6 +357,11 @@ _PUBLIC_CABAL_KEYS = {
     "cabal_reason_code": "cabalReasonCode",
     "cabal_reason_message": "cabalReasonMessage",
     "cabal_escalated_from": "cabalEscalatedFrom",
+    # A scheduled task's start time and how late it started (issue 406), and
+    # whether a restart cut it off (issue 405): a caller acts on all three.
+    "cabal_not_before": "cabalNotBefore",
+    "cabal_started_late_s": "cabalStartedLateS",
+    "cabal_interrupted": "cabalInterrupted",
 }
 
 

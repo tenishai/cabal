@@ -124,6 +124,12 @@ class Conversation(Base):
     checkpoint_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("task_checkpoints.task_id", ondelete="SET NULL")
     )
+    # cabal issue 406 — a dispatch asked to start later waits in state
+    # `scheduled` until `not_before`. `schedule_json` holds the caller's
+    # claims (sub, persona, scope, aud, iat, exp), never a token: the start
+    # re-checks revocation against them and mints a fresh dispatch token.
+    not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    schedule_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
     )
@@ -145,6 +151,7 @@ class Conversation(Base):
             sqlite_where=text("cabal_escalated_from IS NOT NULL"),
         ),
         Index("idx_conversations_state", "state"),
+        Index("idx_conversations_schedule", "state", "not_before"),
     )
 
 

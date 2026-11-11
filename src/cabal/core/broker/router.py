@@ -167,6 +167,16 @@ def _canceled(task: Task, reason: str) -> Task:
     )
 
 
+def _refuse_not_before(task: Task) -> None:
+    """`cabal_not_before` is honoured only on A2A v1 SendMessage with
+    returnImmediately (cabal issue 406). Anywhere else, starting at once
+    would silently ignore what the caller asked for."""
+    if "cabal_not_before" in task.metadata:
+        raise DispatchError(
+            "cabal_not_before is only honoured on A2A v1 SendMessage with returnImmediately"
+        )
+
+
 class DispatchRouter:
     """Routes Tasks to local handlers (solo mode) or HTTP peers (scale mode).
 
@@ -351,6 +361,7 @@ class DispatchRouter:
         target_generation: int | None,
         task: Task,
         caller_jwt: str,
+        scheduled: bool = False,
     ) -> tuple[Task, Coroutine[Any, Any, Task]]:
         """Begin a dispatch whose persona call runs later (#277).
 
@@ -361,7 +372,7 @@ class DispatchRouter:
         the AbortCoordinator, like any dispatch.
         """
         started = await self._start_dispatch(
-            target_agent, target_generation, task, caller_jwt, detached=True
+            target_agent, target_generation, task, caller_jwt, detached=True, scheduled=scheduled
         )
         return started.task, self._run_dispatch(started)
 
@@ -373,10 +384,13 @@ class DispatchRouter:
         caller_jwt: str,
         *,
         detached: bool = False,
+        scheduled: bool = False,
     ) -> _Started:
         """Everything before the persona call: auth, trace ids, the AbortGraph
         node, the conversations row, the session hook."""
 
+        if not scheduled:
+            _refuse_not_before(task)
         ctx = await self._prepare(target_agent, target_generation, caller_jwt)
         self._admit(ctx)
         task = _ensure_trace(task)
@@ -414,6 +428,29 @@ class DispatchRouter:
             target_agent=target_agent,
             caller_jwt=caller_jwt,
         )
+
+    async def schedule(
+        self,
+        *,
+        target_agent: str,
+        task: Task,
+        caller_jwt: str,
+        not_before: datetime,
+        claims: dict[str, Any],
+    ) -> Task:
+        """Record `task` to start at `not_before` (cabal issue 406).
+
+        The caller's dispatch token and the target are checked now, as for
+        any dispatch; the row waits in state `scheduled`, and the app's
+        Scheduler starts it later through `start_detached(scheduled=True)`,
+        which checks everything again. Not refused while draining: nothing
+        starts now. Only the caller's claims are stored, never a token."""
+        ctx = await self._prepare(target_agent, None, caller_jwt)
+        task = _ensure_trace(task)
+        await self._bookkeeper.on_dispatch_scheduled(
+            task, ctx.target, ctx.caller_agent, not_before=not_before, claims=claims
+        )
+        return task
 
     async def _run_dispatch(self, started: _Started) -> Task:
         """Router guardrails, the persona call, and the success or failure
@@ -589,6 +626,7 @@ class DispatchRouter:
         Raises DispatchError (before yielding) if the target has no local
         handler or its handler doesn't implement astream_task.
         """
+        _refuse_not_before(task)
         ctx = await self._prepare(target_agent, target_generation, caller_jwt)
         self._admit(ctx)
         # Listed from admission; dispatch_streaming's finally removes it.

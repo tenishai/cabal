@@ -97,6 +97,7 @@ from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 from cabal.core.models import Conversation
 from cabal.core.routes._dispatch_auth import DispatchRefusal, dispatch_token, verify_caller
+from cabal.core.scheduler import cancel_scheduled, parse_not_before
 
 router = APIRouter(prefix="/agents", tags=["a2a-v1"])
 
@@ -358,6 +359,39 @@ async def _send_message(
     if isinstance(token, DispatchRefusal):
         return _refuse(token, request_id)
 
+    # cabal issue 406: a start time. A past one starts now, as if unset.
+    not_before = None
+    raw_not_before = (req.metadata or {}).get("cabal_not_before")
+    if raw_not_before is not None:
+        try:
+            not_before = parse_not_before(raw_not_before)
+        except ValueError as exc:
+            return _params_error(request_id, str(exc))
+        if not_before <= datetime.now(UTC):
+            not_before = None
+        elif not (cfg is not None and cfg.return_immediately):
+            return _error(
+                request_id,
+                a2a_error(
+                    UNSUPPORTED_OPERATION,
+                    message="cabal_not_before needs returnImmediately: a scheduled task can't hold the request open",
+                ),
+            )
+    schedule_claims: dict[str, Any] | None = None
+    if not_before is not None:
+        claims = verify_caller(request, raw_token)
+        if isinstance(claims, DispatchRefusal):  # pragma: no cover - dispatch_token verified it
+            return _refuse(claims, request_id)
+        exp = claims.get("exp")
+        if isinstance(exp, (int, float)) and not_before.timestamp() >= exp:
+            return _params_error(
+                request_id,
+                "cabal_not_before is after your token expires; the caller's authority must cover the start",
+            )
+        schedule_claims = {
+            k: claims[k] for k in ("sub", "cabal_persona", "cabal_scope", "aud", "iat", "exp") if k in claims
+        }
+
     # The conversation key: the client's, or one generated here and returned
     # on the task (spec 3.4.1, CORE-MULTI-001a). A client-provided one also
     # brings back the conversation so far, as `_replay` reconstructs it (#276).
@@ -378,9 +412,14 @@ async def _send_message(
             "metadata": inbound_metadata(req.metadata),
         }
     )
+    if not_before is None:
+        task.metadata.pop("cabal_not_before", None)
+    else:
+        task.metadata["cabal_not_before"] = not_before.isoformat()
     detach = cfg is not None and bool(cfg.return_immediately)
     detached = request.app.state.detached
-    if detach and not detached.try_reserve():
+    reserve = detach and not_before is None
+    if reserve and not detached.try_reserve():
         return _error(
             request_id,
             a2a_error(
@@ -393,7 +432,13 @@ async def _send_message(
         )
     try:
         try:
-            if detach:
+            if not_before is not None:
+                assert schedule_claims is not None
+                response = await request.app.state.dispatch_router.schedule(
+                    target_agent=agent_name, task=task, caller_jwt=token,
+                    not_before=not_before, claims=schedule_claims,
+                )
+            elif detach:
                 # The start phase runs here, so auth is checked and the task's
                 # row exists before the reply; the run phase goes to the
                 # registry and the client polls GetTask (#277).
@@ -407,7 +452,7 @@ async def _send_message(
                     target_agent=agent_name, target_generation=None, task=task, caller_jwt=token
                 )
         except BaseException:
-            if detach:
+            if reserve:
                 detached.release()  # the reserved slot did not become a run
             raise
     except (AgentNotFoundError, ConfigurationError) as exc:
@@ -750,6 +795,19 @@ async def _cancel_task(
         # Paused, waiting on the caller: nothing is running behind it, so it
         # is canceled here (CORE-CANCEL-001).
         return _result(request_id, await _cancel_paused(request, row))
+    if row.state == "scheduled":
+        # Not started yet (cabal issue 406). If the Scheduler claimed it in
+        # the meantime, it is running now: cancel it as a running task.
+        if await cancel_scheduled(request.app.state.sessionmaker, row.task_id):
+            refreshed = await _load_row(request, row.task_id)
+            assert refreshed is not None
+            return _result(request_id, _row_to_v1(refreshed))
+        row = await _load_row(request, row.task_id)
+        assert row is not None
+        if row.state in _TERMINAL_STATES:
+            return _error(
+                request_id, a2a_error(TASK_NOT_CANCELABLE, message=f"the task is already {row.state}")
+            )
     if not await _runs_here(request, row):
         # TaskNotCancelableError stretches "not in a cancelable state" to
         # "not cancelable from here"; #261's baseline is to record it as a
