@@ -15,7 +15,7 @@ from typer.testing import CliRunner
 from cabal.archivist import ArchivistStore, Entry
 from cabal.archivist.backfill import backfill_origin
 from cabal.archivist.erase import erase
-from cabal.archivist.gitsync import export_corpus, materialize_corpus
+from cabal.archivist.gitsync import export_corpus, materialize_corpus, prune_erased_files
 from cabal.archivist.schema import ARCHIVIST_SCHEMA_SQL, init_db
 from cabal.cli.main import app
 
@@ -484,3 +484,23 @@ def test_push_drops_an_entry_file_its_own_commit_added_before_the_marker_arrived
     subprocess.run(["git", "clone", "-q", str(hub), str(fresh)], check=True)
     for f in (fresh / "entries").glob("*.json"):
         assert SECRET not in f.read_text()
+
+
+def test_marker_covers_an_entry_file_with_a_null_content_hash(tmp_path: Path) -> None:
+    # An entry file whose content_hash is null falls back to its file name, so a
+    # marker for that name still covers it, in materialize and in prune.
+    corpus = tmp_path / "corpus"
+    (corpus / "entries").mkdir(parents=True)
+    (corpus / "erasures").mkdir()
+    (corpus / "erasures" / "deadbeef.json").write_text(
+        json.dumps({"content_hash": "deadbeef", "text_hashes": [], "entry_ids": []})
+    )
+    entry = corpus / "entries" / "deadbeef.json"
+    entry.write_text(
+        json.dumps({"content_hash": None, "resource_name": "x", "entry_type": "fact",
+                    "summary": "text no marker hashes"})
+    )
+    view = materialize_corpus(corpus, tmp_path / "view.db")
+    assert view.search("hashes") == []
+    assert prune_erased_files(corpus) == 1
+    assert not entry.exists()

@@ -105,7 +105,7 @@ def prune_erased_files(corpus_dir: Path) -> int:
     removed = 0
     for f in sorted((Path(corpus_dir) / "entries").glob("*.json")):
         d = json.loads(f.read_text())
-        if _covered({"content_hash": d.get("content_hash") or f.stem, **d}, content, text):
+        if _covered({**d, "content_hash": d.get("content_hash") or f.stem}, content, text):
             f.unlink()
             removed += 1
     return removed
@@ -246,7 +246,7 @@ def materialize_corpus(corpus_dir: Path, db_path: Path) -> ArchivistStore:
         for f in sorted(edir.glob("*.json")):
             d = json.loads(f.read_text())
             h = d.get("content_hash") or f.stem
-            if _covered({"content_hash": h, **d}, erased, erased_text):
+            if _covered({**d, "content_hash": h}, erased, erased_text):
                 continue  # an erasure marker wins over a stale entry file
             present.add(h)
             store._insert(
