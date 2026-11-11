@@ -377,20 +377,21 @@ async def _send_message(
                     message="cabal_not_before needs returnImmediately: a scheduled task can't hold the request open",
                 ),
             )
-    schedule_claims: dict[str, Any] | None = None
+    # The caller's own claims: what a scheduled task (issue 406) and a 705
+    # "waiting" reply's continuation run under. Never the token itself.
+    verified = verify_caller(request, raw_token)
+    if isinstance(verified, DispatchRefusal):  # pragma: no cover - dispatch_token verified it
+        return _refuse(verified, request_id)
+    schedule_claims: dict[str, Any] = {
+        k: verified[k] for k in ("sub", "cabal_persona", "cabal_scope", "aud", "iat", "exp") if k in verified
+    }
     if not_before is not None:
-        claims = verify_caller(request, raw_token)
-        if isinstance(claims, DispatchRefusal):  # pragma: no cover - dispatch_token verified it
-            return _refuse(claims, request_id)
-        exp = claims.get("exp")
+        exp = verified.get("exp")
         if isinstance(exp, (int, float)) and not_before.timestamp() >= exp:
             return _params_error(
                 request_id,
                 "cabal_not_before is after your token expires; the caller's authority must cover the start",
             )
-        schedule_claims = {
-            k: claims[k] for k in ("sub", "cabal_persona", "cabal_scope", "aud", "iat", "exp") if k in claims
-        }
 
     # The conversation key: the client's, or one generated here and returned
     # on the task (spec 3.4.1, CORE-MULTI-001a). A client-provided one also
@@ -433,7 +434,6 @@ async def _send_message(
     try:
         try:
             if not_before is not None:
-                assert schedule_claims is not None
                 response = await request.app.state.dispatch_router.schedule(
                     target_agent=agent_name, task=task, caller_jwt=token,
                     not_before=not_before, claims=schedule_claims,
@@ -443,13 +443,15 @@ async def _send_message(
                 # row exists before the reply; the run phase goes to the
                 # registry and the client polls GetTask (#277).
                 started, run = await request.app.state.dispatch_router.start_detached(
-                    target_agent=agent_name, target_generation=None, task=task, caller_jwt=token
+                    target_agent=agent_name, target_generation=None, task=task, caller_jwt=token,
+                    caller_claims=schedule_claims,
                 )
                 detached.spawn(started.id, run)
                 response = started
             else:
                 response = await request.app.state.dispatch_router.dispatch(
-                    target_agent=agent_name, target_generation=None, task=task, caller_jwt=token
+                    target_agent=agent_name, target_generation=None, task=task, caller_jwt=token,
+                    caller_claims=schedule_claims,
                 )
         except BaseException:
             if reserve:

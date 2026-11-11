@@ -72,6 +72,10 @@ class CabalConfig(_Open):
     # How often the Scheduler looks for scheduled dispatches that are due
     # (cabal issue 406). A task starts up to this long after its time.
     schedule_poll_seconds: float = Field(default=15.0, gt=0)
+    # How many times in a row cabal continues an agent that replied "waiting
+    # until <time>" (reason 705, issue 406). Past it, the task pauses as
+    # input-required for the caller, so an agent can't wait forever.
+    max_wait_continuations: int = Field(default=5, ge=0)
     # Where the operator bootstrap code minted at startup goes (#325): "log"
     # (the warning line `make bootstrap` and the k8s steps read), "file"
     # ($CABAL_HOME/bootstrap_code, mode 0600, with only its path logged) or
