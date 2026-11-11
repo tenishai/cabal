@@ -10,8 +10,10 @@ once it runs.
   CancelTask racing the start, or a second tick, gets exactly one outcome.
 - While cabal is draining (issue 405) due rows wait: they are new work. At the
   detached cap the rest wait for the next tick.
-- The start re-checks the caller from the STORED claims (expiry, revocation,
-  scope, pairs) and mints a fresh dispatch token (`scheduled_dispatch_token`).
+- The start re-checks the caller from the STORED claims (expiry and revocation
+  always; scope, sub and pairs unless the stored `aud` already was the target's,
+  as the live door would) and mints a fresh dispatch token
+  (`scheduled_dispatch_token`).
   A row that fails a check is marked failed with the reason, once.
 - A time missed while cabal was down starts on the first tick after; the task
   carries `cabal_started_late_s`. Rows survive restarts: the startup sweep only

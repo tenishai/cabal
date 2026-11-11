@@ -37,7 +37,9 @@ async def _token(app: FastAPI, sub: str = "agent:alice", **kw: Any) -> str:
         stored = await load_active_signing_key(session, master_key=app.state.master_key)
     assert stored is not None
     kw.setdefault("ttl_seconds", 86400)  # mint's default is 5 minutes, shorter than SOON
-    return mint(signing_key=stored, sub=sub, aud="cabal-core", scope=["colleague"], **kw)
+    aud = kw.pop("aud", "cabal-core")
+    scope = ["colleague"] if aud == "cabal-core" else ["dispatch"]
+    return mint(signing_key=stored, sub=sub, aud=aud, scope=scope, **kw)
 
 
 async def _send(
@@ -154,6 +156,9 @@ async def test_the_other_doors_refuse_rather_than_ignore_it(app: FastAPI, client
 
 @pytest.mark.asyncio
 async def test_a_due_task_starts_once_and_records_its_lateness(app: FastAPI, client: AsyncClient) -> None:
+    """Two ticks don't truly interleave on one loop here; the claim's
+    exactly-once is proven by the cancel race below. This pins lateness and
+    that a started row is never started again."""
     task_id, when = await _schedule(app, client)
     sched = app.state.scheduler
     assert await sched.tick() == 0  # not due yet
@@ -194,10 +199,16 @@ async def test_a_caller_revoked_after_scheduling_is_failed_with_the_reason(
     app: FastAPI, client: AsyncClient
 ) -> None:
     op = await _operator(app, client)
-    token = await _token(app, now=int(time.time()) - 10)
+    now = int(time.time())
+    token = await _token(app, now=now - 20)
     task_id, when = await _schedule(app, client, token)
+    # The cutoff falls BETWEEN the two iats: the stored claims (iat now-20) are
+    # revoked, but a token minted at start (iat now) would pass the router's own
+    # check. Only the stored-claims check can refuse this (PR 408 review).
     r = await client.post(
-        "/admin/token/revoke", json={"sub": "agent:alice"}, headers={"Authorization": f"Bearer {op}"}
+        "/admin/token/revoke",
+        json={"sub": "agent:alice", "not_before": now - 5},
+        headers={"Authorization": f"Bearer {op}"},
     )
     assert r.status_code == 200, r.text
     assert await app.state.scheduler.tick(now=when) == 0
@@ -205,6 +216,57 @@ async def test_a_caller_revoked_after_scheduling_is_failed_with_the_reason(
     assert row.state == "failed"
     text = row.result_json["status"]["message"]["parts"][0]["text"]
     assert "could not start" in text and "revoked" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_claims_that_expired_before_the_start_fail_the_task(app: FastAPI, client: AsyncClient) -> None:
+    """The start-time exp check bounds a scheduled start to the caller's own
+    authority, for example when cabal was down past it (PR 408 review)."""
+    from sqlalchemy import update
+
+    task_id, when = await _schedule(app, client)
+    row = await _row(app, task_id)
+    claims = {**row.schedule_json, "exp": int(time.time()) - 60}
+    async with open_session(app.state.sessionmaker) as session:
+        await session.execute(
+            update(Conversation).where(Conversation.task_id == task_id).values(schedule_json=claims)
+        )
+    assert await app.state.scheduler.tick(now=when) == 0
+    row = await _row(app, task_id)
+    assert row.state == "failed"
+    text = row.result_json["status"]["message"]["parts"][0]["text"]
+    assert "expired before the task started" in text
+
+
+@pytest.mark.asyncio
+async def test_a_stream_with_a_not_before_is_refused_not_started_at_once(app: FastAPI) -> None:
+    from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
+    from cabal.core.broker.router import DispatchError
+
+    seen: list[str] = []
+
+    class Streamer:
+        name = "echo"
+
+        async def handle_task(self, task: Task) -> Task:
+            return task
+
+        async def astream_task(self, task: Task):
+            seen.append(task.id)
+            yield "started"
+
+    app.state.dispatch_router.register_local(Streamer())
+    task = Task(
+        id="t-stream-later",
+        status=TaskStatus(state="submitted", message=Message(role="user", parts=[TextPart(text="x")])),
+        metadata={"cabal_not_before": (datetime.now(UTC) + SOON).isoformat()},
+    )
+    stream = app.state.dispatch_router.dispatch_streaming(
+        target_agent="echo", target_generation=None, task=task, caller_jwt=await _token(app, aud="echo")
+    )
+    with pytest.raises(DispatchError, match="only honoured"):
+        await stream.__anext__()
+    assert seen == []
 
 
 @pytest.mark.asyncio
