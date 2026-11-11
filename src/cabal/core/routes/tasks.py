@@ -38,6 +38,7 @@ from cabal.core.broker.router import (
     DispatchError,
     DrainingError,
     GuardrailBlocked,
+    TaskAlreadyRunning,
 )
 from cabal.core.routes._dispatch_auth import DispatchRefusal, dispatch_token
 
@@ -142,5 +143,8 @@ async def submit_task(
         raise HTTPException(
             status_code=503, detail=str(exc), headers={"Retry-After": "60"}
         ) from exc
+    # A client's own task id that is still running: 409, not a server fault.
+    except TaskAlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except DispatchError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

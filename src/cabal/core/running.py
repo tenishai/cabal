@@ -1,9 +1,9 @@
 """Running tasks and the drain (cabal issue 405).
 
 `RunningTasks` is the in-process list of dispatches that are running now. The
-router adds a task once its start phase has written the conversations row, and
-removes it when the run ends, on every path: sync, detached, streaming and a
-local resume. A `conversations` row alone can't say this: a row stays
+router adds a task as soon as it is admitted, before its conversations row is
+written, and removes it only after the result is written, on every path: sync,
+detached, streaming and a local resume. An id that is already listed is refused. A `conversations` row alone can't say this: a row stays
 `working` if the bookkeeping after the persona call raises, and the startup
 sweep only clears rows from an earlier process.
 

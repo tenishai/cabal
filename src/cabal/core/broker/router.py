@@ -72,6 +72,14 @@ class DrainingError(DispatchError):
     server fault."""
 
 
+class TaskAlreadyRunning(DispatchError):
+    """The task id names a dispatch that is still running (PR 407 round 2).
+
+    A client's retry with the same id while the first run is going. Refused
+    before anything is written; /a2a/tasks answers 409, since retrying the
+    same id can't succeed until the first run ends."""
+
+
 class CallerJWTError(DispatchError):
     """Caller JWT failed verification at the router boundary."""
 
@@ -227,6 +235,13 @@ class DispatchRouter:
     def _track(
         self, task: Task, ctx: DispatchContext, *, detached: bool = False, streaming: bool = False
     ) -> None:
+        """List the task. An id that is already running is refused here, before
+        anything is written: replacing its entry, then removing it when this
+        dispatch's start fails, would unlist work that is still going (PR 407
+        round 2)."""
+        if task.id in self._running:
+            log.info("dispatch.refused_duplicate", task_id=task.id, target=ctx.target.name)
+            raise TaskAlreadyRunning(f"task {task.id!r} is already running; use a new task id")
         self._running.add(
             RunningTask(
                 task_id=task.id,

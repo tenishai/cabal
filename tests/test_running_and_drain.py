@@ -580,3 +580,53 @@ async def test_a_resume_is_listed_until_its_result_is_written(
     persona.release.set()
     await run
     assert written == ["completed"] and "t-resume" not in router.running
+
+
+@pytest.mark.asyncio
+async def test_a_retry_with_a_running_tasks_id_is_refused_and_unlists_nothing(
+    app: FastAPI, client: AsyncClient, gated: _Gated
+) -> None:
+    op = await _operator(app, client)
+    first = (await _send(client, await _token(app, "agent:alice"))).json()["result"]["task"]
+    await asyncio.wait_for(gated.started.wait(), timeout=5)
+    r = await client.post(
+        "/a2a/tasks",
+        json={
+            "target": "echo",
+            "task": {
+                "id": first["id"],
+                "status": {
+                    "state": "submitted",
+                    "message": {"role": "user", "parts": [{"kind": "text", "text": "again"}]},
+                },
+            },
+        },
+        headers={"Authorization": f"Bearer {op}"},
+    )
+    assert r.status_code == 409 and "already running" in r.text
+    assert [t["task_id"] for t in (await _running(client, op))["tasks"]] == [first["id"]]
+    assert gated.calls == 1
+    gated.release.set()
+    await _until_empty(client, op)
+
+
+@pytest.mark.asyncio
+async def test_a_stream_is_listed_before_its_row_is_written(
+    app: FastAPI, gated: _Gated, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    router = app.state.dispatch_router
+    hold = _Hold(monkeypatch, router._bookkeeper, "on_dispatch_start")
+    task = Task(
+        id="t-stream-early",
+        status=TaskStatus(state="submitted", message=Message(role="user", parts=[TextPart(text="hi")])),
+    )
+    stream = router.dispatch_streaming(
+        target_agent="echo", target_generation=None, task=task, caller_jwt=await _token(app, "agent:alice", aud="echo")
+    )
+    first = asyncio.ensure_future(stream.__anext__())
+    await asyncio.wait_for(hold.reached.wait(), timeout=5)
+    assert "t-stream-early" in router.running
+    hold.release.set()
+    assert await first == "one"
+    await stream.aclose()
+    assert "t-stream-early" not in router.running
