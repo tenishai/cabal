@@ -131,6 +131,9 @@ class Bookkeeper:
                 )
             ).scalars().all()
             for row in rows:
+                # A2A has no `interrupted` state, so the task is `failed`;
+                # `cabal_interrupted` tells a caller cabal went down under the
+                # work, not that the work failed (issue 405).
                 stopped = Task(
                     id=row.task_id,
                     status=TaskStatus(
@@ -139,6 +142,7 @@ class Bookkeeper:
                             role="agent", parts=[TextPart(text="interrupted by a restart")]
                         ),
                     ),
+                    metadata={"cabal_interrupted": True},
                 )
                 await session.execute(
                     update(Conversation)

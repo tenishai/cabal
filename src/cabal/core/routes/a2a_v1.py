@@ -90,6 +90,7 @@ from cabal.core.broker.router import (
     CallerJWTError,
     ConfigurationError,
     DispatchError,
+    DrainingError,
     GuardrailBlocked,
 )
 from cabal.core.bulletin import store as bulletin_store
@@ -415,6 +416,8 @@ async def _send_message(
         raise unauthenticated(str(exc)) from exc
     except GuardrailBlocked as exc:  # before DispatchError, its base class
         raise forbidden(str(exc)) from exc
+    except DrainingError as exc:  # before DispatchError too (issue 405)
+        return _error(request_id, a2a_error(UNSUPPORTED_OPERATION, message=str(exc)))
     except DispatchError as exc:
         return _error(request_id, jsonrpc_error(INTERNAL_ERROR, str(exc)))
 

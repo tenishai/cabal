@@ -243,6 +243,34 @@ def list_conversations(
     return resp.json()
 
 
+def running_tasks(*, token: str) -> dict[str, Any]:
+    """GET /admin/tasks/running (cabal issue 405)."""
+    with make_client() as c:
+        resp = c.get("/admin/tasks/running", headers={"Authorization": f"Bearer {token}"})
+    resp.raise_for_status()
+    return resp.json()
+
+
+def start_drain(*, token: str, deadline_s: float | None = None) -> dict[str, Any]:
+    """POST /admin/drain (cabal issue 405)."""
+    with make_client() as c:
+        resp = c.post(
+            "/admin/drain",
+            json={"deadline_s": deadline_s},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def cancel_drain(*, token: str) -> dict[str, Any]:
+    """POST /admin/drain/cancel (cabal issue 405)."""
+    with make_client() as c:
+        resp = c.post("/admin/drain/cancel", headers={"Authorization": f"Bearer {token}"})
+    resp.raise_for_status()
+    return resp.json()
+
+
 def get_conversation(*, token: str, task_id: str) -> dict[str, Any]:
     with make_client() as c:
         resp = c.get(

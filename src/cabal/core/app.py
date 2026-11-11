@@ -825,7 +825,9 @@ def create_app(
         await bookkeeper.fail_interrupted()
         cabal_cfg = identity.cabal if identity is not None else CabalConfig()
         _app.state.detached = DetachedTasks(
-            limit=cabal_cfg.detached_task_limit, abort=dispatch_router.abort_coordinator
+            limit=cabal_cfg.detached_task_limit,
+            abort=dispatch_router.abort_coordinator,
+            running=dispatch_router.running,
         )
 
         heartbeat = HeartbeatScheduler(sessionmaker)
