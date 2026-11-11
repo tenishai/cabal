@@ -126,8 +126,10 @@ async def scheduled_dispatch_token(
     No token was kept, only the caller's claims. The revocation list is
     checked against THOSE claims: a "tokens issued before X" cutoff set after
     the task was scheduled must stop it, and a token minted now would pass.
-    Then the same policy as a live request (scope, sub, pairs) decides, and a
-    fresh dispatch token is minted."""
+    Then the same policy as a live request decides: scope, sub and pairs,
+    unless the stored `aud` already was the target's (the live door accepts
+    such a token as it is, and the `exp` check above bounds it). A fresh
+    dispatch token is minted either way."""
     import time
 
     exp = claims.get("exp")

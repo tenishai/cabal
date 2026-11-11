@@ -6,7 +6,7 @@ anchor: src/cabal/core/routes/a2a_jsonrpc.py sha=b413078ca6c8aaffad54f385473151e
 anchor: src/cabal/core/auth/jwt.py sha=881c1df69514f389ef2f431cc3626f5e0aef0aa2
 anchor: src/cabal/core/dispatch_pairs.py sha=c580d7a9995a6e97fda673b030f5495cc056e366
 anchor: src/cabal/core/routes/auth.py sha=92ec8e562b10b072d165e977a7851749bd68394f
-anchor: src/cabal/core/routes/_dispatch_auth.py sha=4cbf5a79970196b80888c8dc55c27b2fed423bfe
+anchor: src/cabal/core/routes/_dispatch_auth.py sha=b57782fdee59f8088b5082d7a27ea4f08a31b535
 ---
 # dispatch-auth — JWT realms, scopes, and the re-mint doors
 
