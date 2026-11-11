@@ -28,6 +28,7 @@ from cabal.core.a2a.types import AgentCapabilities, AgentCard, Skill, Task
 from cabal.core.auth.jwt import JWTError, extract_bearer, verify
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.auth.revocations import refusal
+from cabal.core.broker.router import TaskAlreadyRunning
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 from cabal.core.models import Agent, Conversation, Event, Persona, TaskCheckpoint
@@ -583,11 +584,14 @@ async def resume_task(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, detail=f"checkpoint task_json failed to parse: {exc}") from exc
 
-    response = await dispatch_router.resume_local(
-        target_agent=conv.target_agent,
-        task=task,
-        resume_from=checkpoint,
-    )
+    try:
+        response = await dispatch_router.resume_local(
+            target_agent=conv.target_agent,
+            task=task,
+            resume_from=checkpoint,
+        )
+    except TaskAlreadyRunning as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
 
     return {
         "task_id": task_id,

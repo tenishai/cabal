@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -15,7 +16,7 @@ from typer.testing import CliRunner
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.auth.jwt import mint
 from cabal.core.auth.keys import load_active_signing_key
-from cabal.core.broker.router import DrainingError
+from cabal.core.broker.router import DrainingError, TaskAlreadyRunning
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 from cabal.core.models import BootstrapCode, Conversation
@@ -630,3 +631,43 @@ async def test_a_stream_is_listed_before_its_row_is_written(
     assert await first == "one"
     await stream.aclose()
     assert "t-stream-early" not in router.running
+
+
+@pytest.mark.asyncio
+async def test_a_stream_or_resume_reusing_a_running_tasks_id_unlists_nothing(
+    app: FastAPI, client: AsyncClient, gated: _Gated
+) -> None:
+    router = app.state.dispatch_router
+    first = (await _send(client, await _token(app, "agent:alice"))).json()["result"]["task"]
+    await asyncio.wait_for(gated.started.wait(), timeout=5)
+    again = Task(
+        id=first["id"],
+        status=TaskStatus(state="submitted", message=Message(role="user", parts=[TextPart(text="again")])),
+    )
+    stream = router.dispatch_streaming(
+        target_agent="echo", target_generation=None, task=again, caller_jwt=await _token(app, "agent:alice", aud="echo")
+    )
+    with pytest.raises(TaskAlreadyRunning):
+        await stream.__anext__()
+    assert first["id"] in router.running
+    with pytest.raises(TaskAlreadyRunning):
+        await router.resume_local(target_agent="echo", task=again, resume_from=None)
+    (listed,) = router.running.list()
+    assert (listed.task_id, listed.detached, gated.calls) == (first["id"], True, 1)
+    gated.release.set()
+    for _ in range(200):
+        if first["id"] not in router.running:
+            break
+        await asyncio.sleep(0.02)
+    assert first["id"] not in router.running
+
+
+def test_remove_with_an_entry_removes_only_that_entry() -> None:
+    reg = RunningTasks()
+    mine = RunningTask(task_id="t", target_agent="a", caller_agent=None, started_at=datetime.now(UTC))
+    other = RunningTask(task_id="t", target_agent="a", caller_agent=None, started_at=datetime.now(UTC))
+    reg.add(mine)
+    reg.remove("t", other)
+    assert reg.get("t") is mine
+    reg.remove("t", mine)
+    assert "t" not in reg

@@ -125,6 +125,7 @@ class _Started:
     is_session_root: bool
     target_agent: str
     caller_jwt: str
+    running_entry: RunningTask | None = None
 
 
 def _with_context(task: Task, response: Task) -> Task:
@@ -234,7 +235,7 @@ class DispatchRouter:
 
     def _track(
         self, task: Task, ctx: DispatchContext, *, detached: bool = False, streaming: bool = False
-    ) -> None:
+    ) -> RunningTask:
         """List the task. An id that is already running is refused here, before
         anything is written: replacing its entry, then removing it when this
         dispatch's start fails, would unlist work that is still going (PR 407
@@ -242,17 +243,17 @@ class DispatchRouter:
         if task.id in self._running:
             log.info("dispatch.refused_duplicate", task_id=task.id, target=ctx.target.name)
             raise TaskAlreadyRunning(f"task {task.id!r} is already running; use a new task id")
-        self._running.add(
-            RunningTask(
-                task_id=task.id,
-                target_agent=ctx.target.name,
-                caller_agent=ctx.caller_agent,
-                started_at=datetime.now(UTC),
-                detached=detached,
-                streaming=streaming,
-                parent_task=task.metadata.get("cabal_parent_task"),
-            )
+        entry = RunningTask(
+            task_id=task.id,
+            target_agent=ctx.target.name,
+            caller_agent=ctx.caller_agent,
+            started_at=datetime.now(UTC),
+            detached=detached,
+            streaming=streaming,
+            parent_task=task.metadata.get("cabal_parent_task"),
         )
+        self._running.add(entry)
+        return entry
 
     # --- registration -----------------------------------------------------
 
@@ -381,7 +382,7 @@ class DispatchRouter:
         task = _ensure_trace(task)
         # Listed from the moment it is admitted (issue 405, PR 407 review): a drain
         # that starts while the row is being written must still see it.
-        self._track(task, ctx, detached=detached)
+        entry = self._track(task, ctx, detached=detached)
         try:
             # cabal#11 — register this invocation in the AbortGraph. Parent comes
             # from cabal_parent_task (set by Mason fan-out); top-level tasks have none.
@@ -403,9 +404,10 @@ class DispatchRouter:
                     },
                 )
         except BaseException:
-            self._running.remove(task.id)
+            self._running.remove(task.id, entry)
             raise
         return _Started(
+            running_entry=entry,
             ctx=ctx,
             task=task,
             is_session_root=is_session_root,
@@ -422,7 +424,7 @@ class DispatchRouter:
         try:
             return await self._run_dispatch_body(started)
         finally:
-            self._running.remove(started.task.id)
+            self._running.remove(started.task.id, started.running_entry)
 
     async def _run_dispatch_body(self, started: _Started) -> Task:
         ctx, task, is_session_root = started.ctx, started.task, started.is_session_root
@@ -553,7 +555,9 @@ class DispatchRouter:
     ) -> AsyncIterator[str]:
         """Like dispatch() but yields string deltas; see `_stream`. The task
         is on the running list (issue 405) from its start until the stream
-        ends, however it ends."""
+        ends, however it ends. It removes only an entry this stream added, so a
+        stream refused for reusing a running task's id leaves that task listed."""
+        before = self._running.get(task.id)
         try:
             async for delta in self._stream(
                 target_agent=target_agent,
@@ -563,7 +567,9 @@ class DispatchRouter:
             ):
                 yield delta
         finally:
-            self._running.remove(task.id)
+            ours = self._running.get(task.id)
+            if ours is not None and ours is not before:
+                self._running.remove(task.id, ours)
 
     async def _stream(
         self,
@@ -763,16 +769,19 @@ class DispatchRouter:
             raise DispatchError(f"agent {target_agent!r}'s handler does not implement handle_task")
 
         # An operator's resume is listed while it runs (issue 405), but not
-        # refused by a drain: the operator asked for it.
-        self._running.add(
-            RunningTask(
-                task_id=task.id,
-                target_agent=target_agent,
-                caller_agent=None,
-                started_at=datetime.now(UTC),
-                parent_task=task.metadata.get("cabal_parent_task"),
-            )
+        # refused by a drain: the operator asked for it. It is refused if the
+        # task is still running (PR 407 round 3): a checkpointing persona has a
+        # row and a checkpoint mid-run.
+        if task.id in self._running:
+            raise TaskAlreadyRunning(f"task {task.id!r} is still running; resume it once it has stopped")
+        entry = RunningTask(
+            task_id=task.id,
+            target_agent=target_agent,
+            caller_agent=None,
+            started_at=datetime.now(UTC),
+            parent_task=task.metadata.get("cabal_parent_task"),
         )
+        self._running.add(entry)
         try:
             try:
                 response = await handler.handle_task(task, resume_from=resume_from)
@@ -784,7 +793,7 @@ class DispatchRouter:
             return response
         finally:
             # After the result is written, as in _run_dispatch.
-            self._running.remove(task.id)
+            self._running.remove(task.id, entry)
 
     # --- internal pieces --------------------------------------------------
 

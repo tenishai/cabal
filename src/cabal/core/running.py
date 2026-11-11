@@ -3,7 +3,8 @@
 `RunningTasks` is the in-process list of dispatches that are running now. The
 router adds a task as soon as it is admitted, before its conversations row is
 written, and removes it only after the result is written, on every path: sync,
-detached, streaming and a local resume. An id that is already listed is refused. A `conversations` row alone can't say this: a row stays
+detached, streaming and a local resume. Every path refuses an id that is already
+listed, and removes only the entry it added. A `conversations` row alone can't say this: a row stays
 `working` if the bookkeeping after the persona call raises, and the startup
 sweep only clears rows from an earlier process.
 
@@ -78,11 +79,18 @@ class RunningTasks:
         self._tasks[task.task_id] = task
         log.debug("running.add", task_id=task.task_id, target=task.target_agent, running=len(self._tasks))
 
-    def remove(self, task_id: str) -> None:
+    def remove(self, task_id: str, entry: RunningTask | None = None) -> None:
         """Idempotent: the run's own `finally` and the detached registry's
-        done-callback may both call it."""
+        done-callback may both call it. With `entry`, only that entry is
+        removed: a dispatch never unlists another run that holds its id
+        (PR 407 round 3)."""
+        if entry is not None and self._tasks.get(task_id) is not entry:
+            return
         if self._tasks.pop(task_id, None) is not None:
             log.debug("running.remove", task_id=task_id, running=len(self._tasks))
+
+    def get(self, task_id: str) -> RunningTask | None:
+        return self._tasks.get(task_id)
 
     def __contains__(self, task_id: object) -> bool:
         return task_id in self._tasks
