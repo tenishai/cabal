@@ -29,6 +29,8 @@ ERROR_INTERNAL = -32603
 ERROR_UNAUTHORIZED = -32001
 ERROR_FORBIDDEN = -32002
 ERROR_AGENT_NOT_FOUND = -32003
+# cabal is draining before a restart (issue 405): retry after it restarts.
+ERROR_DRAINING = -32004
 
 
 class _Open(BaseModel):

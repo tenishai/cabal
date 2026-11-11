@@ -19,6 +19,7 @@ from __future__ import annotations
 import secrets
 from collections.abc import AsyncIterator, Coroutine
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import httpx
@@ -38,6 +39,7 @@ from cabal.core.bulletin.store import AgentRow
 from cabal.core.db import open_session
 from cabal.core.guardrails import Guardrail, GuardrailContext, VerdictType, run_guardrails
 from cabal.core.hooks.registry import HookName, HookRegistry
+from cabal.core.running import RunningTask, RunningTasks
 
 log = structlog.get_logger(__name__)
 
@@ -60,6 +62,14 @@ class GuardrailBlocked(DispatchError):
     retry -- so reporting a guardrail refusal as one sustains, at the
     transport layer, the loop the guardrail exists to break.
     """
+
+
+class DrainingError(DispatchError):
+    """cabal is draining (issue 405) and this dispatch would start new work.
+
+    A subclass so every existing `except DispatchError` still refuses it, and
+    a distinct type so each route reports it as "retry later", not as a
+    server fault."""
 
 
 class CallerJWTError(DispatchError):
@@ -170,6 +180,7 @@ class DispatchRouter:
         abort_coordinator: AbortCoordinator | None = None,
         input_guardrails: list[Guardrail] | None = None,
         revocations: RevocationList | None = None,
+        running: RunningTasks | None = None,
     ) -> None:
         self._sessionmaker = sessionmaker
         self._bookkeeper = bookkeeper
@@ -181,6 +192,8 @@ class DispatchRouter:
         # cabal#11 — shared AbortGraph. Owned here so personas (via the
         # factory) and the admin surface all reference one graph.
         self._abort = abort_coordinator or AbortCoordinator()
+        # cabal issue 405 — the dispatches running now, and the drain flag.
+        self._running = running or RunningTasks()
         self._local: dict[str, LocalHandler] = {}
         # Capability tags per agent — populated at startup from identity.toml.
         # Used by select_by_capabilities() for late-binding task dispatch.
@@ -195,6 +208,36 @@ class DispatchRouter:
     def abort_coordinator(self) -> AbortCoordinator:
         """The shared AbortGraph coordinator (cabal#11)."""
         return self._abort
+
+    @property
+    def running(self) -> RunningTasks:
+        """The running tasks and the drain state (cabal issue 405)."""
+        return self._running
+
+    def _admit(self, ctx: DispatchContext) -> None:
+        """Refuse new work while draining, unless the caller is an agent
+        that is itself running a task (issue 405)."""
+        if not self._running.admits(ctx.caller_agent):
+            log.info("dispatch.refused_draining", target=ctx.target.name, caller=ctx.caller_agent)
+            raise DrainingError(
+                "cabal is draining before a restart and isn't starting new work; "
+                "retry after it restarts"
+            )
+
+    def _track(
+        self, task: Task, ctx: DispatchContext, *, detached: bool = False, streaming: bool = False
+    ) -> None:
+        self._running.add(
+            RunningTask(
+                task_id=task.id,
+                target_agent=ctx.target.name,
+                caller_agent=ctx.caller_agent,
+                started_at=datetime.now(UTC),
+                detached=detached,
+                streaming=streaming,
+                parent_task=task.metadata.get("cabal_parent_task"),
+            )
+        )
 
     # --- registration -----------------------------------------------------
 
@@ -301,16 +344,25 @@ class DispatchRouter:
         hand to its owner (the app's detached-task registry). Cancel it through
         the AbortCoordinator, like any dispatch.
         """
-        started = await self._start_dispatch(target_agent, target_generation, task, caller_jwt)
+        started = await self._start_dispatch(
+            target_agent, target_generation, task, caller_jwt, detached=True
+        )
         return started.task, self._run_dispatch(started)
 
     async def _start_dispatch(
-        self, target_agent: str, target_generation: int | None, task: Task, caller_jwt: str
+        self,
+        target_agent: str,
+        target_generation: int | None,
+        task: Task,
+        caller_jwt: str,
+        *,
+        detached: bool = False,
     ) -> _Started:
         """Everything before the persona call: auth, trace ids, the AbortGraph
         node, the conversations row, the session hook."""
 
         ctx = await self._prepare(target_agent, target_generation, caller_jwt)
+        self._admit(ctx)
         task = _ensure_trace(task)
         # cabal#11 — register this invocation in the AbortGraph. Parent comes
         # from cabal_parent_task (set by Mason fan-out); top-level tasks have none.
@@ -332,6 +384,7 @@ class DispatchRouter:
                 },
             )
 
+        self._track(task, ctx, detached=detached)
         return _Started(
             ctx=ctx,
             task=task,
@@ -442,6 +495,7 @@ class DispatchRouter:
         finally:
             # The invocation is no longer in-flight; drop it from the graph.
             self._abort.complete(task.id)
+            self._running.remove(task.id)
 
         response = _with_context(task, response)
         await self._bookkeeper.on_dispatch_success(task, response)
@@ -469,6 +523,28 @@ class DispatchRouter:
         task: Task,
         caller_jwt: str,
     ) -> AsyncIterator[str]:
+        """Like dispatch() but yields string deltas; see `_stream`. The task
+        is on the running list (issue 405) from its start until the stream
+        ends, however it ends."""
+        try:
+            async for delta in self._stream(
+                target_agent=target_agent,
+                target_generation=target_generation,
+                task=task,
+                caller_jwt=caller_jwt,
+            ):
+                yield delta
+        finally:
+            self._running.remove(task.id)
+
+    async def _stream(
+        self,
+        *,
+        target_agent: str,
+        target_generation: int | None,
+        task: Task,
+        caller_jwt: str,
+    ) -> AsyncIterator[str]:
         """Like dispatch() but yields string deltas from astream_task.
 
         Enforces the same §6.12 invariants as dispatch(): JWT re-verification,
@@ -480,6 +556,7 @@ class DispatchRouter:
         handler or its handler doesn't implement astream_task.
         """
         ctx = await self._prepare(target_agent, target_generation, caller_jwt)
+        self._admit(ctx)
 
         # Symmetric with dispatch()'s guard: a federated target is a sovereign
         # peer and must never be served locally — even via streaming, even if a
@@ -529,6 +606,7 @@ class DispatchRouter:
         # "Conversation/Event bookkeeping".
         task = _ensure_trace(task)
         await self._bookkeeper.on_dispatch_start(task, ctx.target, ctx.caller_agent)
+        self._track(task, ctx, streaming=True)
 
         if self._input_guardrails:
             guard_ctx = GuardrailContext(
@@ -655,11 +733,24 @@ class DispatchRouter:
         if not hasattr(handler, "handle_task"):
             raise DispatchError(f"agent {target_agent!r}'s handler does not implement handle_task")
 
+        # An operator's resume is listed while it runs (issue 405), but not
+        # refused by a drain: the operator asked for it.
+        self._running.add(
+            RunningTask(
+                task_id=task.id,
+                target_agent=target_agent,
+                caller_agent=None,
+                started_at=datetime.now(UTC),
+                parent_task=task.metadata.get("cabal_parent_task"),
+            )
+        )
         try:
             response = await handler.handle_task(task, resume_from=resume_from)
         except Exception as exc:
             await self._bookkeeper.on_dispatch_failure(task, exc)
             raise
+        finally:
+            self._running.remove(task.id)
         response = _with_context(task, response)
         await self._bookkeeper.on_dispatch_success(task, response)
         return response

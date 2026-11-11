@@ -36,6 +36,7 @@ from cabal.core.broker.router import (
     AgentNotFoundError,
     CallerJWTError,
     DispatchError,
+    DrainingError,
     GuardrailBlocked,
 )
 from cabal.core.routes._dispatch_auth import DispatchRefusal, dispatch_token
@@ -135,5 +136,11 @@ async def submit_task(
     # a2a_jsonrpc._message_send.
     except GuardrailBlocked as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    # Also before DispatchError (issue 405): 503 with Retry-After says "later",
+    # which 502 does not.
+    except DrainingError as exc:
+        raise HTTPException(
+            status_code=503, detail=str(exc), headers={"Retry-After": "60"}
+        ) from exc
     except DispatchError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

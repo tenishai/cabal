@@ -1,8 +1,8 @@
 ---
 card: arch-card:cabal-dispatch-auth
 updated: 2026-11-03
-anchor: src/cabal/core/routes/tasks.py sha=9a07dd6ff4ffb90fd89a6f9026312781b245323a
-anchor: src/cabal/core/routes/a2a_jsonrpc.py sha=cff3561a212470b6f02e5744d897ed8e3d15f74b
+anchor: src/cabal/core/routes/tasks.py sha=7cfd17eeb46c0c97f2064497f36887c6fc225da5
+anchor: src/cabal/core/routes/a2a_jsonrpc.py sha=b413078ca6c8aaffad54f385473151e75432105b
 anchor: src/cabal/core/auth/jwt.py sha=881c1df69514f389ef2f431cc3626f5e0aef0aa2
 anchor: src/cabal/core/dispatch_pairs.py sha=c580d7a9995a6e97fda673b030f5495cc056e366
 anchor: src/cabal/core/routes/auth.py sha=92ec8e562b10b072d165e977a7851749bd68394f

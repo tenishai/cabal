@@ -634,6 +634,7 @@ def status() -> None:
         raise typer.Exit(code=1) from exc
 
     agents = body.get("agents", [])
+    typer.echo(_running_line(token))
     if not agents:
         typer.echo("(no agents registered)")
         return
@@ -654,6 +655,21 @@ def status() -> None:
         work = a.get("work") or {}
         if work:
             typer.echo(f"{'':<22} ↳ {_format_work(work)}")
+
+
+def _running_line(token: str) -> str:
+    """One line for `cbl status`: how many tasks run, and whether cabal is
+    draining (issue 405). Says so when the daemon can't tell, rather than
+    printing nothing."""
+    try:
+        body = api.running_tasks(token=token)
+    except httpx.HTTPStatusError as exc:
+        return f"running: unknown ({exc.response.status_code} from /admin/tasks/running)"
+    except httpx.RequestError as exc:
+        return f"running: unknown ({exc})"
+    n = len(body.get("tasks", []))
+    line = f"running: {n} task{'s' if n != 1 else ''}"
+    return line + " (draining)" if body.get("draining") else line
 
 
 #: A session heartbeats once per turn, so a gap this long means the session is
@@ -748,6 +764,107 @@ def session_end(name: str = typer.Argument(...)) -> None:
     """De-register on clean shutdown."""
     api.end_session(token=_session_token(), name=name)
     typer.echo(f"ended {name}")
+
+
+def _operator_token() -> str:
+    token = api.TokenStore().load()
+    if token is None:
+        typer.echo("no token; run `cbl login` first.", err=True)
+        raise typer.Exit(code=1)
+    return token
+
+
+def _call_admin(fn: Any, **kwargs: Any) -> dict[str, Any]:
+    try:
+        return fn(**kwargs)
+    except httpx.HTTPStatusError as exc:
+        typer.echo(f"failed: {exc.response.status_code} {exc.response.text}", err=True)
+        raise typer.Exit(code=1) from exc
+    except httpx.RequestError as exc:
+        typer.echo(f"could not reach daemon at {api.base_url()}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+def _print_running(body: dict[str, Any]) -> None:
+    if body.get("draining"):
+        deadline = body.get("drain_deadline") or "none"
+        passed = " (passed)" if body.get("deadline_passed") else ""
+        typer.echo(f"draining since {body.get('drain_started_at')}, deadline {deadline}{passed}")
+    rows = body.get("tasks", [])
+    if not rows:
+        typer.echo("(no tasks running)")
+    else:
+        header = f"{'TASK':<36} {'AGENT':<22} {'STATE':<10} {'STARTED':<20} {'MODE':<9} CALLER"
+        typer.echo(header)
+        typer.echo("-" * len(header))
+        for r in rows:
+            mode = "detached" if r.get("detached") else "stream" if r.get("streaming") else "sync"
+            parent = f"  (under {r['parent_task']})" if r.get("parent_task") else ""
+            typer.echo(
+                f"{r['task_id']:<36.36} {r['target_agent']:<22.22} {r['state']:<10.10} "
+                f"{(r.get('started_at') or '')[:19]:<20} {mode:<9} {r.get('caller_agent') or '-'}"
+                f"{parent}"
+            )
+    if body.get("orphan_rows"):
+        typer.echo(
+            f"{body['orphan_rows']} conversation row(s) read submitted/working with no run "
+            "behind them; the next restart's sweep marks them failed."
+        )
+
+
+@app.command("tasks")
+def tasks_cmd(
+    running: bool = typer.Option(
+        True, "--running/--no-running", help="List the tasks running now (the default)."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw JSON body."),
+) -> None:
+    """The tasks running now, oldest first, and whether cabal is draining
+    (cabal issue 405). Exits 0 either way: read the list, not the exit code.
+    Past tasks are `cbl conversations list`."""
+    if not running:
+        typer.echo("only --running is supported; for past tasks use `cbl conversations list`", err=True)
+        raise typer.Exit(code=2)
+    body = _call_admin(api.running_tasks, token=_operator_token())
+    if as_json:
+        typer.echo(json.dumps(body, indent=2))
+        return
+    _print_running(body)
+
+
+#: `cbl drain --wait` exit code when the deadline passed with tasks still running.
+EXIT_DRAIN_DEADLINE = 3
+
+
+@app.command("drain")
+def drain_cmd(
+    deadline: float | None = typer.Option(
+        None, "--deadline", help="Seconds to allow. Only reported when passed; nothing is aborted."
+    ),
+    wait: bool = typer.Option(
+        False, "--wait", help="Poll until no task is running (exit 0) or the deadline passes (exit 3)."
+    ),
+    poll: float = typer.Option(5.0, "--poll", min=0.1, help="Seconds between polls with --wait."),
+    cancel: bool = typer.Option(False, "--cancel", help="Stop draining and take dispatches again."),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw JSON body."),
+) -> None:
+    """Stop cabal starting new work, so running tasks can finish before a
+    restart (cabal issue 405). A dispatch from an agent that is running a
+    task still goes through. SIGTERM's fast stop is unchanged."""
+    token = _operator_token()
+    if cancel:
+        body = _call_admin(api.cancel_drain, token=token)
+    else:
+        body = _call_admin(api.start_drain, token=token, deadline_s=deadline)
+        while wait and body.get("tasks") and not body.get("deadline_passed"):
+            time.sleep(poll)
+            body = _call_admin(api.running_tasks, token=token)
+    if as_json:
+        typer.echo(json.dumps(body, indent=2))
+    else:
+        _print_running(body)
+    if wait and not cancel and body.get("tasks"):
+        raise typer.Exit(code=EXIT_DRAIN_DEADLINE)
 
 
 conv_app = typer.Typer(help="Browse past Task conversations.")

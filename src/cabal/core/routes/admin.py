@@ -613,6 +613,93 @@ async def abort_task(
     return {"task_id": task_id, "signalled": signalled}
 
 
+# ---- Running tasks and the drain (cabal issue 405) ----------------------
+
+
+async def _running_body(request: Request) -> dict[str, Any]:
+    """The running list, with each task's row state, plus the drain state.
+
+    The list comes from the router's in-process registry, not the rows: a row
+    can stay `working` after its run ended. Those rows are counted as
+    `orphan_rows` so they're visible, not listed as work."""
+    running = request.app.state.dispatch_router.running
+    tasks = running.list()
+    async with open_session(request.app.state.sessionmaker) as session:
+        open_rows = (
+            await session.execute(
+                select(Conversation.task_id, Conversation.state).where(
+                    Conversation.state.in_(("submitted", "working"))
+                )
+            )
+        ).all()
+    states = {task_id: state for task_id, state in open_rows}
+    live = {t.task_id for t in tasks}
+    return {
+        **running.drain_state(),
+        "tasks": [
+            {
+                "task_id": t.task_id,
+                "target_agent": t.target_agent,
+                "caller_agent": t.caller_agent,
+                "state": states.get(t.task_id, "working"),
+                "started_at": t.started_at.isoformat(),
+                "detached": t.detached,
+                "streaming": t.streaming,
+                "parent_task": t.parent_task,
+            }
+            for t in tasks
+        ],
+        "orphan_rows": sum(1 for task_id in states if task_id not in live),
+    }
+
+
+@router.get("/tasks/running")
+async def running_tasks(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """The dispatches running now, oldest first, and whether cabal is
+    draining. An empty `tasks` list is the "safe to restart" signal."""
+    _require_operator_claims(request, extract_bearer(authorization))
+    return await _running_body(request)
+
+
+class DrainRequest(BaseModel):
+    # None: no deadline. A passed deadline is only reported; nothing is aborted.
+    deadline_s: float | None = None
+
+
+@router.post("/drain")
+async def start_drain(
+    request: Request,
+    req: DrainRequest | None = None,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Stop starting new work, and let running tasks finish (issue 405).
+
+    New top-level dispatches are refused; one from an agent that is running a
+    task still goes through. Calling it again moves the deadline. Poll
+    `GET /admin/tasks/running` until `tasks` is empty, then stop cabal, or
+    `POST /admin/drain/cancel` to take dispatches again."""
+    _require_operator_claims(request, extract_bearer(authorization))
+    deadline = req.deadline_s if req is not None else None
+    if deadline is not None and deadline < 0:
+        raise HTTPException(status_code=422, detail="deadline_s must be zero or more")
+    request.app.state.dispatch_router.running.start_drain(deadline)
+    return await _running_body(request)
+
+
+@router.post("/drain/cancel")
+async def cancel_drain(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Accept dispatches again. A no-op if cabal wasn't draining."""
+    _require_operator_claims(request, extract_bearer(authorization))
+    request.app.state.dispatch_router.running.cancel_drain()
+    return await _running_body(request)
+
+
 @router.get("/tasks/{task_id}/graph")
 async def task_graph(
     request: Request,

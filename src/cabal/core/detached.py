@@ -29,14 +29,20 @@ from typing import Any
 import structlog
 
 from cabal.core.abort import AbortCoordinator
+from cabal.core.running import RunningTasks
 
 log = structlog.get_logger(__name__)
 
 
 class DetachedTasks:
-    def __init__(self, *, limit: int, abort: AbortCoordinator) -> None:
+    def __init__(
+        self, *, limit: int, abort: AbortCoordinator, running: RunningTasks | None = None
+    ) -> None:
         self._limit = limit
         self._abort = abort
+        # The router's running list (issue 405). The run phase removes its own
+        # task; this covers a run cancelled before it ever started.
+        self._tasks_running = running
         self._running: dict[str, asyncio.Task[Any]] = {}
         self._reserved = 0
 
@@ -64,6 +70,8 @@ class DetachedTasks:
 
     def _finished(self, task_id: str, job: asyncio.Task[Any]) -> None:
         self._running.pop(task_id, None)
+        if self._tasks_running is not None:
+            self._tasks_running.remove(task_id)
         if job.cancelled():
             log.warning("detached.cancelled", task_id=task_id)
         elif (exc := job.exception()) is not None:

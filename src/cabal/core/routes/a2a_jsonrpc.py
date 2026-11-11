@@ -25,6 +25,7 @@ from sqlalchemy import select
 from cabal.core.a2a.inbound import inbound_metadata
 from cabal.core.a2a.jsonrpc import (
     ERROR_AGENT_NOT_FOUND,
+    ERROR_DRAINING,
     ERROR_FORBIDDEN,
     ERROR_INTERNAL,
     ERROR_INVALID_PARAMS,
@@ -48,6 +49,7 @@ from cabal.core.broker.router import (
     CallerJWTError,
     ConfigurationError,
     DispatchError,
+    DrainingError,
     GuardrailBlocked,
 )
 from cabal.core.bulletin import store as bulletin_store
@@ -316,6 +318,9 @@ async def _stream_task_events(
     except GuardrailBlocked as exc:
         yield _sse_event("error", {"jsonrpc": "2.0", "id": request_id, "error": {"code": ERROR_FORBIDDEN, "message": str(exc), "partial_text": full_text}})
         return
+    except DrainingError as exc:  # before DispatchError, its base (issue 405)
+        yield _sse_event("error", {"jsonrpc": "2.0", "id": request_id, "error": {"code": ERROR_DRAINING, "message": str(exc), "partial_text": full_text}})
+        return
     except DispatchError as exc:
         yield _sse_event(
             "error",
@@ -436,6 +441,8 @@ async def _message_send(
     # comment in router.dispatch() claimed otherwise (#152 pre-pass, WRONG 1).
     except GuardrailBlocked as exc:
         return make_error_response(id=rpc_req.id, code=ERROR_FORBIDDEN, message=str(exc))
+    except DrainingError as exc:  # before DispatchError, its base (issue 405)
+        return make_error_response(id=rpc_req.id, code=ERROR_DRAINING, message=str(exc))
     except DispatchError as exc:
         return make_error_response(id=rpc_req.id, code=ERROR_INTERNAL, message=str(exc))
 

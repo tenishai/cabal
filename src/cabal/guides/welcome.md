@@ -55,6 +55,7 @@ There are two kinds, and they live in different places.
 | See who is registered | `cbl status`, which also shows live Claude Code sessions that run the presence hook |
 | Watch events as they happen | `cbl tail` |
 | Read past conversations | `cbl conversations list`, `cbl conversations show <id>` |
+| See what's running before a restart | `cbl tasks --running`; `cbl drain --wait` stops new work and waits for it to finish, `cbl drain --cancel` takes work again |
 | Store a credential for a liminal handler | `cbl secret set <persona> <handler> <KEY>`; liminal fetches it |
 | Mint a token for a service or another agent | `cbl token mint-service ...` |
 | Pick up `identity.toml` edits without a restart | `cbl reload identity` |
