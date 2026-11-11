@@ -1,6 +1,6 @@
 """Erase an entry, or a source, and every entry derived from it (cabal#410).
 
-When a house withdraws something, every copy made from it has to go too,
+When a publisher withdraws something, every copy made from it has to go too,
 including an entry that was merged from several sources. Publish records
 lineage (``memory_lineage``: derived entry -> source reference), so an erase
 walks it: the named entry or outside reference, every entry derived from it,

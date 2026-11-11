@@ -190,13 +190,13 @@ class ArchivistStore:
                     id, resource_name, summary, entry_type, tags,
                     details, gotchas, commands, refs, importance,
                     source_thread, content_hash, status, processing_state,
-                    written_by, origin_house, origin_cabal, origin_agent,
+                    written_by, origin_archivist, origin_cabal, origin_agent,
                     origin_role, access, access_count, created_at, updated_at
                 ) VALUES (
                     :id, :resource_name, :summary, :entry_type, :tags,
                     :details, :gotchas, :commands, :refs, :importance,
                     :source_thread, :content_hash, :status, :processing_state,
-                    :written_by, :origin_house, :origin_cabal, :origin_agent,
+                    :written_by, :origin_archivist, :origin_cabal, :origin_agent,
                     :origin_role, :access, :access_count, :created_at, :updated_at
                 )""",
                 row,
@@ -471,7 +471,7 @@ class ArchivistStore:
             ],
             "filters": ["entry_type", "tags"],
             "ranking": ["caller_cabal", "caller_role"],
-            "access_labels": ["house", "public"],
+            "access_labels": ["internal", "public"],
         }
 
 

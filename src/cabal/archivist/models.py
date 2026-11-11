@@ -35,8 +35,8 @@ EntryType = Literal[
 # accepted on publish: with liminal auth off it cannot verify who is calling,
 # so "cabal" and "role" would be labels that hide nothing. They are reserved
 # for when tokens are verified.
-AccessLabel = Literal["house", "public"]
-ACCESS_LABELS: tuple[str, ...] = ("house", "public")
+AccessLabel = Literal["internal", "public"]
+ACCESS_LABELS: tuple[str, ...] = ("internal", "public")
 RESERVED_ACCESS_LABELS: tuple[str, ...] = ("cabal", "role")
 
 
@@ -67,14 +67,14 @@ class Entry:
     status: str = "active"  # active | superseded
     processing_state: str = "indexed"  # pending | indexed
     written_by: str = "unknown"
-    # Origin (cabal#410): which house, cabal, agent and role wrote the entry.
-    # origin_house is set by the server, never the caller. The rest is what the
+    # Origin (cabal#410): which archivist, cabal, agent and role wrote the entry.
+    # origin_archivist is set by the server, never the caller. The rest is what the
     # caller declares; until tokens are verified it is used for ranking only.
-    origin_house: str = ""
+    origin_archivist: str = ""
     origin_cabal: str = ""
     origin_agent: str = ""
     origin_role: str = ""
-    access: str = "house"
+    access: str = "internal"
     access_count: int = 0
     created_at: str | None = None
     updated_at: str | None = None
@@ -132,7 +132,7 @@ class Entry:
             "status": self.status,
             "processing_state": self.processing_state,
             "written_by": self.written_by,
-            "origin_house": self.origin_house,
+            "origin_archivist": self.origin_archivist,
             "origin_cabal": self.origin_cabal,
             "origin_agent": self.origin_agent,
             "origin_role": self.origin_role,
@@ -162,11 +162,11 @@ class Entry:
             status=row.get("status") or "active",
             processing_state=row.get("processing_state") or "indexed",
             written_by=row.get("written_by") or "unknown",
-            origin_house=row.get("origin_house") or "",
+            origin_archivist=row.get("origin_archivist") or "",
             origin_cabal=row.get("origin_cabal") or "",
             origin_agent=row.get("origin_agent") or "",
             origin_role=row.get("origin_role") or "",
-            access=row.get("access") or "house",
+            access=row.get("access") or "internal",
             access_count=int(row.get("access_count") or 0),
             created_at=row.get("created_at"),
             updated_at=row.get("updated_at"),

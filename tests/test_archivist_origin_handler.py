@@ -20,7 +20,7 @@ def _ctx() -> Context:
 
 @pytest.fixture
 def handler(tmp_path: Path) -> ArchivistHandler:
-    return ArchivistHandler(default_config=ArchivistConfig(db_path=tmp_path / "a.db", house="mash1"))
+    return ArchivistHandler(default_config=ArchivistConfig(db_path=tmp_path / "a.db", name="mash1"))
 
 
 async def _publish(handler, **payload):
@@ -29,20 +29,20 @@ async def _publish(handler, **payload):
 
 
 @pytest.mark.asyncio
-async def test_house_comes_from_the_server_and_origin_from_the_caller(handler) -> None:
+async def test_archivist_comes_from_the_server_and_origin_from_the_caller(handler) -> None:
     pub = await _publish(handler, origin={"cabal": "techne-next", "agent": "prudence", "role": "reviewer"})
     assert pub.is_error is False
     got = await handler.dispatch("get", {"entry_id": pub.content[0]["data"]["entry_id"]}, _ctx())
     entry = got.content[0]["data"]["entry"]
-    assert entry["origin"] == {"house": "mash1", "cabal": "techne-next", "agent": "prudence", "role": "reviewer"}
-    assert entry["access"] == "house"
+    assert entry["origin"] == {"archivist": "mash1", "cabal": "techne-next", "agent": "prudence", "role": "reviewer"}
+    assert entry["access"] == "internal"
 
 
 @pytest.mark.asyncio
-async def test_caller_cannot_set_the_house(handler) -> None:
-    pub = await _publish(handler, origin={"house": "elsewhere"})
+async def test_caller_cannot_set_the_archivist(handler) -> None:
+    pub = await _publish(handler, origin={"archivist": "elsewhere"})
     assert pub.is_error is True
-    assert "unknown keys ['house']" in pub.error
+    assert "unknown keys ['archivist']" in pub.error
 
 
 @pytest.mark.asyncio
@@ -90,10 +90,10 @@ async def test_get_reports_lineage_and_erased_publish_is_an_outcome(handler, tmp
     assert again.content[0]["data"]["related_ids"] == ["src:8"]
 
 
-def test_get_handler_reads_the_house(monkeypatch, tmp_path) -> None:
+def test_get_handler_reads_the_archivist_name(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("CABAL_ARCHIVIST_DB", str(tmp_path / "a.db"))
-    monkeypatch.setenv("CABAL_ARCHIVIST_HOUSE", " mash1 ")
+    monkeypatch.setenv("CABAL_ARCHIVIST_NAME", " mash1 ")
     h = get_handler()
-    assert h.default_config.house == "mash1"
+    assert h.default_config.name == "mash1"
     monkeypatch.delenv("CABAL_ARCHIVIST_DB")
     assert get_handler().default_config.db_path is None

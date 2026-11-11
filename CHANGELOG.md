@@ -16,8 +16,8 @@ A release candidate: the wright set runs it before `0.5.0` is tagged.
   `conversations.not_before` and `conversations.schedule_json` for scheduled tasks. An archivist
   database gains its origin columns and two new tables (`memory_lineage`, `memory_erasures`) when it is
   opened; the change only adds, and an older server still works against the upgraded file.
-- An archivist shared across cabals: set `$CABAL_ARCHIVIST_HOUSE` on its server (unset, new entries
-  record `origin_house` as `''`), then run `cbl archivist backfill-origin --house <h> --apply` once to
+- An archivist shared across cabals: set `$CABAL_ARCHIVIST_NAME` on its server (unset, new entries
+  record `origin_archivist` as `''`), then run `cbl archivist backfill-origin --archivist <name> --apply` once to
   fill in entries written before the upgrade (a dry run without `--apply`). See the issue #410 entry.
 - ergon pins `tenish-cabal[full]` exactly; a set needs an ergon whose pin names this release to get
   running tasks, drain and scheduling.
@@ -68,13 +68,13 @@ A release candidate: the wright set runs it before `0.5.0` is tagged.
   trace, and marks the first task completed with `cabal_continued_by`; otherwise the task pauses as
   `input-required` with the reason. `[cabal] max_wait_continuations` (default 5) caps the chain.
 - The archivist records where each entry came from and what it was made from, for an archivist shared
-  across cabals (issue #410). Each entry has an origin: `origin_house`, set by the server from
-  `$CABAL_ARCHIVIST_HOUSE`, plus `origin_cabal`, `origin_agent` and `origin_role`, declared by the caller
-  in `publish`'s `origin` object. Each entry also has an `access` label, `house` (the default) or
+  across cabals (issue #410). Each entry has an origin: `origin_archivist`, set by the server from
+  `$CABAL_ARCHIVIST_NAME`, plus `origin_cabal`, `origin_agent` and `origin_role`, declared by the caller
+  in `publish`'s `origin` object. Each entry also has an `access` label, `internal` (the default) or
   `public`. `cabal` and `role` are refused, because the archivist can't verify callers while liminal auth
   is off, so those labels would hide nothing. `search` takes an optional `caller` (`cabal`, `role`). It
   ranks the caller's cabal first, then the same role in other cabals, then the rest, and hides nothing.
-  Existing databases gain the columns on open. Run `cbl archivist backfill-origin --house <h>` (a dry run
+  Existing databases gain the columns on open. Run `cbl archivist backfill-origin --archivist <name>` (a dry run
   unless `--apply`) to fill in entries written before the upgrade.
 - Lineage and erasure (issue #410). `publish` records each of an entry's `refs`, and the sources in a new
   `derived_from` list, in `memory_lineage`. `cbl archivist erase <entry-id|source-ref>` walks that

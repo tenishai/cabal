@@ -1523,7 +1523,9 @@ def archivist_erase(
 
 @archivist_app.command("backfill-origin")
 def archivist_backfill_origin(
-    house: str = typer.Option(..., "--house", help="House to stamp where origin_house is empty."),
+    archivist: str = typer.Option(
+        ..., "--archivist", help="Archivist name to stamp where origin_archivist is empty."
+    ),
     cabal: str = typer.Option("", "--cabal", help="Cabal (or host) to stamp where origin_cabal is empty."),
     ref_prefix: str = typer.Option(
         "", "--ref-prefix", help="Only stamp --cabal on entries with a ref starting with this."
@@ -1537,14 +1539,14 @@ def archivist_backfill_origin(
 
     try:
         r = backfill_origin(
-            _archivist_db(db), house=house, cabal=cabal, ref_prefix=ref_prefix, apply=apply
+            _archivist_db(db), archivist=archivist, cabal=cabal, ref_prefix=ref_prefix, apply=apply
         )
     except FileNotFoundError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from exc
     verb = "set" if apply else "would set"
     typer.echo(
-        f"{verb}: house on {r.house}, cabal on {r.cabal}, agent on {r.agent}; "
+        f"{verb}: archivist on {r.archivist}, cabal on {r.cabal}, agent on {r.agent}; "
         f"lineage rows {r.lineage}"
     )
     if not apply:

@@ -45,9 +45,9 @@ def _file_bytes(db: Path) -> bytes:
 def test_init_db_adds_origin_columns_to_an_old_database(tmp_path: Path) -> None:
     db = tmp_path / "old.db"
     old_sql = ARCHIVIST_SCHEMA_SQL
-    for col in ("origin_house", "origin_cabal", "origin_agent", "origin_role"):
+    for col in ("origin_archivist", "origin_cabal", "origin_agent", "origin_role"):
         old_sql = old_sql.replace(f"    {col}    TEXT NOT NULL DEFAULT '',\n", "")
-    old_sql = old_sql.replace("    access          TEXT NOT NULL DEFAULT 'house',\n", "")
+    old_sql = old_sql.replace("    access          TEXT NOT NULL DEFAULT 'internal',\n", "")
     assert "origin_cabal" not in old_sql.split("memory_lineage")[0]
     conn = sqlite3.connect(db)
     conn.executescript(old_sql)
@@ -62,8 +62,8 @@ def test_init_db_adds_origin_columns_to_an_old_database(tmp_path: Path) -> None:
     init_db(db).close()  # idempotent
 
     cols = {r[1] for r in _rows(db, "PRAGMA table_info(memory_entries)")}
-    assert {"origin_house", "origin_cabal", "origin_agent", "origin_role", "access"} <= cols
-    assert _rows(db, "SELECT access, origin_cabal FROM memory_entries") == [("house", "")]
+    assert {"origin_archivist", "origin_cabal", "origin_agent", "origin_role", "access"} <= cols
+    assert _rows(db, "SELECT access, origin_cabal FROM memory_entries") == [("internal", "")]
 
 
 # ---- origin and ranking --------------------------------------------------
@@ -74,7 +74,7 @@ def _entry(name: str, summary: str, cabal: str = "", role: str = "") -> Entry:
         resource_name=name,
         summary=summary,
         entry_type="fact",
-        origin_house="mash1",
+        origin_archivist="mash1",
         origin_cabal=cabal,
         origin_role=role,
     )
@@ -84,11 +84,11 @@ def test_origin_round_trips(tmp_path: Path) -> None:
     store = ArchivistStore(tmp_path / "a.db")
     r = store.publish(_entry("x", "nul rule for store writes", cabal="techne-next", role="reviewer"))
     got = store.get(r.entry_id)
-    assert (got.origin_house, got.origin_cabal, got.origin_role, got.access) == (
+    assert (got.origin_archivist, got.origin_cabal, got.origin_role, got.access) == (
         "mash1",
         "techne-next",
         "reviewer",
-        "house",
+        "internal",
     )
 
 
@@ -353,19 +353,19 @@ def test_backfill_origin_fills_only_empty_fields(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
 
-    dry = backfill_origin(db, house="mash1", cabal="dev04", ref_prefix="techne:poe@dimartin:")
-    assert (dry.house, dry.cabal, dry.agent, dry.lineage) == (2, 1, 1, 1)
+    dry = backfill_origin(db, archivist="mash1", cabal="dev04", ref_prefix="techne:poe@dimartin:")
+    assert (dry.archivist, dry.cabal, dry.agent, dry.lineage) == (2, 1, 1, 1)
     assert _rows(db, "SELECT count(*) FROM memory_lineage") == [(0,)]
 
-    backfill_origin(db, house="mash1", cabal="dev04", ref_prefix="techne:poe@dimartin:", apply=True)
-    rows = {r[0]: r[1:] for r in _rows(db, "SELECT id, origin_house, origin_cabal, origin_agent FROM memory_entries")}
+    backfill_origin(db, archivist="mash1", cabal="dev04", ref_prefix="techne:poe@dimartin:", apply=True)
+    rows = {r[0]: r[1:] for r in _rows(db, "SELECT id, origin_archivist, origin_cabal, origin_agent FROM memory_entries")}
     assert rows[old] == ("mash1", "dev04", "poe@dimartin")
     assert rows[other] == ("mash1", "", "")
     assert rows[set_] == ("mash1", "techne-next", "")
     assert store.lineage(old) == ["techne:poe@dimartin:knowledge/1"]
 
-    again = backfill_origin(db, house="mash1", cabal="dev04", apply=True)
-    assert (again.house, again.agent, again.lineage) == (0, 0, 0)
+    again = backfill_origin(db, archivist="mash1", cabal="dev04", apply=True)
+    assert (again.archivist, again.agent, again.lineage) == (0, 0, 0)
 
 
 # ---- CLI -------------------------------------------------------------------
@@ -383,9 +383,9 @@ def test_cli_erase_and_backfill(tmp_path: Path) -> None:
     assert done.exit_code == 0, done.output
     assert "erased 3 entries" in done.output
 
-    bf = runner.invoke(app, ["archivist", "backfill-origin", "--house", "mash1", "--db", str(db)])
+    bf = runner.invoke(app, ["archivist", "backfill-origin", "--archivist", "mash1", "--db", str(db)])
     assert bf.exit_code == 0, bf.output
-    assert "would set: house on 5" in bf.output
+    assert "would set: archivist on 5" in bf.output
 
     missing = runner.invoke(app, ["archivist", "erase", "x", "--db", str(tmp_path / "none.db")])
     assert missing.exit_code == 2
