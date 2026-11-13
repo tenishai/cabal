@@ -341,8 +341,9 @@ class ReviewEngine:
         notes = ""
         if self._kind(step.seat) == "github_review":
             notes = await self._round_notes(snap, step.seat)
+        prepass = await self._prepass_text(snap) if self._kind(step.seat) == "github_review" else ""
         try:
-            prepared = await self._prepare(snap, step.seat, notes)
+            prepared = await self._prepare(snap, step.seat, notes, prepass)
             task_id = await self._dispatch(step.seat, prepared["brief"], prepared.get("metadata") or {})
         except StepError as exc:
             await self._step_failed(snap, str(exc), workspace=None)
@@ -383,17 +384,35 @@ class ReviewEngine:
             f"{prev['sha'][:12]}; check that each item you raised then was addressed."
         )
 
-    async def _prepare(self, snap: _Snapshot, seat: str, notes: str) -> dict[str, Any]:
+    async def _prepass_text(self, snap: _Snapshot) -> str:
+        """The reply of the latest earlier pre-pass seat that passed, for the next
+        seat's brief (Prudence reads Temperance's report). Empty if there was none."""
+        for seat, task_id in reversed(snap.passed):
+            if self._kind(seat) != "prepass":
+                continue
+            async with open_session(self._state.sessionmaker) as session:
+                row = await session.get(Conversation, task_id)
+            return _reply_text(row) if row is not None else ""
+        return ""
+
+    async def _prepare(self, snap: _Snapshot, seat: str, notes: str, prepass: str = "") -> dict[str, Any]:
         if not self._cfg.prepare_command:
             raise StepError("review.prepare_command is not set")
-        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
-            fh.write(notes)
-            notes_path = fh.name if notes else ""
+        files: dict[str, str] = {}
+        for name, text in (("notes", notes), ("prepass", prepass)):
+            if text:
+                with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+                    fh.write(text)
+                files[name] = fh.name
         try:
-            argv = _fill(self._cfg.prepare_command, seat=seat, repo=snap.repo, pr=snap.pr, sha=snap.sha, notes=notes_path)
+            argv = _fill(
+                self._cfg.prepare_command, seat=seat, repo=snap.repo, pr=snap.pr, sha=snap.sha,
+                notes=files.get("notes", ""), prepass=files.get("prepass", ""),
+            )
             rc, out, err = await self._run_command(argv)
         finally:
-            os.unlink(fh.name)
+            for path in files.values():
+                os.unlink(path)
         if rc != 0:
             raise StepError(f"prepare exited {rc}: {err.strip()[-300:]}")
         lines = [ln for ln in out.splitlines() if ln.strip()]
@@ -599,6 +618,8 @@ class _Snapshot:
     sha: str
     last_idx: int
     step: _Step | None
+    # (seat, task_id) of each earlier step that passed, in order.
+    passed: tuple[tuple[str, str], ...] = ()
 
     @classmethod
     def of(cls, run: ReviewRun, step: ReviewStep | None) -> _Snapshot:
@@ -608,6 +629,10 @@ class _Snapshot:
             pr=run.pr,
             sha=run.sha,
             last_idx=max((s.idx for s in run.steps), default=-1),
+            passed=tuple(
+                (s.seat, s.task_id) for s in run.steps
+                if s.state == "passed" and s.task_id and (step is None or s.idx < step.idx)
+            ),
             step=None
             if step is None
             else _Step(

@@ -588,7 +588,9 @@ class ReviewConfig(_Open):
     )
     review_logins: dict[str, str] = Field(default_factory=lambda: {"prudence": "prudence-tenishai"})
     # Prepares one seat's checkout. argv; each element may use {seat}, {repo}, {pr},
-    # {sha} and {notes} (a file holding the round's notes for the brief, or empty).
+    # {sha}, {notes} (a file holding the round's notes for the brief, or empty) and
+    # {prepass} (for a github_review seat, a file holding the reply of the pre-pass
+    # seat that ran before it, or empty).
     # Its stdout's last line is one JSON object: {"workspace": <path>, "brief":
     # <text>, "metadata": {...}}. The brief and metadata go to the seat as they are.
     prepare_command: list[str] = Field(default_factory=list)

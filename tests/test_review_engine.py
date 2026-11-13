@@ -239,6 +239,36 @@ async def test_round_two_brief_names_the_previous_verdict(app: FastAPI) -> None:
     assert body["round"] == 2 and body["prev_verdict"]["review_id"] == 70
 
 
+async def test_the_next_seat_gets_the_prepass_reply(app: FastAPI) -> None:
+    """Temperance's report reaches Prudence: the prepass seat's reply is written to
+    the file {prepass} names in the next seat's prepare command."""
+    gh = FakeGitHub(reviews=[_r("APPROVED", SHA, 9, "2026-11-13T15:00:00Z")])
+    seen: dict[str, str] = {}
+
+    async def prep(argv: list[str], **kw: Any) -> tuple[int, str, str]:
+        seat, prepass = argv[1], argv[2]
+        seen[seat] = Path(prepass).read_text() if prepass else ""  # noqa: ASYNC240
+        brief = "x\n## Verdict\n5 verified, 1 risky, 0 wrong" if seat == "echo" else "review"
+        return 0, json.dumps({"workspace": f"/w/{seat}", "brief": brief}), ""
+
+    engine = ReviewEngine(
+        app_state=app.state,
+        config=ReviewConfig(
+            enabled=True, prepare_command=["prep", "{seat}", "{prepass}"],
+            seat_kinds={"echo": "prepass", "ghostly": "github_review"},
+            review_logins={"ghostly": "prudence-tenishai"},
+        ),
+        github=gh, commands=prep,
+    )
+    run_id = await _queue(app, ["echo", "ghostly"])
+    await engine.tick()
+    await _until_task_ends(app, (await _run(app, run_id))["steps"][0]["task_id"])
+    await engine.tick()  # echo collected and passed
+    await engine.tick()  # ghostly prepared
+    assert seen["echo"] == ""
+    assert "## Verdict" in seen["ghostly"] and "5 verified, 1 risky, 0 wrong" in seen["ghostly"]
+
+
 async def test_no_review_at_the_sha_is_a_failure_not_a_pass(app: FastAPI) -> None:
     gh = FakeGitHub(reviews=[_r("APPROVED", OTHER, 5, "2026-11-12T10:00:00Z")])
     engine, _ = _engine(

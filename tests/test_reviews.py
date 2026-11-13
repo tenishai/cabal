@@ -150,3 +150,34 @@ def test_migration_downgrades_and_upgrades_again(tmp_path, monkeypatch) -> None:
     assert not ({"review_runs", "review_steps"} & tables())
     command.upgrade(cfg, "head")
     assert {"review_runs", "review_steps"} <= tables()
+
+
+async def test_losing_the_insert_race_returns_the_winner_and_keeps_the_callers_work(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prudence, PR 424 nit: the savepoint is what keeps a lost race from rolling
+    back the caller's other work. Without it this fails with PendingRollbackError."""
+    from cabal.core.models import DispatchPair
+
+    async with open_session(app.state.sessionmaker) as session:
+        winner, _ = await store.create_run(session, repo="tenishai/cabal", pr=9, sha=SHA)
+        winner_id = winner.id
+
+    real_find = store.find_run
+    misses = {"left": 1}
+
+    async def find_once_missing(*args, **kwargs):  # type: ignore[no-untyped-def]
+        if misses["left"]:
+            misses["left"] -= 1
+            return None  # as if the winner committed between our read and insert
+        return await real_find(*args, **kwargs)
+
+    monkeypatch.setattr(store, "find_run", find_once_missing)
+    async with open_session(app.state.sessionmaker) as session:
+        session.add(DispatchPair(caller="a", target="b"))  # unrelated work in the same transaction
+        await session.flush()
+        run, created = await store.create_run(session, repo="tenishai/cabal", pr=9, sha=SHA)
+        assert created is False and run.id == winner_id
+        assert [s.seat for s in run.steps] == ["temperance", "prudence"]
+    async with app.state.sessionmaker() as s:
+        assert (await s.get(DispatchPair, ("a", "b"))) is not None
