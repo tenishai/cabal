@@ -27,6 +27,10 @@ such a failure; an outage (5xx, 429, network) is waited out for at most
 `step_timeout_s`, then is one too. A timed-out seat's task is aborted before
 the retry. When a run ends, `cleanup_command` and `notify_command` run.
 
+The watch loop (step 4) runs in the same tick, every `watch_poll_seconds`: in each
+repo under `[review.repos]`, an open, non-draft PR carrying `label` (default
+`ready-for-review`) gets a run at its head, and the label is removed.
+
 Declared background work, in the shape cabal issue 260 asks for:
     what: one asyncio loop, every `review.poll_seconds`
     started by: the app lifespan, after the Scheduler, only if `review.enabled`
@@ -45,6 +49,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import httpx
 import structlog
@@ -55,7 +60,7 @@ from cabal.core.a2a.inbound import inbound_metadata
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.db import open_session
 from cabal.core.models import Conversation, ReviewRun, ReviewStep
-from cabal.core.reviews import get_run
+from cabal.core.reviews import InvalidRun, create_run, get_run
 
 log = structlog.get_logger(__name__)
 
@@ -78,19 +83,31 @@ class Review:
     submitted_at: str
 
 
+@dataclass(frozen=True)
+class OpenPull:
+    number: int
+    sha: str
+    draft: bool
+    labels: frozenset[str]
+
+
 class GitHub(Protocol):
     async def head_sha(self, repo: str, pr: int) -> str: ...
     async def reviews(self, repo: str, pr: int) -> list[Review]: ...
+    async def open_pulls(self, repo: str) -> list[OpenPull]: ...
+    async def remove_label(self, repo: str, pr: int, label: str) -> None: ...
 
 
 class GitHubREST:
     """The two reads the engine needs, over GitHub's REST API."""
 
-    def __init__(self, api: str, token: str | None) -> None:
+    def __init__(self, api: str, token: str | None, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
         headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        self._client = httpx.AsyncClient(base_url=api.rstrip("/"), headers=headers, timeout=30.0)
+        self._client = httpx.AsyncClient(
+            base_url=api.rstrip("/"), headers=headers, timeout=30.0, transport=transport
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -99,6 +116,33 @@ class GitHubREST:
         resp = await self._client.get(f"/repos/{repo}/pulls/{pr}")
         resp.raise_for_status()
         return str(resp.json()["head"]["sha"])
+
+    async def open_pulls(self, repo: str) -> list[OpenPull]:
+        out: list[OpenPull] = []
+        page = 1
+        while True:
+            resp = await self._client.get(
+                f"/repos/{repo}/pulls", params={"state": "open", "per_page": 100, "page": page}
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            out += [
+                OpenPull(
+                    number=int(p["number"]),
+                    sha=str(p["head"]["sha"]),
+                    draft=bool(p.get("draft")),
+                    labels=frozenset(str(lb.get("name", "")) for lb in p.get("labels") or []),
+                )
+                for p in batch
+            ]
+            if len(batch) < 100:
+                return out
+            page += 1
+
+    async def remove_label(self, repo: str, pr: int, label: str) -> None:
+        resp = await self._client.delete(f"/repos/{repo}/issues/{pr}/labels/{quote(label, safe='')}")
+        if resp.status_code != 404:  # already gone is fine
+            resp.raise_for_status()
 
     async def reviews(self, repo: str, pr: int) -> list[Review]:
         out: list[Review] = []
@@ -232,6 +276,7 @@ class ReviewEngine:
         self._run_command = commands
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
+        self._last_watch: datetime | None = None
 
     # -- lifecycle
 
@@ -263,6 +308,12 @@ class ReviewEngine:
 
     async def tick(self, now: datetime | None = None) -> None:
         now = now or datetime.now(UTC)
+        if self._cfg.repos and (
+            self._last_watch is None
+            or (now - self._last_watch).total_seconds() >= self._cfg.watch_poll_seconds
+        ):
+            self._last_watch = now
+            await self.watch()
         for run_id in await self._run_ids("running"):
             await self._advance(run_id, now)
         while await self._count("running") < self._cfg.max_running:
@@ -270,6 +321,47 @@ class ReviewEngine:
             if claimed is None:
                 break
             await self._advance(claimed, now)
+
+    # -- the watch loop (step 4)
+
+    async def watch(self) -> int:
+        """Queue a run for each open, non-draft PR carrying the label in a watched
+        repo, at its head, then take the label off. Returns how many runs it
+        created. A head that already has a run gets none (a head is reviewed once),
+        and its label still comes off: the label asks for a review of the head it
+        was put on, and that one exists."""
+        label = self._cfg.label
+        created = 0
+        for repo, repo_cfg in self._cfg.repos.items():
+            try:
+                pulls = await self._gh.open_pulls(repo)
+            except Exception as exc:  # noqa: BLE001 -- one repo failing must not stop the rest
+                log.warning("review.watch_unreadable", repo=repo, error=repr(exc))
+                continue
+            for pull in pulls:
+                if label not in pull.labels or pull.draft:
+                    continue
+                seats = list(repo_cfg.seats or self._cfg.seats_default)
+                try:
+                    async with open_session(self._state.sessionmaker) as session:
+                        run, new = await create_run(
+                            session, repo=repo, pr=pull.number, sha=pull.sha, seats=seats,
+                            requested_by=f"label:{label}", trigger="label",
+                        )
+                        run_id, state = run.id, run.state
+                except InvalidRun as exc:
+                    log.warning("review.watch_refused", repo=repo, pr=pull.number, error=str(exc))
+                    continue
+                created += int(new)
+                log.info(
+                    "review.watch_queued" if new else "review.watch_known",
+                    repo=repo, pr=pull.number, sha=pull.sha, run_id=run_id, state=state,
+                )
+                try:
+                    await self._gh.remove_label(repo, pull.number, label)
+                except Exception as exc:  # noqa: BLE001 -- the run exists; a stuck label only repeats "known"
+                    log.warning("review.label_not_removed", repo=repo, pr=pull.number, error=repr(exc))
+        return created
 
     async def _run_ids(self, state: str) -> list[str]:
         async with open_session(self._state.sessionmaker) as session:
@@ -351,19 +443,32 @@ class ReviewEngine:
         except StepError as exc:
             await self._step_failed(snap, str(exc), workspace=None)
             return
+        workspace = prepared.get("workspace")
+        # Only a step still pending becomes running. A cancel, or any end of the
+        # run, that landed while prepare_command ran has already marked it
+        # skipped (cancel_run and _finish both do), and must not be overwritten.
         async with open_session(self._state.sessionmaker) as session:
-            await session.execute(
+            started = await session.execute(
                 update(ReviewStep)
-                .where(ReviewStep.run_id == snap.run_id, ReviewStep.idx == step.idx)
+                .where(
+                    ReviewStep.run_id == snap.run_id,
+                    ReviewStep.idx == step.idx,
+                    ReviewStep.state == "pending",
+                )
                 .values(
                     state="running",
                     sha=head,
                     task_id=task_id,
-                    workspace=prepared.get("workspace"),
+                    workspace=workspace,
                     started_at=datetime.now(UTC),
-                    outcome={**(step.outcome or {}), "attempts": step.attempts + 1},
+                    outcome=_without_since({**(step.outcome or {}), "attempts": step.attempts + 1}),
                 )
             )
+        if started.rowcount != 1:  # type: ignore[attr-defined]
+            self.abort_task(task_id, "review run ended while the seat was being prepared")
+            await self._cleanup(workspace)
+            log.info("review.seat_dropped", run_id=snap.run_id, seat=step.seat, task_id=task_id)
+            return
         log.info("review.seat_started", run_id=snap.run_id, seat=step.seat, task_id=task_id)
 
     async def _round_notes(self, snap: _Snapshot, seat: str) -> str:
@@ -522,7 +627,7 @@ class ReviewEngine:
                 .where(ReviewStep.run_id == snap.run_id, ReviewStep.idx == step.idx)
                 .values(
                     state=state,
-                    outcome={**(step.outcome or {}), **(outcome or {})},
+                    outcome=_without_since({**(step.outcome or {}), **(outcome or {})}),
                     finished_at=datetime.now(UTC),
                 )
             )

@@ -561,6 +561,13 @@ class GuardrailsConfig(_Open):
         return v
 
 
+class ReviewRepoConfig(_Open):
+    """One repo the review watch loop looks at: `[review.repos."owner/name"]`."""
+
+    # The seats for this repo's runs, in order. Unset: `[review] seats_default`.
+    seats: list[str] | None = None
+
+
 def _default_seat_kinds() -> dict[str, Literal["prepass", "github_review"]]:
     return {"temperance": "prepass", "prudence": "github_review"}
 
@@ -606,6 +613,12 @@ class ReviewConfig(_Open):
     # Who the engine dispatches as: the sub of the operator-scoped claims it mints
     # under. A run's `requested_by` is recorded, not used for dispatch.
     dispatch_sub: str = "cabal:reviews"
+    # The watch loop (step 4): every `watch_poll_seconds`, each open, non-draft PR in
+    # `repos` carrying `label` gets a run at its head, and the label is removed. A
+    # repo not listed here is never watched; `cbl review start` still works for it.
+    repos: dict[str, ReviewRepoConfig] = Field(default_factory=dict)
+    label: str = "ready-for-review"
+    watch_poll_seconds: float = Field(default=300.0, gt=0)
 
 
 class IdentityConfig(_Open):

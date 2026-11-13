@@ -426,3 +426,71 @@ async def test_a_timed_out_seat_is_aborted_before_the_retry(app: FastAPI, monkey
         await session.execute(update(Conversation).where(Conversation.task_id == task_id).values(state="working"))
     await engine.tick(now=datetime.now(UTC) + timedelta(seconds=5))
     assert aborted == [task_id]
+
+
+# ---- Prudence, PR 425 round 2 -----------------------------------------------------
+
+
+async def test_a_cancel_during_prepare_aborts_the_new_seat_and_cleans_up(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cabal.core.review_engine import run_command
+
+    aborted: list[str] = []
+    monkeypatch.setattr(
+        app.state.dispatch_router.abort_coordinator, "abort",
+        lambda task_id, reason: aborted.append(task_id) or 1,
+    )
+    run_id = await _queue(app)
+    calls: list[list[str]] = []
+
+    async def cancel_while_preparing(argv: list[str], **kw: Any) -> tuple[int, str, str]:
+        calls.append(argv)
+        if len(calls) == 1:  # the prepare_command: the operator cancels meanwhile
+            async with open_session(app.state.sessionmaker) as session:
+                run = await store.get_run(session, run_id)
+                assert run is not None
+                assert await store.cancel_run(session, run, reason="by hand") == []
+        return await run_command(argv, **kw)
+
+    config = ReviewConfig(
+        enabled=True, seat_kinds={"echo": "prepass"},
+        prepare_command=_prepare("x\n## Verdict\n0 wrong", workspace="/tmp/ws-9"),
+        cleanup_command=["true", "{workspace}"],
+    )
+    engine = ReviewEngine(app_state=app.state, config=config, github=FakeGitHub(), commands=cancel_while_preparing)
+    await engine.tick()
+    body = await _run(app, run_id)
+    assert body["state"] == "canceled"
+    step = body["steps"][0]
+    assert step["state"] == "skipped" and step["task_id"] is None  # not overwritten with running
+    assert len(aborted) == 1  # the task dispatched after the cancel was stopped
+    assert calls[-1] == ["true", "/tmp/ws-9"]  # and its workspace cleaned up
+
+
+class FlakyGitHub(BrokenGitHub):
+    """Fails the read named by `on` until `on` is changed."""
+
+
+async def test_an_error_timestamp_does_not_outlive_a_good_read(app: FastAPI) -> None:
+    gh = FlakyGitHub(502)
+    engine, _ = _engine(app, gh, prepare_command=_prepare("x"), step_timeout_s=60)
+    run_id = await _queue(app)
+    await engine.tick()
+    assert "github_error_since" in (await _run(app, run_id))["steps"][0]["outcome"]
+    gh.on = "none"  # GitHub is back: the head reads, the seat starts
+    await engine.tick()
+    step = (await _run(app, run_id))["steps"][0]
+    assert step["state"] == "running" and "github_error_since" not in step["outcome"]
+
+
+async def test_a_retry_forgets_the_outage_that_came_before_it(app: FastAPI) -> None:
+    gh = FlakyGitHub(502)
+    engine, _ = _engine(app, gh, prepare_command=_prepare("x"), step_timeout_s=60)
+    run_id = await _queue(app)
+    await engine.tick()
+    gh.status = 404  # now a hard failure: retried once
+    await engine.tick()
+    step = (await _run(app, run_id))["steps"][0]
+    assert step["state"] == "pending" and step["outcome"]["attempts"] == 1
+    assert "github_error_since" not in step["outcome"]
