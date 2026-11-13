@@ -32,6 +32,13 @@ Pull requests and issues are in tenishai/cabal.
   PR carrying `[review] label` (`ready-for-review`) gets a run at its head, with that repo's
   `seats` or `seats_default`, and the label is removed. A head that already has a run gets no
   second one; its label still comes off. A repo not listed is never watched.
+- The merge gate (issue 399, step 5), off unless a repo sets `merge = true` under
+  `[review.repos."owner/name"]`. A run that ends approved there, with an APPROVED review among
+  its steps, goes to `merging` instead; once CI is green at its sha (`ci = "github"`: every
+  check run and commit status), it is merged pinned to that sha (`merge_method`, default
+  squash) and ends `merged`. CI failing, CI not green within `ci_timeout_s` (3600) of the
+  approval, or GitHub refusing the merge ends it `unmerged` with the reason. A `merging` run can
+  be canceled until the merge call starts. New run states: `merging`, `unmerged`.
 
 ## [0.5.0rc1] — 2026-11-11
 

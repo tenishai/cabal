@@ -29,10 +29,10 @@ log = structlog.get_logger(__name__)
 
 DEFAULT_SEATS: tuple[str, ...] = ("temperance", "prudence")
 RUN_STATES = frozenset(
-    {"queued", "running", "approved", "changes", "stopped", "failed", "merged", "canceled"}
+    {"queued", "running", "approved", "changes", "stopped", "failed", "merging", "merged", "unmerged", "canceled"}
 )
 # A run in one of these can still be canceled; the rest have ended.
-OPEN_STATES = frozenset({"queued", "running"})
+OPEN_STATES = frozenset({"queued", "running", "merging"})
 TRIGGERS = frozenset({"cli", "label"})
 
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")

@@ -167,3 +167,23 @@ async def test_the_rest_client_reads_pulls_and_removes_the_label() -> None:
         await gh.aclose()
     assert seen[1] == ("DELETE", "/repos/o/r/issues/3/labels/needs%20review", "Bearer t0k")
     assert seen[0][0] == "GET" and "state=open" in seen[0][1]
+
+
+async def test_the_rest_client_pages_through_open_pulls() -> None:
+    import httpx
+
+    from cabal.core.review_engine import GitHubREST
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        count = 100 if page == 1 else 2
+        return httpx.Response(200, json=[
+            {"number": page * 1000 + i, "head": {"sha": SHA}, "draft": False, "labels": []} for i in range(count)
+        ])
+
+    gh = GitHubREST("https://api.example/", None, transport=httpx.MockTransport(handler))
+    try:
+        pulls = await gh.open_pulls("o/r")
+    finally:
+        await gh.aclose()
+    assert len(pulls) == 102 and pulls[-1].number == 2001
