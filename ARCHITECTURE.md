@@ -1,8 +1,8 @@
 ---
 card: repo-card:cabal
-updated: 2026-10-26
+updated: 2026-11-13
 anchor: pyproject.toml sha=381f5746fd203c546daa2c4ec37900aafa42c4de
-anchor: src/cabal/core/app.py sha=60ee02f4d0226357574a6f84687a935c18be5a1c
+anchor: src/cabal/core/app.py sha=fafec39c080ad2ea373b54246909debdbb86a00f
 ---
 # cabal — repo card
 
@@ -14,7 +14,7 @@ ENTRY:
 - server → src/cabal/core/app.py:create_app (lifespan: master key → engine → migrations → signing key → JWKS → identity.toml → router + personas → detached registry → Scheduler (core/scheduler.py: starts `scheduled` rows when due, cabal issue 406) → heartbeat → bootstrap code, delivered per `cabal.bootstrap_code`: log, file or off; shutdown runs `DetachedTasks.drain`, the fast abort-then-cancel stop. The waiting drain is a step before the stop: POST /admin/drain, cabal issue 405); default bind 127.0.0.1:7400
 - `cabal` → src/cabal/tui/main.py:app (Textual TUI; in-process client tui/client/inprocess.py boots the app itself)
 - liminal entry points → src/cabal/handlers/{patterns,documents,code,archivist}.py:get_handler
-- routes (src/cabal/core/routes/): /a2a/tasks (tasks.py), /agents/{name} legacy JSON-RPC + agent-card (a2a_jsonrpc.py), /agents/{name}/a2a (A2A v1.0, a2a_v1.py), shared dispatch-token policy (_dispatch_auth.py), /auth/bootstrap + /auth/liminal-token (auth.py), /admin/* (admin.py), /directory, /.well-known/{jwks.json,agent-card,agent-card.json}, /healthz
+- routes (src/cabal/core/routes/): /a2a/tasks (tasks.py), /agents/{name} legacy JSON-RPC + agent-card (a2a_jsonrpc.py), /agents/{name}/a2a (A2A v1.0, a2a_v1.py), shared dispatch-token policy (_dispatch_auth.py), /auth/bootstrap + /auth/liminal-token (auth.py), /admin/* (admin.py), /reviews (reviews.py: review runs, one per PR head, cabal issue 399; core/reviews.py holds the record), /directory, /.well-known/{jwks.json,agent-card,agent-card.json}, /healthz
 SEAMS → card:
 - dispatch-auth  core/routes/_dispatch_auth.py + tasks.py + a2a_jsonrpc.py + auth/jwt.py  (token realms; the one re-mint policy and its doors; dispatch_pairs)  → docs/arch/dispatch-auth.md
 - dispatch-router  core/broker/router.py  (every hop: JWT verify, bookkeeping, trace, guardrails, local vs remote)  → docs/arch/dispatch-router.md

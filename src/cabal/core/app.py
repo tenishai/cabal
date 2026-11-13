@@ -105,6 +105,7 @@ from cabal.core.routes import (
     auth,
     directory,
     healthz,
+    reviews,
     tasks,
     well_known,
 )
@@ -883,6 +884,7 @@ def create_app(
     app.include_router(auth.router)
     app.include_router(tasks.router)
     app.include_router(admin.router)
+    app.include_router(reviews.router)
     app.include_router(directory.router)
     app.include_router(a2a_jsonrpc.router)
     app.include_router(a2a_v1.router)

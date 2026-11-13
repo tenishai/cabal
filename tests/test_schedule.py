@@ -345,7 +345,7 @@ def test_migration_downgrades_and_upgrades_again(tmp_path, monkeypatch) -> None:
 
     command.upgrade(cfg, "head")
     assert {"not_before", "schedule_json"} <= columns()
-    command.downgrade(cfg, "-1")
+    command.downgrade(cfg, "d7e1f3a9b2c4")  # the not-before migration's parent, not -1: later revisions sit on top
     assert not ({"not_before", "schedule_json"} & columns())
     command.upgrade(cfg, "head")
     assert {"not_before", "schedule_json"} <= columns()

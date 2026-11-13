@@ -944,6 +944,92 @@ def drain_cmd(
         raise typer.Exit(code=EXIT_DRAIN_DEADLINE)
 
 
+review_app = typer.Typer(
+    help="Review runs: one review of one pull-request head by its seats in order (issue 399)."
+)
+
+
+def _print_run(run: dict[str, Any]) -> None:
+    typer.echo(
+        f"{run['id']}  {run['repo']}#{run['pr']} at {run['sha'][:12]}  round {run['round']}  "
+        f"{run['state']}" + (f" ({run['reason']})" if run.get("reason") else "")
+    )
+    for step in run.get("steps", []):
+        extra = f"  task {step['task_id']}" if step.get("task_id") else ""
+        outcome = f"  {json.dumps(step['outcome'])}" if step.get("outcome") else ""
+        typer.echo(f"  {step['idx']}. {step['seat']:<14} {step['state']}{extra}{outcome}")
+
+
+@review_app.command("start")
+def review_start_cmd(
+    repo: str = typer.Argument(..., help="owner/name"),
+    pr: int = typer.Argument(..., help="Pull request number."),
+    sha: str = typer.Option(..., "--sha", help="The full 40-character head commit to review."),
+    seats: str = typer.Option(
+        "", "--seats", help="Comma-separated seats in order. Default: temperance,prudence."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw JSON body."),
+) -> None:
+    """Queue a review of REPO#PR at --sha. The same head queued twice returns
+    the first run; a head is reviewed once."""
+    seat_list = [s.strip() for s in seats.split(",") if s.strip()] or None
+    body = _call_admin(
+        api.review_start, token=_operator_token(), repo=repo, pr=pr, sha=sha, seats=seat_list
+    )
+    if as_json:
+        typer.echo(json.dumps(body, indent=2))
+        return
+    if not body.get("created"):
+        typer.echo("already queued for this head:")
+    _print_run(body["run"])
+
+
+@review_app.command("list")
+def review_list_cmd(
+    state: str = typer.Option("", "--state", help="Only runs in this state."),
+    limit: int = typer.Option(50, "--limit", help="At most this many, newest first."),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw JSON body."),
+) -> None:
+    """Review runs, newest first."""
+    body = _call_admin(api.review_list, token=_operator_token(), state=state or None, limit=limit)
+    if as_json:
+        typer.echo(json.dumps(body, indent=2))
+        return
+    runs = body.get("runs", [])
+    if not runs:
+        typer.echo("(no review runs)")
+    for run in runs:
+        _print_run(run)
+
+
+@review_app.command("show")
+def review_show_cmd(
+    run_id: str = typer.Argument(...),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw JSON body."),
+) -> None:
+    """One review run and its steps."""
+    body = _call_admin(api.review_show, token=_operator_token(), run_id=run_id)
+    if as_json:
+        typer.echo(json.dumps(body, indent=2))
+        return
+    _print_run(body["run"])
+
+
+@review_app.command("cancel")
+def review_cancel_cmd(
+    run_id: str = typer.Argument(...),
+    reason: str = typer.Option("", "--reason", help="Recorded on the run."),
+) -> None:
+    """Cancel a run that hasn't ended."""
+    body = _call_admin(
+        api.review_cancel, token=_operator_token(), run_id=run_id, reason=reason or None
+    )
+    _print_run(body["run"])
+
+
+app.add_typer(review_app, name="review")
+
+
 conv_app = typer.Typer(help="Browse past Task conversations.")
 app.add_typer(conv_app, name="conversations")
 
