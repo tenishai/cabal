@@ -30,6 +30,7 @@ log = structlog.get_logger(__name__)
 
 KNOWN_TOP_LEVEL = {
     "cabal",
+    "review",
     "personas",
     "litellm",
     "hooks",
@@ -560,6 +561,53 @@ class GuardrailsConfig(_Open):
         return v
 
 
+def _default_seat_kinds() -> dict[str, Literal["prepass", "github_review"]]:
+    return {"temperance": "prepass", "prudence": "github_review"}
+
+
+class ReviewConfig(_Open):
+    """The review workflow (cabal issue 399): `[review]` in identity.toml.
+
+    Off unless `enabled`. When on, a loop every `poll_seconds` claims queued
+    review runs (at most `max_running` at once) and takes each through its seats.
+    """
+
+    enabled: bool = False
+    poll_seconds: float = Field(default=30.0, gt=0)
+    max_running: int = Field(default=3, ge=1)
+    # A seat with no outcome this long after its dispatch fails the step, once
+    # retried. Fates on a large diff take 20-40 minutes.
+    step_timeout_s: float = Field(default=5400.0, gt=0)
+    seats_default: list[str] = Field(default_factory=lambda: ["temperance", "prudence"])
+    # How each seat's outcome is read. "prepass": its reply carries `## Verdict`
+    # with an "N wrong" count, and any WRONG stops the run. "github_review": the
+    # outcome is the review `review_logins[seat]` posted on the PR at the run's sha,
+    # never the seat's reply or exit code.
+    seat_kinds: dict[str, Literal["prepass", "github_review"]] = Field(
+        default_factory=_default_seat_kinds
+    )
+    review_logins: dict[str, str] = Field(default_factory=lambda: {"prudence": "prudence-tenishai"})
+    # Prepares one seat's checkout. argv; each element may use {seat}, {repo}, {pr},
+    # {sha}, {notes} (a file holding the round's notes for the brief, or empty) and
+    # {prepass} (for a github_review seat, a file holding the reply of the pre-pass
+    # seat that ran before it, or empty).
+    # Its stdout's last line is one JSON object: {"workspace": <path>, "brief":
+    # <text>, "metadata": {...}}. The brief and metadata go to the seat as they are.
+    # The {notes} and {prepass} files are removed when the command exits, so it must
+    # copy what it needs (fates-dispatch.sh puts both into the brief).
+    prepare_command: list[str] = Field(default_factory=list)
+    # Run after a step ends, argv with {workspace}. Unset: the workspace stays.
+    cleanup_command: list[str] = Field(default_factory=list)
+    # Run once per finished run with the run's JSON on stdin. Unset: logged only.
+    notify_command: list[str] = Field(default_factory=list)
+    # GitHub, for the PR head and reviews. The token is read from this variable.
+    github_api: str = "https://api.github.com"
+    github_token_env: str = "CABAL_GITHUB_TOKEN"
+    # Who the engine dispatches as: the sub of the operator-scoped claims it mints
+    # under. A run's `requested_by` is recorded, not used for dispatch.
+    dispatch_sub: str = "cabal:reviews"
+
+
 class IdentityConfig(_Open):
     cabal: CabalConfig = Field(default_factory=CabalConfig)
     personas: dict[str, PersonaConfig] = Field(default_factory=dict)
@@ -569,6 +617,7 @@ class IdentityConfig(_Open):
     liminal: LiminalConfig = Field(default_factory=LiminalConfig)
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     hooks: dict[str, Any] = Field(default_factory=dict)
+    review: ReviewConfig = Field(default_factory=ReviewConfig)
 
 
 def load_identity(path: str | Path) -> IdentityConfig:

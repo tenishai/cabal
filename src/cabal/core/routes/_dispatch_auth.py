@@ -144,6 +144,15 @@ async def scheduled_dispatch_token(
     return await _mint_for(state, target, claims, None)
 
 
+async def review_dispatch_token(state: Any, target: str, sub: str) -> tuple[str | DispatchRefusal, dict[str, Any]]:
+    """A dispatch token for the review engine's own dispatch to a seat (cabal
+    issue 399), and the claims it ran under. The engine acts for the operator
+    who enabled `[review]`: operator-scoped claims with the configured sub, put
+    through the same policy as any other caller."""
+    claims: dict[str, Any] = {"sub": sub, "cabal_scope": ["operator"], "aud": "cabal-core"}
+    return await _mint_for(state, target, claims, None), claims
+
+
 #: Longest caller, target or reason recorded. `target` comes from the request
 #: body and is otherwise unbounded; agent names are at most 64 characters.
 _RECORD_MAX = 128

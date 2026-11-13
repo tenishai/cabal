@@ -322,3 +322,20 @@ max_tokens = 16384
 # [personas.wright.subordinates.reviewer]
 # model = "anthropic/claude-sonnet-5"
 # max_tokens = 8192
+
+# The review workflow (cabal issue 399). Off unless enabled. Queue a run with
+# `cbl review start <owner/repo> <pr> --sha <sha>`; the engine takes it through the
+# seats in order, reading each seat's outcome itself, never its exit code.
+# [review]
+# enabled = true
+# max_running = 3
+# step_timeout_s = 5400
+# seats_default = ["temperance", "prudence"]
+# seat_kinds = { temperance = "prepass", prudence = "github_review" }
+# review_logins = { prudence = "prudence-tenishai" }
+# # Prints {"workspace": ..., "brief": ..., "metadata": {...}} as its last stdout line.
+# prepare_command = ["/path/to/agents/scripts/fates-dispatch.sh", "--prepare-only", "--notes", "{notes}",
+#                    "--prepass", "{prepass}", "{seat}", "{repo}", "{pr}", "{sha}"]
+# cleanup_command = ["rm", "-rf", "{workspace}"]
+# notify_command = ["/path/to/notify-review.sh"]   # gets the run as JSON on stdin
+# github_token_env = "CABAL_GITHUB_TOKEN"          # read and review rights on the repos

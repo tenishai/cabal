@@ -174,14 +174,26 @@ async def set_state(
     return expected_version + 1
 
 
-async def cancel_run(session: AsyncSession, run: ReviewRun, *, reason: str) -> int:
-    """Cancel a run that hasn't ended. A seat already dispatched keeps going;
-    stopping its task is the engine's job (a later step)."""
+async def cancel_run(session: AsyncSession, run: ReviewRun, *, reason: str) -> list[str]:
+    """Cancel a run that hasn't ended: a running step becomes `stopped` and the
+    pending ones `skipped`. Returns the task ids of the steps that were running,
+    for the caller to abort."""
     if run.state not in OPEN_STATES:
         raise InvalidRun(f"run {run.id} has already ended ({run.state})")
-    return await set_state(
-        session, run.id, expected_version=run.version, state="canceled", reason=reason
+    await set_state(session, run.id, expected_version=run.version, state="canceled", reason=reason)
+    running = [s.task_id for s in run.steps if s.state == "running" and s.task_id]
+    now = datetime.now(UTC)
+    await session.execute(
+        update(ReviewStep)
+        .where(ReviewStep.run_id == run.id, ReviewStep.state == "running")
+        .values(state="stopped", finished_at=now)
     )
+    await session.execute(
+        update(ReviewStep)
+        .where(ReviewStep.run_id == run.id, ReviewStep.state == "pending")
+        .values(state="skipped")
+    )
+    return running
 
 
 def _iso(value: datetime | None) -> str | None:
