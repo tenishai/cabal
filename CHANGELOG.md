@@ -17,7 +17,15 @@ Pull requests and issues are in tenishai/cabal.
   `(repo, pr, sha)` unique, with one step per seat in order (default Temperance, then Prudence).
   Operator-only `POST /reviews`, `GET /reviews`, `GET /reviews/{id}` and
   `POST /reviews/{id}/cancel`, and `cbl review start|list|show|cancel`. Queuing a head that
-  already has a run returns that run. Nothing dispatches a seat yet; the engine is the next step.
+  already has a run returns that run.
+- The review engine (issue 399, step 3), off unless `[review] enabled`. It claims queued runs
+  (at most `max_running`), checks the PR head before each seat and stops a run whose head
+  moved, prepares the seat's checkout with `prepare_command`, and dispatches detached as
+  `dispatch_sub`. A `prepass` seat's reply must carry `## Verdict` with an "N wrong" count, and
+  any WRONG stops the run; a `github_review` seat's outcome is the review its login posted at
+  the run's sha. No verdict is a failure, retried once. `cleanup_command` and
+  `notify_command` run when a step or run ends. Round 2 and later briefs name the previous
+  verdict.
 
 ## [0.5.0rc1] — 2026-11-11
 

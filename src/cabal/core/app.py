@@ -841,6 +841,20 @@ def create_app(
         _app.state.scheduler = scheduler
         await scheduler.start()
 
+        # The review engine (issue 399): only when [review] enabled is set.
+        review_cfg = identity.review if identity is not None else None
+        _app.state.review_config = review_cfg
+        _app.state.review_engine = None
+        review_github = None
+        if review_cfg is not None and review_cfg.enabled:
+            from cabal.core.review_engine import GitHubREST, ReviewEngine
+
+            review_github = GitHubREST(review_cfg.github_api, os.environ.get(review_cfg.github_token_env))
+            _app.state.review_engine = ReviewEngine(
+                app_state=_app.state, config=review_cfg, github=review_github
+            )
+            await _app.state.review_engine.start()
+
         heartbeat = HeartbeatScheduler(sessionmaker)
         heartbeat.watch(registered_persona_names)
         await heartbeat.start()
@@ -855,6 +869,10 @@ def create_app(
             yield
         finally:
             await scheduler.stop()  # before the drain, so nothing new starts under it
+            if _app.state.review_engine is not None:
+                await _app.state.review_engine.stop()
+            if review_github is not None:
+                await review_github.aclose()
             await _app.state.detached.drain(cabal_cfg.detached_drain_seconds)
             await heartbeat.stop()
             await http_client.aclose()

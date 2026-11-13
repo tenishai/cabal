@@ -37,6 +37,12 @@ class CancelRequest(BaseModel):
     reason: str = Field(default="canceled by the operator", max_length=500)
 
 
+def _default_seats(request: Request) -> list[str] | None:
+    """`[review] seats_default`, or None for the built-in default."""
+    cfg = getattr(request.app.state, "review_config", None)
+    return list(cfg.seats_default) if cfg is not None else None
+
+
 @router.post("")
 async def queue_review(
     request: Request,
@@ -51,7 +57,7 @@ async def queue_review(
                 repo=req.repo,
                 pr=req.pr,
                 sha=req.sha,
-                seats=req.seats,
+                seats=req.seats or _default_seats(request),
                 requested_by=claims.get("sub"),
                 trigger=req.trigger,
             )
