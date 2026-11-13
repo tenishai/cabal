@@ -37,8 +37,11 @@ Pull requests and issues are in tenishai/cabal.
   its steps, goes to `merging` instead; once CI is green at its sha (`ci = "github"`: every
   check run and commit status), it is merged pinned to that sha (`merge_method`, default
   squash) and ends `merged`. CI failing, CI not green within `ci_timeout_s` (3600) of the
-  approval, or GitHub refusing the merge ends it `unmerged` with the reason. A `merging` run can
-  be canceled until the merge call starts. New run states: `merging`, `unmerged`.
+  approval, or GitHub refusing the merge ends it `unmerged` with the reason. Just before merging,
+  the gate reads the reviews again: an approval dismissed since, or a CHANGES_REQUESTED from
+  anyone at the sha, ends the run `unmerged`. A refused merge whose PR turns out merged at the
+  sha (an earlier call whose reply was lost) is recorded `merged`. A `merging` run can be
+  canceled until the merge call starts. New run states: `merging`, `unmerged`.
 
 ## [0.5.0rc1] — 2026-11-11
 

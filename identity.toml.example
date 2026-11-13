@@ -345,6 +345,10 @@ max_tokens = 16384
 # [review.repos."tenishai/techne-next"]
 # merge = true                   # approved runs merge once CI is green, pinned to the sha (default false)
 # ci = "github"                  # every check run and commit status green; "none" skips the wait
+#                                # The gate sees only checks that have reported: it can't tell a
+#                                # required check that hasn't started yet (a chained workflow_run)
+#                                # from one that isn't coming. Branch protection's required checks
+#                                # are the backstop; set them on any repo with merge = true.
 # merge_method = "squash"
 # [review.repos."tenishai/cabal"]
 # seats = ["prudence"]           # this repo's seats; unset: seats_default

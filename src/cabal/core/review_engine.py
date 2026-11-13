@@ -105,6 +105,7 @@ class GitHub(Protocol):
     async def remove_label(self, repo: str, pr: int, label: str) -> None: ...
     async def ci(self, repo: str, sha: str) -> tuple[list[CheckRun], list[tuple[str, str]]]: ...
     async def merge(self, repo: str, pr: int, sha: str, method: str) -> str: ...
+    async def merged_as(self, repo: str, pr: int, sha: str) -> str | None: ...
 
 
 class GitHubREST:
@@ -181,6 +182,15 @@ class GitHubREST:
         resp.raise_for_status()
         return str(resp.json().get("sha", ""))
 
+    async def merged_as(self, repo: str, pr: int, sha: str) -> str | None:
+        """The merge commit, if the PR is merged with `sha` as its head; else None."""
+        resp = await self._client.get(f"/repos/{repo}/pulls/{pr}")
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get("merged") and (body.get("head") or {}).get("sha") == sha:
+            return str(body.get("merge_commit_sha") or "")
+        return None
+
     async def reviews(self, repo: str, pr: int) -> list[Review]:
         out: list[Review] = []
         page = 1
@@ -251,6 +261,23 @@ def review_at(reviews: Sequence[Review], login: str, sha: str) -> Review | None:
         if r.login == login and r.commit_id == sha and r.state in ("APPROVED", "CHANGES_REQUESTED")
     ]
     return max(mine, key=lambda r: (r.submitted_at, r.review_id)) if mine else None
+
+
+def approval_blocked(reviews: Sequence[Review], approvers: Sequence[str], sha: str) -> str | None:
+    """Why the run's approval no longer stands at `sha`, or None if it does: an
+    approver has no verdict left there (a dismissed review drops out), or anyone's
+    latest verdict there, an approver's included, is CHANGES_REQUESTED."""
+    if not approvers:
+        return "no approving review in the run"
+    for login in approvers:
+        if review_at(reviews, login, sha) is None:  # dismissed, so it dropped out
+            return f"{login or '?'}'s approval at {sha[:12]} no longer stands"
+    against = sorted(
+        {r.login for r in reviews if (found := review_at(reviews, r.login, sha)) and found.state == "CHANGES_REQUESTED"}
+    )
+    if against:
+        return f"changes requested at {sha[:12]} by {', '.join(against)}"
+    return None
 
 
 def prior_rounds(reviews: Sequence[Review], login: str, sha: str) -> tuple[int, dict[str, Any] | None]:
@@ -758,12 +785,18 @@ class ReviewEngine:
         )
 
     async def _gate(self, run_id: str, now: datetime) -> None:
-        """Merge a `merging` run once CI is green at its sha, pinned to that sha."""
+        """Merge a `merging` run once CI is green at its sha and the approval it
+        entered the gate with still stands, pinned to that sha."""
         async with open_session(self._state.sessionmaker) as session:
             run = await get_run(session, run_id)
             if run is None or run.state != "merging":
                 return
             repo, pr, sha, since = run.repo, run.pr, run.sha, _aware(run.updated_at)
+            approvers = [
+                self._cfg.review_logins.get(s.seat, "")
+                for s in run.steps
+                if s.state == "passed" and (s.outcome or {}).get("verdict") == "APPROVED"
+            ]
         repo_cfg = self._cfg.repos.get(repo)
         if repo_cfg is None or not repo_cfg.merge:
             await self._end_merge(run_id, "unmerged", "merge turned off for the repo before the gate ran")
@@ -773,14 +806,8 @@ class ReviewEngine:
         if repo_cfg.ci == "github":
             try:
                 state, names = ci_state(*await self._gh.ci(repo, sha))
-            except Exception as exc:  # noqa: BLE001 -- sorted below
-                status = _hard_status(exc)
-                if status is not None:
-                    await self._end_merge(run_id, "unmerged", f"CI unreadable: HTTP {status}")
-                elif late:
-                    await self._end_merge(run_id, "unmerged", f"CI unreadable for {waited:.0f}s: {exc!r}"[:300])
-                else:
-                    log.warning("review.ci_unreadable", run_id=run_id, error=repr(exc))
+            except Exception as exc:  # noqa: BLE001 -- sorted by _gate_unreadable
+                await self._gate_unreadable(run_id, exc, "CI", waited, late)
                 return
             if state == "failure":
                 await self._end_merge(run_id, "unmerged", f"CI failed at {sha[:12]}: {names}"[:300])
@@ -793,7 +820,18 @@ class ReviewEngine:
                 else:
                     log.info("review.ci_waiting", run_id=run_id, waiting=names)
                 return
-        # Claim the run before merging: a cancel that landed while CI was read
+        # The approval was read when the run entered the gate, up to ci_timeout_s
+        # ago. Read it again: a dismissal or a CHANGES_REQUESTED since then stops it.
+        try:
+            reviews = await self._gh.reviews(repo, pr)
+        except Exception as exc:  # noqa: BLE001 -- sorted by _gate_unreadable
+            await self._gate_unreadable(run_id, exc, "reviews", waited, late)
+            return
+        blocked = approval_blocked(reviews, approvers, sha)
+        if blocked is not None:
+            await self._end_merge(run_id, "unmerged", blocked[:300])
+            return
+        # Claim the run before merging: a cancel that landed during the reads
         # has moved it off `merging`, and wins. (updated_at stays: it times the wait.)
         async with open_session(self._state.sessionmaker) as session:
             claimed = await session.execute(
@@ -809,13 +847,37 @@ class ReviewEngine:
         except Exception as exc:  # noqa: BLE001 -- sorted below
             status = _hard_status(exc)
             if status is not None:
-                await self._end_merge(run_id, "unmerged", f"GitHub refused the merge: HTTP {status} {_message(exc)}"[:300])
+                # An earlier merge call may have landed with its reply lost: GitHub
+                # then refuses this one, and the PR is merged all the same.
+                done = await self._merged_already(repo, pr, sha)
+                if done is not None:
+                    await self._end_merge(run_id, "merged", f"merged as {done[:12]} (found after HTTP {status})")
+                else:
+                    await self._end_merge(
+                        run_id, "unmerged", f"GitHub refused the merge: HTTP {status} {_message(exc)}"[:300]
+                    )
             elif late:
                 await self._end_merge(run_id, "unmerged", f"merge failed for {waited:.0f}s: {exc!r}"[:300])
             else:
                 log.warning("review.merge_failed", run_id=run_id, error=repr(exc))
             return
         await self._end_merge(run_id, "merged", f"merged as {merged[:12]}")
+
+    async def _gate_unreadable(self, run_id: str, exc: Exception, what: str, waited: float, late: bool) -> None:
+        status = _hard_status(exc)
+        if status is not None:
+            await self._end_merge(run_id, "unmerged", f"{what} unreadable: HTTP {status}")
+        elif late:
+            await self._end_merge(run_id, "unmerged", f"{what} unreadable for {waited:.0f}s: {exc!r}"[:300])
+        else:
+            log.warning("review.gate_unreadable", run_id=run_id, what=what, error=repr(exc))
+
+    async def _merged_already(self, repo: str, pr: int, sha: str) -> str | None:
+        try:
+            return await self._gh.merged_as(repo, pr, sha)
+        except Exception as exc:  # noqa: BLE001 -- the refusal stands
+            log.warning("review.merged_check_failed", repo=repo, pr=pr, error=repr(exc))
+            return None
 
     async def _end_merge(self, run_id: str, state: str, reason: str) -> None:
         """End a `merging` run. `merged` is recorded even over a cancel that came

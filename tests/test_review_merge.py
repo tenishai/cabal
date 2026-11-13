@@ -33,6 +33,7 @@ class MergeGitHub:
     def __init__(self, ci: Any = GREEN, *, approve: bool = True) -> None:
         self.ci_result = ci
         self.merge_error: Exception | None = None
+        self.already: str | None = None  # merged_as: the PR is already merged at the sha
         self.ci_reads = 0
         self.merges: list[tuple[str, int, str, str]] = []
         self.review_list = [Review("prudence-tenishai", "APPROVED", SHA, 7, "2026-11-13T12:00:00Z")] if approve else []
@@ -54,6 +55,9 @@ class MergeGitHub:
         if isinstance(self.ci_result, Exception):
             raise self.ci_result
         return self.ci_result
+
+    async def merged_as(self, repo: str, pr: int, sha: str) -> str | None:
+        return self.already
 
     async def merge(self, repo: str, pr: int, sha: str, method: str) -> str:
         if self.merge_error is not None:
@@ -77,12 +81,21 @@ async def _queue(app: FastAPI, seats: list[str] | None = None) -> str:
 
 
 async def _merging(app: FastAPI) -> str:
-    """A run already approved and handed to the gate."""
+    """A run already approved (its one seat passed APPROVED) and handed to the gate."""
+    from sqlalchemy import update
+
+    from cabal.core.models import ReviewStep
+
     run_id = await _queue(app)
     async with open_session(app.state.sessionmaker) as session:
         run = await store.get_run(session, run_id)
         assert run is not None
         await store.set_state(session, run_id, expected_version=run.version, state="merging")
+        await session.execute(
+            update(ReviewStep)
+            .where(ReviewStep.run_id == run_id)
+            .values(state="passed", sha=SHA, outcome={"verdict": "APPROVED", "review_id": 7})
+        )
     return run_id
 
 
@@ -350,3 +363,118 @@ async def test_a_cancel_during_the_merge_call_still_records_merged(app: FastAPI)
     await engine.tick()
     body = await _run(app, gh.run_id)
     assert body["state"] == "merged" and gh.merges == [(REPO, 139, SHA, "squash")]
+
+
+# ---- Prudence, PR 427: the approval is read again before the merge ------------------
+
+
+async def test_a_dismissed_approval_stops_the_merge(app: FastAPI) -> None:
+    gh = MergeGitHub(([], []))
+    engine = _engine(app, gh)
+    run_id = await _merging(app)
+    await engine.tick()  # waiting on CI
+    gh.review_list = [Review("prudence-tenishai", "DISMISSED", SHA, 7, "2026-11-13T12:00:00Z")]
+    gh.ci_result = GREEN
+    await engine.tick()
+    body = await _run(app, run_id)
+    assert body["state"] == "unmerged"
+    assert body["reason"] == f"prudence-tenishai's approval at {SHA[:12]} no longer stands"
+    assert gh.merges == []
+
+
+async def test_changes_requested_by_anyone_stops_the_merge(app: FastAPI) -> None:
+    gh = MergeGitHub()
+    gh.review_list.append(Review("rich", "CHANGES_REQUESTED", SHA, 8, "2026-11-13T13:00:00Z"))
+    engine = _engine(app, gh)
+    run_id = await _merging(app)
+    await engine.tick()
+    body = await _run(app, run_id)
+    assert body["state"] == "unmerged" and body["reason"] == f"changes requested at {SHA[:12]} by rich"
+    assert gh.merges == []
+
+
+async def test_a_later_approval_clears_an_earlier_change_request(app: FastAPI) -> None:
+    gh = MergeGitHub()
+    gh.review_list += [
+        Review("rich", "CHANGES_REQUESTED", SHA, 8, "2026-11-13T13:00:00Z"),
+        Review("rich", "APPROVED", SHA, 9, "2026-11-13T14:00:00Z"),
+    ]
+    engine = _engine(app, gh)
+    run_id = await _merging(app)
+    await engine.tick()
+    assert (await _run(app, run_id))["state"] == "merged"
+
+
+async def test_unreadable_reviews_wait_like_ci(app: FastAPI) -> None:
+    class NoReviews(MergeGitHub):
+        status = 502
+
+        async def reviews(self, repo: str, pr: int) -> list[Review]:
+            raise _error(self.status)
+
+    gh = NoReviews()
+    engine = _engine(app, gh)
+    run_id = await _merging(app)
+    await engine.tick()
+    assert (await _run(app, run_id))["state"] == "merging"
+    gh.status = 404
+    await engine.tick()
+    body = await _run(app, run_id)
+    assert body["state"] == "unmerged" and body["reason"] == "reviews unreadable: HTTP 404"
+    assert gh.merges == []
+
+
+async def test_a_refusal_after_a_lost_merge_records_merged(app: FastAPI) -> None:
+    gh = MergeGitHub()
+    gh.merge_error = _error(405, "Pull Request is not mergeable")
+    gh.already = MERGED
+    engine = _engine(app, gh)
+    run_id = await _merging(app)
+    await engine.tick()
+    body = await _run(app, run_id)
+    assert body["state"] == "merged" and body["reason"] == f"merged as {MERGED[:12]} (found after HTTP 405)"
+
+
+async def test_the_rest_client_reads_whether_a_pull_is_merged_at_the_sha() -> None:
+    from cabal.core.review_engine import GitHubREST
+
+    pulls = {
+        1: {"merged": True, "head": {"sha": SHA}, "merge_commit_sha": MERGED},
+        2: {"merged": True, "head": {"sha": "f" * 40}, "merge_commit_sha": MERGED},
+        3: {"merged": False, "head": {"sha": SHA}, "merge_commit_sha": None},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=pulls[int(request.url.path.rsplit("/", 1)[1])])
+
+    gh = GitHubREST("https://api.example/", None, transport=httpx.MockTransport(handler))
+    try:
+        assert [await gh.merged_as("o/r", n, SHA) for n in (1, 2, 3)] == [MERGED, None, None]
+    finally:
+        await gh.aclose()
+
+
+async def test_an_approver_who_now_requests_changes_stops_the_merge(app: FastAPI) -> None:
+    gh = MergeGitHub()
+    gh.review_list.append(Review("prudence-tenishai", "CHANGES_REQUESTED", SHA, 8, "2026-11-13T13:00:00Z"))
+    engine = _engine(app, gh)
+    run_id = await _merging(app)
+    await engine.tick()
+    body = await _run(app, run_id)
+    assert body["state"] == "unmerged" and body["reason"] == f"changes requested at {SHA[:12]} by prudence-tenishai"
+
+
+async def test_a_merging_run_with_no_approving_step_is_not_merged(app: FastAPI) -> None:
+    from sqlalchemy import update
+
+    from cabal.core.models import ReviewStep
+
+    gh = MergeGitHub()
+    engine = _engine(app, gh)
+    run_id = await _merging(app)
+    async with open_session(app.state.sessionmaker) as session:
+        await session.execute(update(ReviewStep).where(ReviewStep.run_id == run_id).values(outcome={"wrong": 0}))
+    await engine.tick()
+    body = await _run(app, run_id)
+    assert body["state"] == "unmerged" and body["reason"] == "no approving review in the run"
+    assert gh.merges == []
