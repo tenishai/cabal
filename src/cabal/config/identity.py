@@ -566,6 +566,14 @@ class ReviewRepoConfig(_Open):
 
     # The seats for this repo's runs, in order. Unset: `[review] seats_default`.
     seats: list[str] | None = None
+    # The merge gate (step 5). On: a run that ends approved, with an APPROVED
+    # review among its steps, goes to `merging`; once CI is green at its sha it
+    # is merged, pinned to that sha. Off (the default): it stays `approved`.
+    merge: bool = False
+    # "github": every check run and commit status at the sha must be green.
+    # "none": no CI wait (for a repo without any).
+    ci: Literal["github", "none"] = "github"
+    merge_method: Literal["squash", "merge", "rebase"] = "squash"
 
 
 def _default_seat_kinds() -> dict[str, Literal["prepass", "github_review"]]:
@@ -619,6 +627,9 @@ class ReviewConfig(_Open):
     repos: dict[str, ReviewRepoConfig] = Field(default_factory=dict)
     label: str = "ready-for-review"
     watch_poll_seconds: float = Field(default=300.0, gt=0)
+    # The merge gate: how long a `merging` run waits, from its approval, for CI to
+    # go green (or a GitHub outage to end) before it ends `unmerged`.
+    ci_timeout_s: float = Field(default=3600.0, gt=0)
 
 
 class IdentityConfig(_Open):

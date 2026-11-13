@@ -494,3 +494,24 @@ async def test_a_retry_forgets_the_outage_that_came_before_it(app: FastAPI) -> N
     step = (await _run(app, run_id))["steps"][0]
     assert step["state"] == "pending" and step["outcome"]["attempts"] == 1
     assert "github_error_since" not in step["outcome"]
+
+
+# ---- Prudence, PR 426 --------------------------------------------------------------
+
+
+async def test_a_step_that_ends_after_an_outage_keeps_no_error_timestamp(app: FastAPI) -> None:
+    gh = BrokenGitHub(502, on="reviews", reviews=[_r("APPROVED", SHA, 9, "2026-11-13T12:00:00Z")])
+    engine, _ = _engine(
+        app, gh, prepare_command=_prepare("review it"),
+        seat_kinds={"echo": "github_review"}, review_logins={"echo": "prudence-tenishai"},
+    )
+    run_id = await _queue(app)
+    await engine.tick()  # the seat starts
+    await _until_task_ends(app, (await _run(app, run_id))["steps"][0]["task_id"])
+    await engine.tick()  # reading her review fails: an outage
+    assert "github_error_since" in (await _run(app, run_id))["steps"][0]["outcome"]
+    gh.on = "none"
+    await engine.tick()
+    body = await _run(app, run_id)
+    assert body["state"] == "approved" and body["steps"][0]["state"] == "passed"
+    assert "github_error_since" not in body["steps"][0]["outcome"]
