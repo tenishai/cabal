@@ -593,6 +593,8 @@ class ReviewConfig(_Open):
     # seat that ran before it, or empty).
     # Its stdout's last line is one JSON object: {"workspace": <path>, "brief":
     # <text>, "metadata": {...}}. The brief and metadata go to the seat as they are.
+    # The {notes} and {prepass} files are removed when the command exits, so it must
+    # copy what it needs (fates-dispatch.sh puts both into the brief).
     prepare_command: list[str] = Field(default_factory=list)
     # Run after a step ends, argv with {workspace}. Unset: the workspace stays.
     cleanup_command: list[str] = Field(default_factory=list)

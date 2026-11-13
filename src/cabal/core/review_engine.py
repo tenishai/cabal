@@ -22,7 +22,10 @@ Collecting a seat depends on its kind (`seat_kinds`):
   exit code are not read.
 
 A seat that fails (dispatch error, no verdict, timeout) is retried once, then
-fails the run. When a run ends, `cleanup_command` and `notify_command` run.
+fails the run. A GitHub read the step needs that fails with a 4xx (not 429) is
+such a failure; an outage (5xx, 429, network) is waited out for at most
+`step_timeout_s`, then is one too. A timed-out seat's task is aborted before
+the retry. When a run ends, `cleanup_command` and `notify_command` run.
 
 Declared background work, in the shape cabal issue 260 asks for:
     what: one asyncio loop, every `review.poll_seconds`
@@ -318,21 +321,21 @@ class ReviewEngine:
             await self._finish(snapshot, "approved", None)
             return
         if snapshot.step.state == "pending":
-            await self._start_step(snapshot)
+            await self._start_step(snapshot, now)
         else:
             await self._check_step(snapshot, now)
 
     # -- starting a seat
 
-    async def _start_step(self, snap: _Snapshot) -> None:
+    async def _start_step(self, snap: _Snapshot, now: datetime) -> None:
         step = snap.step
         assert step is not None
         if self._state.dispatch_router.running.draining:
             return  # new work waits out a drain (issue 405), like a scheduled task
         try:
             head = await self._gh.head_sha(snap.repo, snap.pr)
-        except Exception as exc:  # noqa: BLE001 -- GitHub down: try again next tick
-            log.warning("review.head_unreadable", run_id=snap.run_id, error=repr(exc))
+        except Exception as exc:  # noqa: BLE001 -- sorted by _github_unreadable
+            await self._github_unreadable(snap, exc, now, "head")
             return
         if head != snap.sha:
             await self._end_step(snap, "stopped", {"head": head})
@@ -466,6 +469,9 @@ class ReviewEngine:
         if row is not None and row.state in _LIVE_TASK:
             started = _aware(step.started_at)
             if started is not None and (now - started).total_seconds() > self._cfg.step_timeout_s:
+                # Stop the seat first, so the retry doesn't run beside it (two
+                # reviews posted on one PR).
+                self.abort_task(step.task_id, "review step timed out")
                 await self._step_failed(snap, f"no outcome within {self._cfg.step_timeout_s:.0f}s", step.workspace)
             return
         kind = self._kind(step.seat)
@@ -485,8 +491,8 @@ class ReviewEngine:
         login = self._cfg.review_logins.get(step.seat, "")
         try:
             reviews = await self._gh.reviews(snap.repo, snap.pr)
-        except Exception as exc:  # noqa: BLE001 -- GitHub down: read it next tick
-            log.warning("review.reviews_unreadable", run_id=snap.run_id, error=repr(exc))
+        except Exception as exc:  # noqa: BLE001 -- sorted by _github_unreadable
+            await self._github_unreadable(snap, exc, now, "reviews")
             return
         found = review_at(reviews, login, snap.sha) if login else None
         if found is None:
@@ -536,7 +542,7 @@ class ReviewEngine:
                     .where(ReviewStep.run_id == snap.run_id, ReviewStep.idx == step.idx)
                     .values(
                         state="pending", task_id=None, workspace=None, started_at=None,
-                        outcome={**(step.outcome or {}), "attempts": attempts, "last_error": why},
+                        outcome=_without_since({**(step.outcome or {}), "attempts": attempts, "last_error": why}),
                     )
                 )
             log.warning("review.seat_retry", run_id=snap.run_id, seat=step.seat, reason=why)
@@ -547,7 +553,7 @@ class ReviewEngine:
                 .where(ReviewStep.run_id == snap.run_id, ReviewStep.idx == step.idx)
                 .values(
                     state="failed", finished_at=datetime.now(UTC),
-                    outcome={**(step.outcome or {}), "attempts": attempts, "last_error": why},
+                    outcome=_without_since({**(step.outcome or {}), "attempts": attempts, "last_error": why}),
                 )
             )
         await self._finish(snap, "failed", f"{step.seat}: {why}")
@@ -589,8 +595,55 @@ class ReviewEngine:
         if rc != 0:
             log.warning("review.notify_failed", run_id=run_id, rc=rc, error=err.strip()[-300:])
 
+    async def _github_unreadable(self, snap: _Snapshot, exc: Exception, now: datetime, what: str) -> None:
+        """A GitHub read the step needs failed. A 4xx other than 429 won't go away
+        (a wrong PR number, a private repo and no token): the step fails, retried
+        once like any failure. Anything else (5xx, 429, network) is an outage:
+        try again next tick, but no longer than `step_timeout_s` from the first
+        such error, so a run never sits in `running` holding a slot forever."""
+        step = snap.step
+        assert step is not None
+        workspace = step.workspace if step.state == "running" else None
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        if status is not None and 400 <= status < 500 and status != 429:
+            await self._step_failed(snap, f"GitHub {what}: HTTP {status}", workspace)
+            return
+        outcome = dict(step.outcome or {})
+        since = outcome.get("github_error_since")
+        if since is None:
+            outcome["github_error_since"] = now.isoformat()
+            outcome["last_error"] = f"GitHub {what}: {exc!r}"[:300]
+            async with open_session(self._state.sessionmaker) as session:
+                await session.execute(
+                    update(ReviewStep)
+                    .where(ReviewStep.run_id == snap.run_id, ReviewStep.idx == step.idx)
+                    .values(outcome=outcome)
+                )
+            log.warning("review.github_unreadable", run_id=snap.run_id, what=what, error=repr(exc))
+            return
+        waited = (now - datetime.fromisoformat(since)).total_seconds()
+        if waited > self._cfg.step_timeout_s:
+            await self._step_failed(snap, f"GitHub {what} unreadable for {waited:.0f}s: {exc!r}"[:300], workspace)
+            return
+        log.warning("review.github_unreadable", run_id=snap.run_id, what=what, waited_s=round(waited), error=repr(exc))
+
+    def abort_task(self, task_id: str | None, reason: str) -> int:
+        """Signal a seat's running task to stop, through the abort graph (the
+        same path as POST /admin/tasks/{id}/abort). 0 if it isn't running."""
+        if not task_id:
+            return 0
+        signalled = int(self._state.dispatch_router.abort_coordinator.abort(task_id, reason=reason))
+        if signalled:
+            log.info("review.seat_aborted", task_id=task_id, reason=reason)
+        return signalled
+
     def _kind(self, seat: str) -> str:
         return self._cfg.seat_kinds.get(seat, "prepass")
+
+
+def _without_since(outcome: dict[str, Any]) -> dict[str, Any]:
+    outcome.pop("github_error_since", None)
+    return outcome
 
 
 @dataclass(frozen=True)

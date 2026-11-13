@@ -306,9 +306,10 @@ async def test_a_cancel_wins_over_the_engine(app: FastAPI) -> None:
     async with open_session(app.state.sessionmaker) as session:
         run = await store.get_run(session, run_id)
         assert run is not None
-        await store.cancel_run(session, run, reason="by hand")
+        assert await store.cancel_run(session, run, reason="by hand") == [body["steps"][0]["task_id"]]
     await engine.tick()
-    assert (await _run(app, run_id))["state"] == "canceled"
+    after = await _run(app, run_id)
+    assert after["state"] == "canceled" and after["steps"][0]["state"] == "stopped"
 
 
 async def test_a_stuck_seat_times_out(app: FastAPI) -> None:
@@ -329,3 +330,99 @@ async def test_a_stuck_seat_times_out(app: FastAPI) -> None:
 
 async def test_the_engine_is_off_unless_enabled(app: FastAPI) -> None:
     assert app.state.review_engine is None
+
+
+# ---- Prudence, PR 425 round 1: GitHub reads that keep failing ---------------------
+
+
+class BrokenGitHub(FakeGitHub):
+    def __init__(self, status: int, *, on: str = "head", **kw: Any) -> None:
+        super().__init__(**kw)
+        self.status = status
+        self.on = on
+
+    def _raise(self) -> None:
+        import httpx
+
+        request = httpx.Request("GET", "https://api.github.com/x")
+        raise httpx.HTTPStatusError("boom", request=request, response=httpx.Response(self.status, request=request))
+
+    async def head_sha(self, repo: str, pr: int) -> str:
+        if self.on == "head":
+            self._raise()
+        return await super().head_sha(repo, pr)
+
+    async def reviews(self, repo: str, pr: int) -> list[Review]:
+        if self.on == "reviews":
+            self._raise()
+        return await super().reviews(repo, pr)
+
+
+async def test_a_404_on_the_head_fails_the_run_and_frees_its_slot(app: FastAPI) -> None:
+    engine, calls = _engine(app, BrokenGitHub(404), prepare_command=_prepare("x"), max_running=1)
+    first = await _queue(app)
+    async with open_session(app.state.sessionmaker) as session:
+        second, _ = await store.create_run(session, repo=REPO, pr=140, sha=SHA, seats=["echo"])
+        second_id = second.id
+    for _ in range(4):
+        await engine.tick()
+    one, two = await _run(app, first), await _run(app, second_id)
+    assert {one["state"], two["state"]} == {"failed"}  # both got their turn, neither stuck
+    assert one["reason"] == "echo: GitHub head: HTTP 404"
+    assert one["steps"][0]["outcome"]["attempts"] == 2
+    assert calls == []  # nothing was prepared
+
+
+async def test_an_outage_is_waited_out_then_fails_after_step_timeout(app: FastAPI) -> None:
+    engine, _ = _engine(app, BrokenGitHub(502), prepare_command=_prepare("x"), step_timeout_s=60)
+    run_id = await _queue(app)
+    t0 = datetime.now(UTC)
+    await engine.tick(now=t0)
+    await engine.tick(now=t0 + timedelta(seconds=30))
+    body = await _run(app, run_id)
+    assert body["state"] == "running" and body["steps"][0]["state"] == "pending"
+    assert "github_error_since" in body["steps"][0]["outcome"]
+    await engine.tick(now=t0 + timedelta(seconds=61))  # first window over: one retry
+    await engine.tick(now=t0 + timedelta(seconds=62))
+    await engine.tick(now=t0 + timedelta(seconds=123))  # second window over: fails
+    body = await _run(app, run_id)
+    assert body["state"] == "failed" and "GitHub head unreadable" in body["reason"]
+    assert "github_error_since" not in body["steps"][0]["outcome"]
+
+
+async def test_a_429_is_an_outage_not_a_failure(app: FastAPI) -> None:
+    engine, _ = _engine(app, BrokenGitHub(429), prepare_command=_prepare("x"))
+    run_id = await _queue(app)
+    await engine.tick()
+    await engine.tick()
+    body = await _run(app, run_id)
+    assert body["state"] == "running" and "attempts" not in body["steps"][0]["outcome"]
+
+
+async def test_a_404_reading_reviews_fails_after_one_retry(app: FastAPI) -> None:
+    gh = BrokenGitHub(404, on="reviews")
+    engine, _ = _engine(
+        app, gh, prepare_command=_prepare("review it"),
+        seat_kinds={"echo": "github_review"}, review_logins={"echo": "prudence-tenishai"},
+    )
+    body = await _drive(app, engine, await _queue(app), ticks=10)
+    assert body["state"] == "failed" and body["reason"] == "echo: GitHub reviews: HTTP 404"
+
+
+async def test_a_timed_out_seat_is_aborted_before_the_retry(app: FastAPI, monkeypatch: pytest.MonkeyPatch) -> None:
+    from sqlalchemy import update
+
+    engine, _ = _engine(app, FakeGitHub(), prepare_command=_prepare("x"), step_timeout_s=1)
+    aborted: list[str] = []
+    monkeypatch.setattr(
+        app.state.dispatch_router.abort_coordinator, "abort",
+        lambda task_id, reason: aborted.append(task_id) or 1,
+    )
+    run_id = await _queue(app)
+    await engine.tick()
+    task_id = (await _run(app, run_id))["steps"][0]["task_id"]
+    await _until_task_ends(app, task_id)
+    async with open_session(app.state.sessionmaker) as session:
+        await session.execute(update(Conversation).where(Conversation.task_id == task_id).values(state="working"))
+    await engine.tick(now=datetime.now(UTC) + timedelta(seconds=5))
+    assert aborted == [task_id]

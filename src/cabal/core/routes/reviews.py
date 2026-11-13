@@ -111,12 +111,15 @@ async def cancel_review(
         if run is None:
             raise HTTPException(status_code=404, detail=f"no review run {run_id}")
         try:
-            await store.cancel_run(session, run, reason=reason)
+            running = await store.cancel_run(session, run, reason=reason)
         except store.InvalidRun as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except store.StaleRun as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # The seat that was running is told to stop, through the abort graph.
+    coordinator = request.app.state.dispatch_router.abort_coordinator
+    aborted = sum(int(coordinator.abort(task_id, reason="review run canceled")) for task_id in running)
     async with open_session(request.app.state.sessionmaker) as session:
         fresh = await store.get_run(session, run_id)
         assert fresh is not None
-        return {"run": store.to_dict(fresh)}
+        return {"run": store.to_dict(fresh), "aborted": aborted}

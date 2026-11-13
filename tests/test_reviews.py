@@ -104,6 +104,8 @@ async def test_cancel_ends_an_open_run_once(app: FastAPI, client: AsyncClient) -
     assert r.json()["run"]["state"] == "canceled"
     assert r.json()["run"]["reason"] == "head moved"
     assert r.json()["run"]["version"] == 2
+    assert r.json()["aborted"] == 0  # no seat was running
+    assert [s["state"] for s in r.json()["run"]["steps"]] == ["skipped", "skipped"]
 
     again = await client.post(f"/reviews/{run['id']}/cancel", headers=auth)
     assert again.status_code == 409
