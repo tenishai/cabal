@@ -25,7 +25,8 @@ Pull requests and issues are in tenishai/cabal.
   any WRONG stops the run; a `github_review` seat's outcome is the review its login posted at
   the run's sha. No verdict is a failure, retried once. `cleanup_command` and
   `notify_command` run when a step or run ends. Round 2 and later briefs name the previous
-  verdict.
+  verdict. A cancel that lands while a seat is being prepared stops the seat dispatched after
+  it and cleans up its checkout.
 - The review watch loop (issue 399, step 4), part of the engine's tick, every
   `watch_poll_seconds` (300). In each repo under `[review.repos."owner/name"]`, an open, non-draft
   PR carrying `[review] label` (`ready-for-review`) gets a run at its head, with that repo's

@@ -443,19 +443,32 @@ class ReviewEngine:
         except StepError as exc:
             await self._step_failed(snap, str(exc), workspace=None)
             return
+        workspace = prepared.get("workspace")
+        # Only a step still pending becomes running. A cancel, or any end of the
+        # run, that landed while prepare_command ran has already marked it
+        # skipped (cancel_run and _finish both do), and must not be overwritten.
         async with open_session(self._state.sessionmaker) as session:
-            await session.execute(
+            started = await session.execute(
                 update(ReviewStep)
-                .where(ReviewStep.run_id == snap.run_id, ReviewStep.idx == step.idx)
+                .where(
+                    ReviewStep.run_id == snap.run_id,
+                    ReviewStep.idx == step.idx,
+                    ReviewStep.state == "pending",
+                )
                 .values(
                     state="running",
                     sha=head,
                     task_id=task_id,
-                    workspace=prepared.get("workspace"),
+                    workspace=workspace,
                     started_at=datetime.now(UTC),
-                    outcome={**(step.outcome or {}), "attempts": step.attempts + 1},
+                    outcome=_without_since({**(step.outcome or {}), "attempts": step.attempts + 1}),
                 )
             )
+        if started.rowcount != 1:  # type: ignore[attr-defined]
+            self.abort_task(task_id, "review run ended while the seat was being prepared")
+            await self._cleanup(workspace)
+            log.info("review.seat_dropped", run_id=snap.run_id, seat=step.seat, task_id=task_id)
+            return
         log.info("review.seat_started", run_id=snap.run_id, seat=step.seat, task_id=task_id)
 
     async def _round_notes(self, snap: _Snapshot, seat: str) -> str:
@@ -614,7 +627,7 @@ class ReviewEngine:
                 .where(ReviewStep.run_id == snap.run_id, ReviewStep.idx == step.idx)
                 .values(
                     state=state,
-                    outcome={**(step.outcome or {}), **(outcome or {})},
+                    outcome=_without_since({**(step.outcome or {}), **(outcome or {})}),
                     finished_at=datetime.now(UTC),
                 )
             )
