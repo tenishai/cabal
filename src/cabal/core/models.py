@@ -383,10 +383,12 @@ class ReviewRun(Base):
 
 
 class ReviewStep(Base):
-    """One seat's part in a review run. `sha` is the head the step actually
-    ran on, checked against the PR before it starts; `outcome` is the seat's
-    result as the engine read it (Temperance's wrong/risky counts, Prudence's
-    verdict and review id), never the seat's own exit code."""
+    """One seat's part in a review run. `sha`, `task_id`, `workspace` and
+    `outcome` are left empty here; the review engine (a later step of issue
+    399) fills them when it starts and collects the seat: `sha` with the head
+    it read before dispatching, `outcome` with the seat's result as the engine
+    read it (Temperance's wrong/risky counts, Prudence's verdict and review id),
+    never the seat's own exit code."""
 
     __tablename__ = "review_steps"
 
