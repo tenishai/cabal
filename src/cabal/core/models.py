@@ -20,6 +20,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -335,3 +336,74 @@ class TokenRevocation(Base):
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
 
+
+
+# ---------- review_runs / review_steps (cabal issue 399) -------------------
+
+
+class ReviewRun(Base):
+    """One review of one pull request head: (repo, pr, sha) is unique, so a
+    head is reviewed at most once. `seats` is the ordered list of reviewers
+    (e.g. ["temperance", "prudence"]); `steps` holds one row per seat.
+
+    `version` is bumped on every write. A writer that read version N updates
+    `WHERE version = N`, so two writers can't both move the same run (the
+    conditional-update claim `scheduler.py` uses for scheduled tasks).
+    """
+
+    __tablename__ = "review_runs"
+    __table_args__ = (
+        UniqueConstraint("repo", "pr", "sha", name="uq_review_runs_head"),
+        Index("ix_review_runs_state", "state"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    repo: Mapped[str] = mapped_column(String, nullable=False)
+    pr: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha: Mapped[str] = mapped_column(String, nullable=False)
+    round: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    prev_verdict: Mapped[dict | None] = mapped_column(JSON)
+    seats: Mapped[list] = mapped_column(JSON, nullable=False)
+    # queued, running, approved, changes, stopped, failed, merged, canceled
+    state: Mapped[str] = mapped_column(String, nullable=False, default="queued")
+    reason: Mapped[str | None] = mapped_column(Text)
+    requested_by: Mapped[str | None] = mapped_column(String)
+    trigger: Mapped[str] = mapped_column(String, nullable=False, default="cli")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    steps: Mapped[list[ReviewStep]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", order_by="ReviewStep.idx"
+    )
+
+
+class ReviewStep(Base):
+    """One seat's part in a review run. `sha`, `task_id`, `workspace` and
+    `outcome` are left empty here; the review engine (a later step of issue
+    399) fills them when it starts and collects the seat: `sha` with the head
+    it read before dispatching, `outcome` with the seat's result as the engine
+    read it (Temperance's wrong/risky counts, Prudence's verdict and review id),
+    never the seat's own exit code."""
+
+    __tablename__ = "review_steps"
+
+    run_id: Mapped[str] = mapped_column(
+        String, ForeignKey("review_runs.id", ondelete="CASCADE"), primary_key=True
+    )
+    idx: Mapped[int] = mapped_column(Integer, primary_key=True)
+    seat: Mapped[str] = mapped_column(String, nullable=False)
+    sha: Mapped[str | None] = mapped_column(String)
+    task_id: Mapped[str | None] = mapped_column(String)
+    workspace: Mapped[str | None] = mapped_column(String)
+    # pending, running, passed, stopped, failed, skipped
+    state: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    outcome: Mapped[dict | None] = mapped_column(JSON)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    run: Mapped[ReviewRun] = relationship(back_populates="steps")

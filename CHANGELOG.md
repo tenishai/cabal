@@ -6,6 +6,19 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+### Upgrading
+
+- One database migration, applied at startup: `a9d3e5f7c1b2` adds the `review_runs` and
+  `review_steps` tables. It only adds; nothing existing changes.
+
+### Added
+
+- Review runs, the record for issue 399's review workflow: one run per pull-request head,
+  `(repo, pr, sha)` unique, with one step per seat in order (default Temperance, then Prudence).
+  Operator-only `POST /reviews`, `GET /reviews`, `GET /reviews/{id}` and
+  `POST /reviews/{id}/cancel`, and `cbl review start|list|show|cancel`. Queuing a head that
+  already has a run returns that run. Nothing dispatches a seat yet; the engine is the next step.
+
 ## [0.5.0rc1] — 2026-11-11
 
 A release candidate: the wright set runs it before `0.5.0` is tagged.

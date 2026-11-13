@@ -607,6 +607,40 @@ def scheduled_tasks(*, token: str) -> dict[str, Any]:
     return resp.json()
 
 
+def _admin_json(method: str, path: str, *, token: str, **kw: Any) -> dict[str, Any]:
+    with make_client() as c:
+        resp = c.request(method, path, headers={"Authorization": f"Bearer {token}"}, **kw)
+    resp.raise_for_status()
+    body: dict[str, Any] = resp.json()
+    return body
+
+
+def review_start(
+    *, token: str, repo: str, pr: int, sha: str, seats: list[str] | None = None
+) -> dict[str, Any]:
+    """POST /reviews (cabal issue 399): queue a review of one PR head."""
+    payload: dict[str, Any] = {"repo": repo, "pr": pr, "sha": sha}
+    if seats:
+        payload["seats"] = seats
+    return _admin_json("POST", "/reviews", token=token, json=payload)
+
+
+def review_list(*, token: str, state: str | None = None, limit: int = 100) -> dict[str, Any]:
+    params: dict[str, Any] = {"limit": limit}
+    if state:
+        params["state"] = state
+    return _admin_json("GET", "/reviews", token=token, params=params)
+
+
+def review_show(*, token: str, run_id: str) -> dict[str, Any]:
+    return _admin_json("GET", f"/reviews/{run_id}", token=token)
+
+
+def review_cancel(*, token: str, run_id: str, reason: str | None = None) -> dict[str, Any]:
+    payload = {"reason": reason} if reason else None
+    return _admin_json("POST", f"/reviews/{run_id}/cancel", token=token, json=payload)
+
+
 def get_task(*, token: str, target: str, task_id: str) -> dict[str, Any]:
     """GetTask: the v1.0 Task as the daemon has it now."""
     return _a2a_v1(token=token, target=target, method="GetTask", params={"id": task_id})
