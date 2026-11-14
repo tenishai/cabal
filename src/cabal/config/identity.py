@@ -18,7 +18,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import structlog
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -574,6 +574,17 @@ class ReviewRepoConfig(_Open):
     # "none": no CI wait (for a repo without any).
     ci: Literal["github", "none"] = "github"
     merge_method: Literal["squash", "merge", "rebase"] = "squash"
+    # Review PRs whose head branch is in another repo (issue 431). Off: such a PR's
+    # label is removed with a comment saying why. The code under review can read the
+    # reviewer's token, and its author can push to the branch, so it's opt-in and
+    # never combined with the merge gate.
+    allow_forks: bool = False
+
+    @model_validator(mode="after")
+    def _no_fork_merges(self) -> ReviewRepoConfig:
+        if self.allow_forks and self.merge:
+            raise ValueError("allow_forks and merge can't both be on: a fork PR is never merged by cabal")
+        return self
 
 
 def _default_seat_kinds() -> dict[str, Literal["prepass", "github_review"]]:
@@ -626,6 +637,9 @@ class ReviewConfig(_Open):
     # repo not listed here is never watched; `cbl review start` still works for it.
     repos: dict[str, ReviewRepoConfig] = Field(default_factory=dict)
     label: str = "ready-for-review"
+    # The least repo role whose label starts a run (issue 431). GitHub lets triage
+    # add labels; in a repo with the merge gate on, write is required whatever this says.
+    label_min_role: Literal["triage", "write", "maintain", "admin"] = "write"
     watch_poll_seconds: float = Field(default=300.0, gt=0)
     # The merge gate: how long a `merging` run waits, from its approval, for CI to
     # go green (or a GitHub outage to end) before it ends `unmerged`.
