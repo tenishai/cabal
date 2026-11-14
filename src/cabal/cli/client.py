@@ -593,6 +593,22 @@ def dispatch_detached(
     return task
 
 
+def answer_task(*, token: str, target: str, task_id: str, text: str) -> dict[str, Any]:
+    """SendMessage naming a paused task: for a group task that ended with
+    questions, the answer puts it back in the group's queue (cabal issue 423)."""
+    import uuid
+
+    message = {
+        "messageId": f"m-{uuid.uuid4().hex[:12]}",
+        "role": "ROLE_USER",
+        "taskId": task_id,
+        "parts": [{"text": text}],
+    }
+    result = _a2a_v1(token=token, target=target, method="SendMessage", params={"message": message})
+    task: dict[str, Any] = result["task"]
+    return task
+
+
 def cancel_task(*, token: str, target: str, task_id: str) -> dict[str, Any]:
     """CancelTask: a scheduled task is canceled before it starts, a running one
     through the abort graph (cabal issues 406, #277)."""
