@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -296,7 +297,9 @@ def test_cbl_dispatch_to_a_group(monkeypatch) -> None:
 
     monkeypatch.setattr("cabal.cli.main.api.TokenStore.load", lambda self: "tok")
     out = runner.invoke(cbl, ["dispatch", "group:pair", "hi"])
-    assert out.exit_code == 2 and "--detach" in out.output
+    # Rich styles the usage error in CI, so read it without its escapes and box.
+    plain = " ".join(re.sub(r"[│╭╮╰╯─]", " ", re.sub(r"\x1b\[[0-9;]*m", "", out.output)).split())
+    assert out.exit_code == 2 and "a group task needs --detach" in plain, plain
     monkeypatch.setattr("cabal.cli.main.api.groups", lambda **_: {"pair": ["echo", "tck"]})
     sent: dict[str, Any] = {}
 
