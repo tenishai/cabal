@@ -43,6 +43,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Header, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
@@ -95,9 +96,11 @@ from cabal.core.broker.router import (
 )
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
-from cabal.core.models import Conversation
+from cabal.core.models import Conversation, Event
 from cabal.core.routes._dispatch_auth import DispatchRefusal, dispatch_token, verify_caller
 from cabal.core.scheduler import cancel_scheduled, group_members, parse_not_before
+
+log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/agents", tags=["a2a-v1"])
 
@@ -440,6 +443,9 @@ async def _send_message(
         task.metadata["cabal_not_before"] = asked_for.isoformat()
     if group is not None:
         task.metadata["cabal_group"] = group
+        # Kept for every later round: an answer re-queues the task to whichever
+        # member is idle, which may not have seen the brief (issue 423).
+        task.metadata["cabal_group_brief"] = _text_of(message)
     detach = cfg is not None and bool(cfg.return_immediately)
     detached = request.app.state.detached
     reserve = detach and not_before is None
@@ -606,6 +612,8 @@ async def _continue_task(
                 message=f"the task is {row.state}; send a new message in its contextId instead",
             ),
         )
+    if row.target_group is not None and row.state == "input-required":
+        return await _answer_group_task(request, row, claims, req, request_id)
     return _error(
         request_id,
         a2a_error(
@@ -613,6 +621,80 @@ async def _continue_task(
             message=f"the task is {row.state}; a new turn on an unfinished task is not supported until #145",
         ),
     )
+
+
+def _text_of(message: Message | None) -> str:
+    if message is None:
+        return ""
+    return "\n".join(p.text for p in message.parts if isinstance(p, TextPart)).strip()
+
+
+async def _answer_group_task(
+    request: Request, row: Conversation, claims: dict[str, Any], req: SendMessageRequestV1, request_id: Any
+) -> JSONResponse:
+    """An answer to a group task that ended asking a question (cabal issue 423).
+
+    The member that asked is already free: its task ended `input-required`. The
+    answer puts the task back in the group's queue, under the same id and
+    contextId, for whichever member is idle next (the one that asked, if it is).
+    That member may not have seen the task, so the message it gets carries the
+    brief, the asker's hand-off and the answer. Work in progress lives in git
+    and the task's doc, not here: cabal carries only the text."""
+    try:
+        answer = _text_of(message_from_v1(req.message))
+    except UnsupportedPartError as exc:
+        return _error(request_id, a2a_error(CONTENT_TYPE_NOT_SUPPORTED, message=str(exc)))
+    if not answer:
+        return _params_error(request_id, "an answer needs some text")
+    prior = Task.model_validate(row.result_json or {})
+    asker = row.target_agent
+    answerer = claims.get("sub") or "the operator"
+    brief = str(prior.metadata.get("cabal_group_brief") or "")
+    rounds = int(prior.metadata.get("cabal_group_round") or 1) + 1
+    text = (
+        f"This continues task {row.task_id}, sent to group {row.target_group}. {asker} stopped with "
+        f"questions; {answerer} answered. Pick up from the hand-off: the work so far is in git and the "
+        f"task's doc.\n\n## Brief\n\n{brief or '(not recorded)'}\n\n"
+        f"## Hand-off from {asker}\n\n{_text_of(prior.status.message) or '(none)'}\n\n"
+        f"## Answer from {answerer}\n\n{answer}"
+    )
+    history = [*prior.history, *([prior.status.message] if prior.status.message is not None else [])]
+    task = prior.model_copy(
+        update={
+            "status": TaskStatus(state="submitted", message=Message(role="user", parts=[TextPart(text=text)])),
+            "history": history,
+            "metadata": {**prior.metadata, "cabal_asked_by": asker, "cabal_group_round": rounds},
+        }
+    )
+    stored = {k: claims[k] for k in ("sub", "cabal_persona", "cabal_scope", "aud", "iat", "exp") if k in claims}
+    async with open_session(request.app.state.sessionmaker) as session:
+        moved = await session.execute(
+            update(Conversation)
+            .where(Conversation.task_id == row.task_id, Conversation.state == "input-required")
+            .values(
+                state="scheduled",
+                not_before=datetime.now(UTC),
+                result_json=task.model_dump(by_alias=True, exclude_none=True),
+                schedule_json=stored,
+                updated_at=datetime.now(UTC),
+            )
+        )
+        if moved.rowcount != 1:
+            return _error(
+                request_id,
+                a2a_error(UNSUPPORTED_OPERATION, message="the task changed state while being answered; read it again"),
+            )
+        session.add(
+            Event(
+                task_id=row.task_id,
+                event_type="dispatch_group_answered",
+                payload_json={"group": row.target_group, "asked_by": asker, "answered_by": answerer, "round": rounds},
+            )
+        )
+    log.info("dispatch.group_answered", task_id=row.task_id, group=row.target_group, asked_by=asker, round=rounds)
+    refreshed = await _load_row(request, row.task_id)
+    assert refreshed is not None
+    return _result(request_id, {"task": _row_to_v1(refreshed)})
 
 
 async def _get_task(

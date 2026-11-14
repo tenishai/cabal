@@ -197,6 +197,11 @@ class Scheduler:
                     if not members:
                         problem = f"no group {row.target_group!r} in [groups]"
                     else:
+                        # An answered question goes back to the member that asked
+                        # first, if it is idle: it has the context (issue 423).
+                        asked = ((row.result_json or {}).get("metadata") or {}).get("cabal_asked_by")
+                        if asked in members:
+                            members = [asked, *(m for m in members if m != asked)]
                         member = None
                         for name in members:
                             if name in busy:

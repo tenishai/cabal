@@ -444,6 +444,14 @@ def task_cmd(
     cancel: bool = typer.Option(
         False, "--cancel", help="Cancel the task (A2A CancelTask), scheduled or running."
     ),
+    answer: str | None = typer.Option(
+        None,
+        "--answer",
+        help=(
+            "Answer a group task that stopped with questions (input-required): it goes "
+            "back to the group, for the next idle member (cabal issue 423)."
+        ),
+    ),
 ) -> None:
     """Show a task's state and, once it has ended, its message."""
     token = api.TokenStore().load()
@@ -452,6 +460,12 @@ def task_cmd(
         raise typer.Exit(code=1)
     deadline = None if timeout is None else time.monotonic() + timeout
     try:
+        if answer is not None:
+            if target is None:
+                target = _task_target(token, task_id)
+            task = api.answer_task(token=token, target=target, task_id=task_id, text=answer)
+            typer.echo(json.dumps(task, indent=2) if raw else f"{task_id} [{_state_name(task)}, back in the queue]")
+            return
         if cancel:
             if target is None:
                 target = _task_target(token, task_id)

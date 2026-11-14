@@ -46,10 +46,10 @@ async def gclient(gapp: FastAPI):
 
 async def _send(
     client: AsyncClient, token: str, *, via: str = "echo", group: Any = GROUP, detach: bool = True,
-    extra: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None, msgid: str = "m-1",
 ) -> Response:
     params: dict[str, Any] = {
-        "message": {"messageId": "m-1", "role": "ROLE_USER", "parts": [{"text": "work"}]},
+        "message": {"messageId": msgid, "role": "ROLE_USER", "parts": [{"text": "work"}]},
         "metadata": {"cabal_group": group, **(extra or {})},
     }
     if detach:
@@ -350,3 +350,132 @@ def test_migration_adds_and_drops_target_group(tmp_path, monkeypatch) -> None:
     assert "target_group" not in columns()
     command.upgrade(cfg, "head")
     assert "target_group" in columns()
+
+
+# ---- a question goes back to the group (part 2) -------------------------------------
+
+
+async def _answer(client: AsyncClient, token: str, via: str, task_id: str, text: str = "use plan B") -> dict:
+    return (
+        await client.post(
+            f"/agents/{via}/a2a",
+            json={"jsonrpc": "2.0", "id": 11, "method": "SendMessage", "params": {
+                "message": {"messageId": "a-1", "role": "ROLE_USER", "taskId": task_id, "parts": [{"text": text}]}}},
+            headers={"A2A-Version": "1.0", "Authorization": f"Bearer {token}"},
+        )
+    ).json()
+
+
+async def _asking(app: FastAPI, client: AsyncClient, token: str, group: str = "solo") -> str:
+    """A group task that tck ends input-required (the kit's tck-input-required message)."""
+    body = (await _send(client, token, via="tck", group=group, msgid="tck-input-required-1")).json()
+    task_id = str(body["result"]["task"]["id"])
+    assert await app.state.scheduler.tick(now=_later()) == 1
+    await _until_state(app, task_id, "input-required")
+    return task_id
+
+
+@pytest.mark.asyncio
+async def test_an_answer_puts_the_task_back_with_brief_handoff_and_answer(
+    gapp: FastAPI, gclient: AsyncClient
+) -> None:
+    token = await _token(gapp)
+    task_id = await _asking(gapp, gclient, token)
+    body = await _answer(gclient, token, "tck", task_id)
+    assert body["result"]["task"]["status"]["state"] == "TASK_STATE_SUBMITTED", body
+    row = await _row(gapp, task_id)
+    assert row.state == "scheduled" and row.target_group == "solo"
+    sent = row.result_json["status"]["message"]["parts"][0]["text"]
+    assert "## Brief\n\nwork" in sent
+    assert "## Hand-off from tck\n\ninput required" in sent
+    assert "## Answer from agent:alice\n\nuse plan B" in sent
+    meta = row.result_json["metadata"]
+    assert (meta["cabal_asked_by"], meta["cabal_group_round"]) == ("tck", 2)
+    assert await gapp.state.scheduler.tick(now=_later()) == 1
+    done = await _until_state(gapp, task_id, "completed")
+    assert done.result_json["contextId"] == row.result_json["contextId"]
+    async with gapp.state.sessionmaker() as s:
+        from cabal.core.models import Event
+
+        events = (await s.execute(select(Event).where(Event.task_id == task_id))).scalars().all()
+    assert any(e.event_type == "dispatch_group_answered" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_the_member_that_asked_gets_the_answer_when_idle(gapp: FastAPI, gclient: AsyncClient) -> None:
+    token = await _token(gapp)
+    _busy(gapp, "echo")  # so tck, second in the group, takes the first round
+    task_id = await _asking(gapp, gclient, token, group=GROUP)
+    assert (await _row(gapp, task_id)).target_agent == "tck"
+    _idle(gapp, "echo")  # now echo, listed first, is idle too
+    await _answer(gclient, token, "echo", task_id)
+    assert await gapp.state.scheduler.tick(now=_later()) == 1
+    assert (await _until_state(gapp, task_id, "completed")).target_agent == "tck"
+
+
+@pytest.mark.asyncio
+async def test_if_the_asker_is_busy_another_member_takes_it(gapp: FastAPI, gclient: AsyncClient) -> None:
+    token = await _token(gapp)
+    _busy(gapp, "echo")
+    task_id = await _asking(gapp, gclient, token, group=GROUP)
+    _idle(gapp, "echo")
+    _busy(gapp, "tck")
+    await _answer(gclient, token, "tck", task_id)
+    assert await gapp.state.scheduler.tick(now=_later()) == 1
+    assert (await _until_state(gapp, task_id, "completed")).target_agent == "echo"
+
+
+@pytest.mark.asyncio
+async def test_answers_that_dont_apply_are_refused(gapp: FastAPI, gclient: AsyncClient) -> None:
+    token = await _token(gapp)
+    task_id = await _asking(gapp, gclient, token)
+    empty = await _answer(gclient, token, "tck", task_id, text="")
+    assert empty["error"]["code"] == -32602 and "needs some text" in empty["error"]["message"]
+    # Not a group task: a new turn on a paused task is still #145's.
+    plain = (
+        await gclient.post(
+            "/agents/tck/a2a",
+            json={"jsonrpc": "2.0", "id": 12, "method": "SendMessage", "params": {
+                "message": {"messageId": "tck-input-required-2", "role": "ROLE_USER", "parts": [{"text": "q"}]},
+                "configuration": {"returnImmediately": True}}},
+            headers={"A2A-Version": "1.0", "Authorization": f"Bearer {token}"},
+        )
+    ).json()["result"]["task"]["id"]
+    await _until_state(gapp, plain, "input-required")
+    assert "#145" in (await _answer(gclient, token, "tck", plain))["error"]["message"]
+    # A group task that is waiting, not asking.
+    waiting = await _queue(gapp, gclient, token)
+    assert "#145" in (await _answer(gclient, token, "echo", waiting))["error"]["message"]
+    # Someone else's task is not theirs to answer.
+    bob = await _token(gapp, sub="agent:bob")
+    assert (await _answer(gclient, bob, "tck", task_id))["error"]["code"] == -32001
+
+
+def test_cbl_task_answer(monkeypatch) -> None:
+    from cabal.cli.main import app as cbl
+
+    monkeypatch.setattr("cabal.cli.main.api.TokenStore.load", lambda self: "tok")
+    monkeypatch.setattr("cabal.cli.main.api.task_target", lambda **_: "tck")
+    sent: dict[str, Any] = {}
+
+    def fake(**kw: Any) -> dict[str, Any]:
+        sent.update(kw)
+        return {"id": "t-1", "status": {"state": "TASK_STATE_SUBMITTED"}}
+
+    monkeypatch.setattr("cabal.cli.main.api.answer_task", fake)
+    out = runner.invoke(cbl, ["task", "t-1", "--answer", "use plan B"])
+    assert out.exit_code == 0, out.output
+    assert sent == {"token": "tok", "target": "tck", "task_id": "t-1", "text": "use plan B"}
+    assert "back in the queue" in out.output
+
+
+@pytest.mark.asyncio
+async def test_the_continuation_runs_under_the_answerers_authority(gapp: FastAPI, gclient: AsyncClient) -> None:
+    """The asker's caller may be gone by the time an answer comes; the answer is
+    what authorises the next round, so its claims are what the start re-checks."""
+    task_id = await _asking(gapp, gclient, await _token(gapp))
+    op = await _operator(gapp, gclient)
+    assert "result" in await _answer(gclient, op, "tck", task_id)
+    row = await _row(gapp, task_id)
+    assert "operator" in row.schedule_json["cabal_scope"] and row.schedule_json["sub"] != "agent:alice"
+    assert row.caller_agent == "agent:alice"  # the task is still alice's

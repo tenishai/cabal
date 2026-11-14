@@ -24,7 +24,14 @@ Pull requests and issues are in tenishai/cabal.
   waits and later rows still start. Any member's A2A route can read or cancel a group task.
   `GET /admin/groups` lists the groups; `cbl tasks --scheduled` shows `group:<name>`. A group
   removed from the config fails its waiting tasks with the reason. The migration is under
-  Upgrading. Not yet: a question (`input-required`) going back to the group.
+  Upgrading.
+- A group task that ends with questions goes back to the group (issue 423, part 2). When a
+  member ends a group task `input-required`, `cbl task <id> --answer "<text>"` (a v1
+  `SendMessage` naming the task) puts it back in the queue under the same id and contextId, for
+  the next idle member, preferring the one that asked. That member gets one message carrying the
+  original brief, the asker's hand-off and the answer; the continuation runs under the
+  answerer's claims, and the task stays its caller's. A new turn on any other paused task is
+  still refused (#145).
 - Review runs, the record for issue 399's review workflow: one run per pull-request head,
   `(repo, pr, sha)` unique, with one step per seat in order (default Temperance, then Prudence).
   Operator-only `POST /reviews`, `GET /reviews`, `GET /reviews/{id}` and
