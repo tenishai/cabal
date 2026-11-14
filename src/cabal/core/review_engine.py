@@ -294,9 +294,10 @@ def label_trail(events: list[TimelineEvent], label: str, sha: str) -> tuple[str 
     The label vouches for the head it was put on. A head committed after the label,
     or a force-push after it, is refused rather than reviewed under the labeller's
     name (issue 431). The commit side reads the committer date, which the committer
-    sets: it catches the usual case, a fix pushed after the label, but not someone
-    who backdates a commit. That needs push access to the branch, which for a fork
-    PR is the fork's author; so forks are refused unless the repo opts in."""
+    sets: it catches the usual case, a fix made after the label, but not a backdated
+    commit, nor a commit made before the label and pushed after it. Either needs push
+    access to the branch, which for a fork PR is the fork's author; so forks are
+    refused unless the repo opts in."""
     labeled = [e for e in events if e.event == "labeled" and e.label == label]
     if not labeled:
         return None, f"no `labeled` event for {label} in the PR's timeline"

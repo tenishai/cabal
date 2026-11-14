@@ -49,8 +49,9 @@ Pull requests and issues are in tenishai/cabal.
   later than the label, and no force-push may follow it. A PR from a fork is refused unless its
   repo sets `allow_forks = true`, which can't be combined with `merge = true`. A refused label is
   removed with a PR comment giving the reason. A run's `requested_by` is now `label:<login>`.
-  The commit check reads the committer date, which the committer sets, so it catches a push
-  after the label but not a backdated commit; that takes push access to the branch.
+  The commit check reads the committer date, which the committer sets, so it catches a commit
+  made after the label but not a backdated one, nor one made before the label and pushed after
+  it; either takes push access to the branch.
 
 ## [0.5.0rc1] — 2026-11-11
 
