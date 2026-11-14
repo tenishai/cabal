@@ -66,7 +66,9 @@ class Bookkeeper:
                 # 406): its row exists, so this start updates it. Any other
                 # existing row still collides, as before.
                 existing.target_generation = target.generation
-                existing.caller_agent = caller_agent
+                # The row's caller stays: a group task's answer (issue 423) starts
+                # under the answerer's claims, but the task is still its caller's.
+                existing.caller_agent = existing.caller_agent or caller_agent
                 existing.state = task.status.state
                 existing.updated_at = datetime.now(UTC)
             else:

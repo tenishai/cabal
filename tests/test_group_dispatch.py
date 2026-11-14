@@ -473,9 +473,15 @@ def test_cbl_task_answer(monkeypatch) -> None:
 async def test_the_continuation_runs_under_the_answerers_authority(gapp: FastAPI, gclient: AsyncClient) -> None:
     """The asker's caller may be gone by the time an answer comes; the answer is
     what authorises the next round, so its claims are what the start re-checks."""
-    task_id = await _asking(gapp, gclient, await _token(gapp))
+    alice = await _token(gapp)
+    task_id = await _asking(gapp, gclient, alice)
     op = await _operator(gapp, gclient)
     assert "result" in await _answer(gclient, op, "tck", task_id)
     row = await _row(gapp, task_id)
     assert "operator" in row.schedule_json["cabal_scope"] and row.schedule_json["sub"] != "agent:alice"
-    assert row.caller_agent == "agent:alice"  # the task is still alice's
+    # Started and finished under the operator's claims, the task is still alice's
+    # (Prudence on PR 436: the start used to overwrite caller_agent).
+    assert await gapp.state.scheduler.tick(now=_later()) == 1
+    done = await _until_state(gapp, task_id, "completed")
+    assert done.caller_agent == "agent:alice"
+    assert _get_state(await _get(gclient, alice, "tck", task_id)) == "TASK_STATE_COMPLETED"
