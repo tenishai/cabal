@@ -39,8 +39,9 @@ Pull requests and issues are in tenishai/cabal.
   squash) and ends `merged`. CI failing, CI not green within `ci_timeout_s` (3600) of the
   approval, or GitHub refusing the merge ends it `unmerged` with the reason. Just before merging,
   the gate reads the reviews again: an approval dismissed since, or a CHANGES_REQUESTED from
-  anyone at the sha, ends the run `unmerged`. A refused merge whose PR turns out merged at the
-  sha (an earlier call whose reply was lost) is recorded `merged`. A `merging` run can be
+  anyone at the sha, ends the run `unmerged`. A refused merge, or a failed merge call past
+  `ci_timeout_s`, whose PR turns out merged at the sha (a call whose reply was lost) is recorded
+  `merged`. A `merging` run can be
   canceled until the merge call starts. New run states: `merging`, `unmerged`.
 
 ## [0.5.0rc1] — 2026-11-11

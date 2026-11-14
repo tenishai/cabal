@@ -846,18 +846,20 @@ class ReviewEngine:
             merged = await self._gh.merge(repo, pr, sha, repo_cfg.merge_method)
         except Exception as exc:  # noqa: BLE001 -- sorted below
             status = _hard_status(exc)
-            if status is not None:
-                # An earlier merge call may have landed with its reply lost: GitHub
-                # then refuses this one, and the PR is merged all the same.
+            if status is not None or late:
+                # Before ending the run unmerged, ask whether a merge call landed
+                # with its reply lost (this one, or an earlier one GitHub now
+                # refuses): the PR is then merged, and the run must say so.
                 done = await self._merged_already(repo, pr, sha)
                 if done is not None:
-                    await self._end_merge(run_id, "merged", f"merged as {done[:12]} (found after HTTP {status})")
-                else:
+                    seen = f"HTTP {status}" if status is not None else repr(exc)
+                    await self._end_merge(run_id, "merged", f"merged as {done[:12]} (found after {seen})"[:300])
+                elif status is not None:
                     await self._end_merge(
                         run_id, "unmerged", f"GitHub refused the merge: HTTP {status} {_message(exc)}"[:300]
                     )
-            elif late:
-                await self._end_merge(run_id, "unmerged", f"merge failed for {waited:.0f}s: {exc!r}"[:300])
+                else:
+                    await self._end_merge(run_id, "unmerged", f"merge failed for {waited:.0f}s: {exc!r}"[:300])
             else:
                 log.warning("review.merge_failed", run_id=run_id, error=repr(exc))
             return
