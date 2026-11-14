@@ -478,3 +478,23 @@ async def test_a_merging_run_with_no_approving_step_is_not_merged(app: FastAPI) 
     body = await _run(app, run_id)
     assert body["state"] == "unmerged" and body["reason"] == "no approving review in the run"
     assert gh.merges == []
+
+
+async def test_a_lost_reply_on_the_late_tick_still_records_merged(app: FastAPI) -> None:
+    gh = MergeGitHub()
+    gh.merge_error = httpx.ReadTimeout("reply lost")
+    gh.already = MERGED
+    engine = _engine(app, gh, ci_timeout_s=600)
+    run_id = await _merging(app)
+    await engine.tick(now=datetime.now(UTC) + timedelta(seconds=700))
+    body = await _run(app, run_id)
+    assert body["state"] == "merged" and body["reason"].startswith(f"merged as {MERGED[:12]} (found after ReadTimeout")
+
+
+async def test_a_lost_reply_before_the_timeout_is_retried_not_checked(app: FastAPI) -> None:
+    gh = MergeGitHub()
+    gh.merge_error = httpx.ReadTimeout("reply lost")
+    engine = _engine(app, gh)
+    run_id = await _merging(app)
+    await engine.tick()
+    assert (await _run(app, run_id))["state"] == "merging"
