@@ -43,6 +43,14 @@ Pull requests and issues are in tenishai/cabal.
   `ci_timeout_s`, whose PR turns out merged at the sha (a call whose reply was lost) is recorded
   `merged`. A `merging` run can be
   canceled until the merge call starts. New run states: `merging`, `unmerged`.
+- The watch loop checks a label before it acts on it (issue 431). It reads the PR's timeline
+  for the last `labeled` event: the labeller needs `[review] label_min_role` (default `write`;
+  always at least `write` in a repo with `merge = true`), the head must have been committed no
+  later than the label, and no force-push may follow it. A PR from a fork is refused unless its
+  repo sets `allow_forks = true`, which can't be combined with `merge = true`. A refused label is
+  removed with a PR comment giving the reason. A run's `requested_by` is now `label:<login>`.
+  The commit check reads the committer date, which the committer sets, so it catches a push
+  after the label but not a backdated commit; that takes push access to the branch.
 
 ## [0.5.0rc1] — 2026-11-11
 

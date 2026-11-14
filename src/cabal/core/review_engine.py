@@ -55,7 +55,7 @@ import httpx
 import structlog
 from sqlalchemy import func, select, update
 
-from cabal.config.identity import ReviewConfig
+from cabal.config.identity import ReviewConfig, ReviewRepoConfig
 from cabal.core.a2a.inbound import inbound_metadata
 from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
 from cabal.core.db import open_session
@@ -89,6 +89,21 @@ class OpenPull:
     sha: str
     draft: bool
     labels: frozenset[str]
+    # The head branch lives in another repo, or its repo is gone (issue 431).
+    fork: bool = False
+
+
+@dataclass(frozen=True)
+class TimelineEvent:
+    """One entry of a PR's issue timeline, as far as the label check needs it."""
+
+    event: str  # labeled, committed, head_ref_force_pushed, ...
+    # GitHub's created_at. A `committed` event has none, so it carries the commit's
+    # committer date, which whoever made the commit sets (see label_trail).
+    at: str
+    actor: str = ""
+    label: str = ""
+    sha: str = ""
 
 
 @dataclass(frozen=True)
@@ -103,6 +118,9 @@ class GitHub(Protocol):
     async def reviews(self, repo: str, pr: int) -> list[Review]: ...
     async def open_pulls(self, repo: str) -> list[OpenPull]: ...
     async def remove_label(self, repo: str, pr: int, label: str) -> None: ...
+    async def timeline(self, repo: str, pr: int) -> list[TimelineEvent]: ...
+    async def role(self, repo: str, login: str) -> str: ...
+    async def comment(self, repo: str, pr: int, body: str) -> None: ...
     async def ci(self, repo: str, sha: str) -> tuple[list[CheckRun], list[tuple[str, str]]]: ...
     async def merge(self, repo: str, pr: int, sha: str, method: str) -> str: ...
     async def merged_as(self, repo: str, pr: int, sha: str) -> str | None: ...
@@ -142,6 +160,7 @@ class GitHubREST:
                     sha=str(p["head"]["sha"]),
                     draft=bool(p.get("draft")),
                     labels=frozenset(str(lb.get("name", "")) for lb in p.get("labels") or []),
+                    fork=_is_fork(p),
                 )
                 for p in batch
             ]
@@ -153,6 +172,44 @@ class GitHubREST:
         resp = await self._client.delete(f"/repos/{repo}/issues/{pr}/labels/{quote(label, safe='')}")
         if resp.status_code != 404:  # already gone is fine
             resp.raise_for_status()
+
+    async def timeline(self, repo: str, pr: int) -> list[TimelineEvent]:
+        out: list[TimelineEvent] = []
+        page = 1
+        while True:
+            resp = await self._client.get(
+                f"/repos/{repo}/issues/{pr}/timeline", params={"per_page": 100, "page": page}
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            for e in batch:
+                event = str(e.get("event") or "")
+                at = e.get("created_at") or ((e.get("committer") or {}).get("date") if event == "committed" else "")
+                out.append(TimelineEvent(
+                    event=event,
+                    at=str(at or ""),
+                    actor=str((e.get("actor") or {}).get("login") or ""),
+                    label=str((e.get("label") or {}).get("name") or ""),
+                    sha=str(e.get("sha") or ""),
+                ))
+            if len(batch) < 100:
+                return out
+            page += 1
+
+    async def role(self, repo: str, login: str) -> str:
+        """`login`'s role on `repo` (admin, maintain, write, triage, read), or "none"."""
+        resp = await self._client.get(f"/repos/{repo}/collaborators/{quote(login, safe='')}/permission")
+        if resp.status_code == 404:  # not a collaborator
+            return "none"
+        resp.raise_for_status()
+        body = resp.json()
+        role = str(body.get("role_name") or "")
+        # A custom role's name means nothing here; its base permission does.
+        return role if role in ROLE_RANK else str(body.get("permission") or "none")
+
+    async def comment(self, repo: str, pr: int, body: str) -> None:
+        resp = await self._client.post(f"/repos/{repo}/issues/{pr}/comments", json={"body": body})
+        resp.raise_for_status()
 
     async def ci(self, repo: str, sha: str) -> tuple[list[CheckRun], list[tuple[str, str]]]:
         """The check runs at `sha`, and the commit statuses as (context, state)."""
@@ -213,6 +270,52 @@ class GitHubREST:
             if len(batch) < 100:
                 return out
             page += 1
+
+
+def _is_fork(p: dict[str, Any]) -> bool:
+    head = ((p.get("head") or {}).get("repo") or {}).get("full_name")
+    base = ((p.get("base") or {}).get("repo") or {}).get("full_name")
+    return head is None or head != base
+
+
+ROLE_RANK = {"none": 0, "read": 1, "triage": 2, "write": 3, "maintain": 4, "admin": 5}
+
+
+def _when(at: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(at)
+    except ValueError:
+        return None
+
+
+def label_trail(events: list[TimelineEvent], label: str, sha: str) -> tuple[str | None, str | None]:
+    """(who put `label` on last, why the head `sha` can't be reviewed under it or None).
+
+    The label vouches for the head it was put on. A head committed after the label,
+    or a force-push after it, is refused rather than reviewed under the labeller's
+    name (issue 431). The commit side reads the committer date, which the committer
+    sets: it catches the usual case, a fix pushed after the label, but not someone
+    who backdates a commit. That needs push access to the branch, which for a fork
+    PR is the fork's author; so forks are refused unless the repo opts in."""
+    labeled = [e for e in events if e.event == "labeled" and e.label == label]
+    if not labeled:
+        return None, f"no `labeled` event for {label} in the PR's timeline"
+    last = labeled[-1]
+    actor = last.actor or None
+    at = _when(last.at)
+    if actor is None or at is None:
+        return actor, "the label's event has no actor or time"
+    head = [e for e in events if e.event == "committed" and e.sha == sha]
+    if not head:
+        return actor, f"the head {sha[:12]} isn't in the PR's timeline"
+    committed = _when(head[-1].at)
+    if committed is None or committed > at:
+        return actor, f"the head {sha[:12]} was committed after the label; relabel to review it"
+    for e in events:
+        pushed = _when(e.at) if e.event == "head_ref_force_pushed" else None
+        if pushed is not None and pushed > at:
+            return actor, "the branch was force-pushed after the label; relabel to review its head"
+    return actor, None
 
 
 # ---- outcome parsing ------------------------------------------------------------
@@ -426,12 +529,20 @@ class ReviewEngine:
             for pull in pulls:
                 if label not in pull.labels or pull.draft:
                     continue
+                try:
+                    actor, refusal = await self._vet(repo, repo_cfg, pull)
+                except Exception as exc:  # noqa: BLE001 -- the label stays; the next poll tries again
+                    log.warning("review.watch_vet_unreadable", repo=repo, pr=pull.number, error=repr(exc))
+                    continue
+                if refusal is not None:
+                    await self._refuse_label(repo, pull, refusal)
+                    continue
                 seats = list(repo_cfg.seats or self._cfg.seats_default)
                 try:
                     async with open_session(self._state.sessionmaker) as session:
                         run, new = await create_run(
                             session, repo=repo, pr=pull.number, sha=pull.sha, seats=seats,
-                            requested_by=f"label:{label}", trigger="label",
+                            requested_by=f"label:{actor}", trigger="label",
                         )
                         run_id, state = run.id, run.state
                 except InvalidRun as exc:
@@ -447,6 +558,39 @@ class ReviewEngine:
                 except Exception as exc:  # noqa: BLE001 -- the run exists; a stuck label only repeats "known"
                     log.warning("review.label_not_removed", repo=repo, pr=pull.number, error=repr(exc))
         return created
+
+    async def _vet(self, repo: str, repo_cfg: ReviewRepoConfig, pull: OpenPull) -> tuple[str | None, str | None]:
+        """(who labelled the PR, why it must not be reviewed or None), issue 431."""
+        if pull.fork and not repo_cfg.allow_forks:
+            return None, "the PR comes from a fork, and this repo doesn't allow fork PRs (allow_forks)"
+        actor, refusal = label_trail(await self._gh.timeline(repo, pull.number), self._cfg.label, pull.sha)
+        if refusal is not None or actor is None:
+            return actor, refusal or "no labeller found"
+        # A label can start whatever the run can reach: with the merge gate on, a merge.
+        need = self._cfg.label_min_role
+        if repo_cfg.merge and ROLE_RANK[need] < ROLE_RANK["write"]:
+            need = "write"
+        role = await self._gh.role(repo, actor)
+        if ROLE_RANK.get(role, 0) < ROLE_RANK[need]:
+            return actor, f"{actor} has {role} access, and a label here needs {need}"
+        return actor, None
+
+    async def _refuse_label(self, repo: str, pull: OpenPull, reason: str) -> None:
+        """Take the label off and say why on the PR, so whoever put it on doesn't
+        wait for a review that isn't coming. A label that won't come off is left
+        for the next poll, without a comment, so a refusal is said once."""
+        label = self._cfg.label
+        log.warning("review.watch_refused", repo=repo, pr=pull.number, sha=pull.sha, reason=reason)
+        try:
+            await self._gh.remove_label(repo, pull.number, label)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("review.label_not_removed", repo=repo, pr=pull.number, error=repr(exc))
+            return
+        body = f"cabal didn't queue a review of {pull.sha[:12]}: {reason}. It removed the `{label}` label."
+        try:
+            await self._gh.comment(repo, pull.number, body)
+        except Exception as exc:  # noqa: BLE001 -- the log line above still has it
+            log.warning("review.refusal_not_posted", repo=repo, pr=pull.number, error=repr(exc))
 
     async def _run_ids(self, state: str) -> list[str]:
         async with open_session(self._state.sessionmaker) as session:
