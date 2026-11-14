@@ -374,6 +374,28 @@ def _state_name(task: dict[str, Any]) -> str:
     return str(task["status"]["state"]).removeprefix("TASK_STATE_").lower().replace("_", "-")
 
 
+def _task_target(token: str, task_id: str) -> str:
+    """The persona a task went to, or exit 1 with the remedy when the lookup is
+    refused: it reads the operator's conversation view, which a service or
+    colleague token can't (#393)."""
+    try:
+        return api.task_target(token=token, task_id=task_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code not in (401, 403):
+            raise
+        try:
+            detail = exc.response.json().get("detail", exc.response.text)
+        except Exception:  # noqa: BLE001
+            detail = exc.response.text
+        typer.echo(
+            f"task lookup refused: {_auth_hint(str(detail))}\n"
+            "  → finding a task's persona needs an operator token; "
+            "pass --target <persona> to skip the lookup.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+
 @app.command("task")
 def task_cmd(
     task_id: str = typer.Argument(..., help="Task id printed by `cbl dispatch --detach`."),
@@ -386,7 +408,10 @@ def task_cmd(
         None,
         "--timeout",
         min=0.0,
-        help=f"With --wait, give up after this many seconds (exit {EXIT_TASK_TIMEOUT}).",
+        help=(
+            f"With --wait, give up after this many seconds (exit {EXIT_TASK_TIMEOUT}). "
+            "A poll already in flight can run past it, by up to the client's 30 s ceiling."
+        ),
     ),
     target: str | None = typer.Option(
         None,
@@ -404,9 +429,9 @@ def task_cmd(
         raise typer.Exit(code=1)
     deadline = None if timeout is None else time.monotonic() + timeout
     try:
-        if target is None:
-            target = api.task_target(token=token, task_id=task_id)
         if cancel:
+            if target is None:
+                target = _task_target(token, task_id)
             task = api.cancel_task(token=token, target=target, task_id=task_id)
             typer.echo(json.dumps(task, indent=2) if raw else f"{task_id} [{_state_name(task)}]")
             return
@@ -414,21 +439,29 @@ def task_cmd(
             # Reloaded each poll, so a wait longer than the token's life keeps
             # going on the renewed one (#395).
             token = api.TokenStore().load() or token
+            task = None
             try:
+                # The lookup sits inside the retry too: a daemon that is down when
+                # `--wait` starts is the same blip as one that goes down later (#393).
+                if target is None:
+                    target = _task_target(token, task_id)
                 task = api.get_task(token=token, target=target, task_id=task_id)
             except httpx.RequestError as exc:
                 # A restart or blip is what --detach exists to survive: keep waiting.
                 if not wait:
                     raise
                 typer.echo(f"daemon unreachable ({exc}); retrying", err=True)
-                task = None
             if task is not None and (not wait or _state_name(task) in _TASK_STOP_STATES):
                 break
-            if deadline is not None and time.monotonic() + interval > deadline:
-                state = _state_name(task) if task is not None else "unknown"
-                typer.echo(f"timed out after {timeout:g}s; task {task_id} is {state}", err=True)
-                raise typer.Exit(code=EXIT_TASK_TIMEOUT)
-            time.sleep(interval)
+            pause = interval
+            if deadline is not None:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    state = _state_name(task) if task is not None else "unknown"
+                    typer.echo(f"timed out after {timeout:g}s; task {task_id} is {state}", err=True)
+                    raise typer.Exit(code=EXIT_TASK_TIMEOUT)
+                pause = min(interval, left)  # the last poll lands on the deadline
+            time.sleep(pause)
     except api.A2AError as exc:
         typer.echo(f"task failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
