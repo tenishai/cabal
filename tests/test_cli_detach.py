@@ -125,7 +125,9 @@ def test_wait_polls_until_completed(token, polls) -> None:
     assert polls.sleeps == [0.5, 0.5]
 
 
-@pytest.mark.parametrize("state", ["FAILED", "CANCELED", "REJECTED", "INPUT_REQUIRED"])
+@pytest.mark.parametrize(
+    "state", ["FAILED", "CANCELED", "REJECTED", "INPUT_REQUIRED", "AUTH_REQUIRED"]
+)
 def test_wait_exits_nonzero_unless_completed(token, polls, state) -> None:
     polls.extend([_task("WORKING"), _task(state, "why")])
     result = runner.invoke(cli_app, ["task", "t-1", "--wait"])
@@ -201,6 +203,99 @@ def test_wire_requests(monkeypatch) -> None:
     assert send["params"]["message"]["contextId"] == "c-9"
     assert send["params"]["message"]["parts"] == [{"text": "hi"}]
     assert get["method"] == "GetTask" and get["params"] == {"id": "t-1"}
+
+
+def _mock_admin(monkeypatch, handler) -> list[httpx.Request]:
+    seen: list[httpx.Request] = []
+
+    def record(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return handler(request)
+
+    real = httpx.Client
+    monkeypatch.setattr(
+        api, "make_client", lambda **kw: real(base_url="http://d", transport=httpx.MockTransport(record))
+    )
+    return seen
+
+
+def test_task_target_reads_the_conversations_target_agent(monkeypatch) -> None:
+    """The persona lookup, as a unit test: the integration test was its only cover (#393)."""
+    seen = _mock_admin(
+        monkeypatch,
+        lambda r: httpx.Response(
+            200, json={"conversation": {"target_agent": "echo", "caller_agent": "operator"}}
+        ),
+    )
+    assert api.task_target(token="tok", task_id="t-9") == "echo"
+    assert seen[0].url.path == "/admin/conversations/t-9"
+    assert seen[0].headers["Authorization"] == "Bearer tok"
+
+
+@pytest.fixture
+def token_only(monkeypatch, tmp_path):
+    """A saved token, with the real task_target (the `token` fixture stubs it)."""
+    path = tmp_path / "token"
+    path.write_text("tok")
+    monkeypatch.setattr(api, "DEFAULT_TOKEN_PATH", path)
+
+
+def test_wait_retries_a_lookup_against_a_down_daemon(token_only, polls, monkeypatch) -> None:
+    looks: list[object] = [httpx.ConnectError("down"), "echo"]
+
+    def lookup(**kw):
+        item = looks.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(api, "task_target", lookup)
+    polls.append(_task("COMPLETED", "done"))
+    result = runner.invoke(cli_app, ["task", "t-1", "--wait"])
+    assert result.exit_code == 0, result.output
+    assert "retrying" in result.output and "done" in result.output
+    assert polls.sleeps == [2.0]
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_refused_lookup_names_target(token_only, monkeypatch, status) -> None:
+    _mock_admin(monkeypatch, lambda r: httpx.Response(status, json={"detail": "requires operator scope"}))
+    result = runner.invoke(cli_app, ["task", "t-1"])
+    assert result.exit_code == 1
+    assert "task lookup refused: requires operator scope" in result.output
+    assert "--target <persona>" in result.output
+
+
+def test_a_lookup_404_is_not_given_the_target_hint(token_only, monkeypatch) -> None:
+    _mock_admin(monkeypatch, lambda r: httpx.Response(404, json={"detail": "no such conversation"}))
+    result = runner.invoke(cli_app, ["task", "t-1"])
+    assert result.exit_code == 1
+    assert "no such conversation" in result.output and "--target" not in result.output
+
+
+def test_cancel_with_a_refused_lookup_names_target(token_only, monkeypatch) -> None:
+    _mock_admin(monkeypatch, lambda r: httpx.Response(403, json={"detail": "invalid_audience"}))
+    result = runner.invoke(cli_app, ["task", "t-1", "--cancel"])
+    assert result.exit_code == 1 and "--target <persona>" in result.output
+
+
+def test_wait_polls_on_the_deadline_then_stops(token, polls, monkeypatch) -> None:
+    """The last sleep is cut to the time left, so the final poll lands on the
+    deadline rather than up to an interval before it (#393)."""
+    polls.extend([_task("WORKING")] * 20)
+    clock = [0.0]
+    sleeps: list[float] = []
+
+    def sleep(s: float) -> None:
+        sleeps.append(s)
+        clock[0] += s
+
+    monkeypatch.setattr(cli_main.time, "sleep", sleep)
+    monkeypatch.setattr(cli_main.time, "monotonic", lambda: clock[0])
+    result = runner.invoke(cli_app, ["task", "t-1", "--wait", "--interval", "2", "--timeout", "5"])
+    assert result.exit_code == cli_main.EXIT_TASK_TIMEOUT
+    assert sleeps == [2.0, 2.0, 1.0]
+    assert clock[0] == 5.0
 
 
 # ---- against a live daemon ---------------------------------------------------
