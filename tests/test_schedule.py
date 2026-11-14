@@ -410,3 +410,49 @@ def test_cbl_tasks_scheduled_and_task_cancel(monkeypatch) -> None:
     )
     out = runner.invoke(cbl, ["task", "t-1", "--target", "echo", "--cancel"])
     assert out.exit_code == 0 and "[canceled]" in out.output
+
+
+@pytest.mark.asyncio
+async def test_a_token_aimed_at_the_target_starts_on_a_fresh_mint(
+    app: FastAPI, client: AsyncClient, monkeypatch
+) -> None:
+    """Issue 414: stored claims whose `aud` is already the target's skip the scope,
+    sub and pairs checks, as at the live door; the start mints a fresh token from
+    them rather than reusing anything stored."""
+    import cabal.core.routes._dispatch_auth as auth
+
+    minted: list[dict[str, Any]] = []
+    real = auth.mint
+
+    def spy(**kw: Any) -> str:
+        minted.append(kw)
+        return real(**kw)
+
+    token = await _token(app, aud="echo")  # scope ["dispatch"]: neither colleague nor operator
+    task_id, when = await _schedule(app, client, token)
+    assert (await _row(app, task_id)).schedule_json["aud"] == "echo"
+    monkeypatch.setattr(auth, "mint", spy)
+    assert await app.state.scheduler.tick(now=when) == 1
+    await _until_state(app, task_id, "completed")
+    assert [(m["aud"], m["sub"], m["scope"]) for m in minted] == [("echo", "agent:alice", ["dispatch"])]
+
+
+@pytest.mark.asyncio
+async def test_a_target_aimed_token_past_its_exp_is_refused_at_the_start(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """Issue 414: the exp check is what bounds the aud-matched branch."""
+    from sqlalchemy import update
+
+    task_id, when = await _schedule(app, client, await _token(app, aud="echo"))
+    row = await _row(app, task_id)
+    async with open_session(app.state.sessionmaker) as session:
+        await session.execute(
+            update(Conversation)
+            .where(Conversation.task_id == task_id)
+            .values(schedule_json={**row.schedule_json, "exp": int(time.time()) - 60})
+        )
+    assert await app.state.scheduler.tick(now=when) == 0
+    row = await _row(app, task_id)
+    assert row.state == "failed"
+    assert "expired before the task started" in row.result_json["status"]["message"]["parts"][0]["text"]

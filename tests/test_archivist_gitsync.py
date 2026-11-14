@@ -111,3 +111,30 @@ def test_a_marker_without_at_still_retires_its_target() -> None:
 
     assert _superseded_hashes([("b", "a", None)]) == {"a"}
     assert _superseded_hashes([("b", "a", "2026-01-01"), ("a", "b", "2026-01-02")]) == {"b"}
+
+
+def test_an_empty_access_label_exports_as_internal(tmp_path: Path) -> None:
+    """Issue 419: materialize stores whatever `access` a doc carries, and NOT NULL
+    lets '' in; export normalizes it back to `internal`."""
+    import json
+
+    src = ArchivistStore(tmp_path / "src.db")
+    src.publish(_entry("unlabelled"))
+    corpus = tmp_path / "corpus"
+    export_corpus(src, corpus)
+    (path,) = (corpus / "entries").glob("*.json")
+    doc = json.loads(path.read_text())
+    doc["access"] = ""
+    path.write_text(json.dumps(doc))
+
+    mat = materialize_corpus(corpus, tmp_path / "mat.db")
+    conn = sqlite3.connect(str(tmp_path / "mat.db"))
+    try:
+        assert [r[0] for r in conn.execute("SELECT access FROM memory_entries")] == [""]
+    finally:
+        conn.close()
+
+    out = tmp_path / "again"
+    export_corpus(mat, out)
+    (again,) = (out / "entries").glob("*.json")
+    assert json.loads(again.read_text())["access"] == "internal"
