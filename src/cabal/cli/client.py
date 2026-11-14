@@ -599,6 +599,12 @@ def cancel_task(*, token: str, target: str, task_id: str) -> dict[str, Any]:
     return _a2a_v1(token=token, target=target, method="CancelTask", params={"id": task_id})
 
 
+def groups(*, token: str) -> dict[str, list[str]]:
+    """GET /admin/groups (cabal issue 423): name -> members."""
+    body = _admin_json("GET", "/admin/groups", token=token)
+    return dict(body.get("groups") or {})
+
+
 def scheduled_tasks(*, token: str) -> dict[str, Any]:
     """GET /admin/tasks/scheduled (cabal issue 406)."""
     with make_client() as c:

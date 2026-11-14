@@ -692,10 +692,23 @@ async def list_scheduled_tasks(
                 if r.not_before
                 else None,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
+                # cabal issue 423: a group task, which starts on the first idle member.
+                "target_group": r.target_group,
             }
             for r in rows
         ]
     }
+
+
+@router.get("/groups")
+async def list_groups(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """`[groups]` from identity.toml (cabal issue 423): name -> members, in order."""
+    _require_operator_claims(request, extract_bearer(authorization))
+    identity = getattr(request.app.state, "identity", None)
+    return {"groups": dict(identity.groups) if identity is not None else {}}
 
 
 class DrainRequest(BaseModel):

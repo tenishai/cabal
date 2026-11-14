@@ -8,11 +8,23 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Upgrading
 
+- One database migration, applied at startup: `b4c8e2a6d1f3` adds `conversations.target_group`
+  (issue 423). It only adds.
 - One database migration, applied at startup: `a9d3e5f7c1b2` adds the `review_runs` and
   `review_steps` tables. It only adds; nothing existing changes.
 
 ### Added
 
+- Dispatch to a group (issue 423, part 1). `[groups]` in identity.toml names each group's
+  members in order. `cbl dispatch --detach group:<name> "<brief>"` sends the task through the
+  group's first member with metadata `cabal_group`; the server checks the group exists and the
+  member is in it. The task waits as a `scheduled` row with `target_group` set, from now (or from
+  `cabal_not_before`), and the Scheduler starts it on the first member that has an active agent
+  and nothing running, moving the row's target to that member. While every member is busy it
+  waits and later rows still start. Any member's A2A route can read or cancel a group task.
+  `GET /admin/groups` lists the groups; `cbl tasks --scheduled` shows `group:<name>`. A group
+  removed from the config fails its waiting tasks with the reason. The migration is under
+  Upgrading. Not yet: a question (`input-required`) going back to the group.
 - Review runs, the record for issue 399's review workflow: one run per pull-request head,
   `(repo, pr, sha)` unique, with one step per seat in order (default Temperance, then Prudence).
   Operator-only `POST /reviews`, `GET /reviews`, `GET /reviews/{id}` and

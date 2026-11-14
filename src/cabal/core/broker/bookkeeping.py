@@ -123,6 +123,7 @@ class Bookkeeper:
         *,
         not_before: datetime,
         claims: dict,
+        target_group: str | None = None,
     ) -> None:
         """A dispatch that starts at `not_before` (cabal issue 406): its row,
         in state `scheduled`, with the submitted Task (for GetTask and the
@@ -138,6 +139,7 @@ class Bookkeeper:
                     result_json=task.model_dump(by_alias=True, exclude_none=True),
                     not_before=not_before,
                     schedule_json=claims,
+                    target_group=target_group,
                 )
             )
             session.add(
@@ -148,10 +150,14 @@ class Bookkeeper:
                         "target": target.name,
                         "caller": caller_agent,
                         "not_before": not_before.isoformat(),
+                        "group": target_group,
                     },
                 )
             )
-        log.info("dispatch.scheduled", task_id=task.id, target=target.name, not_before=not_before.isoformat())
+        log.info(
+            "dispatch.scheduled", task_id=task.id, target=target.name, group=target_group,
+            not_before=not_before.isoformat(),
+        )
 
     async def on_dispatch_working(self, task: Task) -> None:
         """The persona is about to be called: `submitted` becomes `working`,
