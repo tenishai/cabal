@@ -97,7 +97,7 @@ from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 from cabal.core.models import Conversation
 from cabal.core.routes._dispatch_auth import DispatchRefusal, dispatch_token, verify_caller
-from cabal.core.scheduler import cancel_scheduled, parse_not_before
+from cabal.core.scheduler import cancel_scheduled, group_members, parse_not_before
 
 router = APIRouter(prefix="/agents", tags=["a2a-v1"])
 
@@ -377,6 +377,27 @@ async def _send_message(
                     message="cabal_not_before needs returnImmediately: a scheduled task can't hold the request open",
                 ),
             )
+    # cabal issue 423: a task for a group, sent through one of its members. It
+    # waits like a scheduled task (from now, or from cabal_not_before) and the
+    # Scheduler starts it on the first idle member.
+    group = (req.metadata or {}).get("cabal_group")
+    if group is not None:
+        members = group_members(request.app.state, group) if isinstance(group, str) else None
+        if not members:
+            return _params_error(request_id, f"cabal_group {group!r} is not a group in [groups]")
+        if agent_name not in members:
+            return _params_error(request_id, f"{agent_name} is not a member of group {group!r}")
+        if not (cfg is not None and cfg.return_immediately):
+            return _error(
+                request_id,
+                a2a_error(
+                    UNSUPPORTED_OPERATION,
+                    message="cabal_group needs returnImmediately: a group task waits for an idle member",
+                ),
+            )
+    asked_for = not_before  # the caller's own start time, if any
+    if group is not None and not_before is None:
+        not_before = datetime.now(UTC)
     # The caller's own claims: what a scheduled task (issue 406) and a 705
     # "waiting" reply's continuation run under. Never the token itself.
     verified = verify_caller(request, raw_token)
@@ -413,10 +434,12 @@ async def _send_message(
             "metadata": inbound_metadata(req.metadata),
         }
     )
-    if not_before is None:
+    if asked_for is None:
         task.metadata.pop("cabal_not_before", None)
     else:
-        task.metadata["cabal_not_before"] = not_before.isoformat()
+        task.metadata["cabal_not_before"] = asked_for.isoformat()
+    if group is not None:
+        task.metadata["cabal_group"] = group
     detach = cfg is not None and bool(cfg.return_immediately)
     detached = request.app.state.detached
     reserve = detach and not_before is None
@@ -436,7 +459,7 @@ async def _send_message(
             if not_before is not None:
                 response = await request.app.state.dispatch_router.schedule(
                     target_agent=agent_name, task=task, caller_jwt=token,
-                    not_before=not_before, claims=schedule_claims,
+                    not_before=not_before, claims=schedule_claims, target_group=group,
                 )
             elif detach:
                 # The start phase runs here, so auth is checked and the task's
@@ -483,10 +506,19 @@ def _owner_filter(claims: dict[str, Any]) -> tuple[bool, str | None]:
     return is_operator, claims.get("sub") or None
 
 
-def _visible(row: Conversation | None, agent_name: str, claims: dict[str, Any]) -> bool:
+def _visible(
+    row: Conversation | None, agent_name: str, claims: dict[str, Any], app_state: Any = None
+) -> bool:
     """Whether the caller may see `row`: a task on this persona that the
-    caller sent, or any task on it for the operator."""
-    if row is None or row.target_agent != agent_name:
+    caller sent, or any task on it for the operator. A group task (cabal
+    issue 423) is on every member's persona, since which member runs it is
+    settled only when it starts."""
+    if row is None:
+        return False
+    if row.target_agent != agent_name and not (
+        row.target_group is not None
+        and agent_name in (group_members(app_state, row.target_group) or [])
+    ):
         return False
     is_operator, sub = _owner_filter(claims)
     return is_operator or (sub is not None and sub == row.caller_agent)
@@ -561,7 +593,7 @@ async def _continue_task(
     if isinstance(claims, DispatchRefusal):
         return _refuse(claims, request_id)
     row = await _load_row(request, str(req.message.task_id))
-    if row is None or not _visible(row, agent_name, claims):
+    if row is None or not _visible(row, agent_name, claims, request.app.state):
         return _error(request_id, a2a_error(TASK_NOT_FOUND))
     stored_context = (row.result_json or {}).get("contextId")
     if req.message.context_id and stored_context and req.message.context_id != stored_context:
@@ -599,7 +631,7 @@ async def _get_task(
     if isinstance(claims, DispatchRefusal):
         return _refuse(claims, request_id)
     row = await _load_row(request, req.id)
-    if row is None or not _visible(row, agent_name, claims):
+    if row is None or not _visible(row, agent_name, claims, request.app.state):
         # One answer for missing, another caller's, and another persona's task.
         return _error(request_id, a2a_error(TASK_NOT_FOUND))
     return _result(request_id, _row_to_v1(row, req.history_length))
@@ -787,7 +819,7 @@ async def _cancel_task(
     if isinstance(claims, DispatchRefusal):
         return _refuse(claims, request_id)
     row = await _load_row(request, req.id)
-    if row is None or not _visible(row, agent_name, claims):
+    if row is None or not _visible(row, agent_name, claims, request.app.state):
         return _error(request_id, a2a_error(TASK_NOT_FOUND))
     if row.state in _TERMINAL_STATES:
         return _error(

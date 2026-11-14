@@ -30,6 +30,7 @@ log = structlog.get_logger(__name__)
 
 KNOWN_TOP_LEVEL = {
     "cabal",
+    "groups",
     "review",
     "personas",
     "litellm",
@@ -642,6 +643,10 @@ class IdentityConfig(_Open):
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     hooks: dict[str, Any] = Field(default_factory=dict)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
+    # cabal issue 423: `[groups]`, name -> member agents, in the order a task
+    # goes to them when several are idle. A task sent to a group starts on
+    # the first member with nothing running.
+    groups: dict[str, list[str]] = Field(default_factory=dict)
 
 
 def load_identity(path: str | Path) -> IdentityConfig:

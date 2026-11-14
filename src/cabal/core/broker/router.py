@@ -451,6 +451,7 @@ class DispatchRouter:
         caller_jwt: str,
         not_before: datetime,
         claims: dict[str, Any],
+        target_group: str | None = None,
     ) -> Task:
         """Record `task` to start at `not_before` (cabal issue 406).
 
@@ -462,7 +463,8 @@ class DispatchRouter:
         ctx = await self._prepare(target_agent, None, caller_jwt)
         task = _ensure_trace(task)
         await self._bookkeeper.on_dispatch_scheduled(
-            task, ctx.target, ctx.caller_agent, not_before=not_before, claims=claims
+            task, ctx.target, ctx.caller_agent, not_before=not_before, claims=claims,
+            target_group=target_group,
         )
         return task
 

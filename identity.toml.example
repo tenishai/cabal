@@ -323,6 +323,12 @@ max_tokens = 16384
 # model = "anthropic/claude-sonnet-5"
 # max_tokens = 8192
 
+# Groups (cabal issue 423): `cbl dispatch --detach group:<name> "<brief>"` queues a
+# task that starts on the first member with nothing running, in the order listed.
+# It waits as `scheduled` while every member is busy; `cbl tasks --scheduled` shows it.
+# [groups]
+# wright = ["wright-secundus", "wright-tertius", "wright-quartus"]
+
 # The review workflow (cabal issue 399). Off unless enabled. Queue a run with
 # `cbl review start <owner/repo> <pr> --sha <sha>`; the engine takes it through the
 # seats in order, reading each seat's outcome itself, never its exit code.

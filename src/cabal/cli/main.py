@@ -268,7 +268,13 @@ def parse_when(value: str, now: datetime | None = None) -> str:
 
 @app.command("dispatch")
 def dispatch(
-    target: str = typer.Argument(..., help="Target agent name (e.g. 'echo')."),
+    target: str = typer.Argument(
+        ...,
+        help=(
+            "Target agent name (e.g. 'echo'), or group:<name> for the next idle member "
+            "of a group in the daemon's [groups] (needs --detach)."
+        ),
+    ),
     message: str = typer.Argument(..., help="Initial user message."),
     raw: bool = typer.Option(False, "--raw", help="Print full Task JSON."),
     context: str | None = typer.Option(
@@ -320,7 +326,21 @@ def dispatch(
     if token is None:
         typer.echo("no token; run `cbl login` first.", err=True)
         raise typer.Exit(code=1)
+    group: str | None = None
+    if target.startswith("group:"):
+        # cabal issue 423: the task waits for the group's first idle member.
+        # It is sent through the first member, which the server checks.
+        group = target[len("group:"):]
+        if not detach:
+            raise typer.BadParameter("a group task needs --detach", param_hint="TARGET")
     try:
+        if group is not None:
+            members = _call_admin(api.groups, token=token).get(group)
+            if not members:
+                typer.echo(f"dispatch failed: no group {group!r} in the daemon's [groups]", err=True)
+                raise typer.Exit(code=1)
+            target = members[0]
+            extra = {"metadata": {**extra.get("metadata", {}), "cabal_group": group}}
         if detach:
             task = api.dispatch_detached(
                 token=token, target=target, message_text=message, context_id=context, **extra
@@ -328,8 +348,11 @@ def dispatch(
             if raw:
                 typer.echo(json.dumps(task, indent=2))
             else:
-                when = (task.get("metadata") or {}).get("cabalNotBefore")
+                meta = task.get("metadata") or {}
+                when = meta.get("cabalNotBefore")
                 suffix = f", starts at {when}" if when else ""
+                if group is not None:
+                    suffix += f", for the next idle member of {group}"
                 typer.echo(f"{task['id']} [{_state_name(task)}{suffix}]")
             return
         response = api.dispatch(
@@ -895,7 +918,9 @@ def tasks_cmd(
         typer.echo("-" * len(header))
         for r in rows:
             typer.echo(
-                f"{r['task_id']:<36.36} {r['target_agent']:<22.22} {(r.get('not_before') or '?'):<26.26} "
+                f"{r['task_id']:<36.36} "
+                f"{('group:' + r['target_group']) if r.get('target_group') else r['target_agent']:<22.22} "
+                f"{(r.get('not_before') or '?'):<26.26} "
                 f"{r.get('caller_agent') or '-'}"
             )
         return

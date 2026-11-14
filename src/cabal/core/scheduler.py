@@ -44,6 +44,14 @@ log = structlog.get_logger(__name__)
 SCHEDULED = "scheduled"
 
 
+def group_members(app_state: Any, group: str) -> list[str] | None:
+    """`[groups]` in identity.toml (cabal issue 423): the group's members in
+    order, or None for a group the config doesn't name."""
+    identity = getattr(app_state, "identity", None)
+    groups: dict[str, list[str]] = identity.groups if identity is not None else {}
+    return groups.get(group)
+
+
 def parse_not_before(value: Any) -> datetime:
     """`cabal_not_before` as an aware UTC datetime. ISO 8601 with an offset;
     a naive time is refused, because the server's zone is not the caller's."""
@@ -162,25 +170,54 @@ class Scheduler:
             except TimeoutError:
                 pass
 
-    async def _claim_next(self, now: datetime) -> Conversation | None:
-        """The oldest due row, moved to `submitted` by this call, or None."""
+    async def _claim_next(self, now: datetime, busy: set[str]) -> tuple[Conversation, str | None] | None:
+        """The oldest due row it can start, moved to `submitted` by this call,
+        with why it must fail instead (or None); or None when there is none.
+
+        A group row (cabal issue 423) starts on its group's first member that
+        is registered and has nothing running (`busy`); the claim moves the
+        row's target to that member. While every member is busy it is
+        skipped, and later rows can still start."""
+        from cabal.core.bulletin import store as bulletin_store
+
         async with open_session(self._state.sessionmaker) as session:
             candidates = (
                 await session.execute(
                     select(Conversation)
                     .where(Conversation.state == SCHEDULED, Conversation.not_before <= now)
                     .order_by(Conversation.not_before, Conversation.task_id)
-                    .limit(8)
+                    .limit(200)
                 )
             ).scalars().all()
             for row in candidates:
+                values: dict[str, Any] = {"state": "submitted", "updated_at": datetime.now(UTC)}
+                problem: str | None = None
+                if row.target_group is not None:
+                    members = group_members(self._state, row.target_group)
+                    if not members:
+                        problem = f"no group {row.target_group!r} in [groups]"
+                    else:
+                        member = None
+                        for name in members:
+                            if name in busy:
+                                continue
+                            agent = await bulletin_store.get_active(session, name)
+                            if agent is not None:
+                                member = agent
+                                break
+                        if member is None:
+                            log.debug("schedule.group_busy", task_id=row.task_id, group=row.target_group)
+                            continue
+                        values |= {"target_agent": member.name, "target_generation": member.generation}
                 claimed = await session.execute(
                     update(Conversation)
                     .where(Conversation.task_id == row.task_id, Conversation.state == SCHEDULED)
-                    .values(state="submitted", updated_at=datetime.now(UTC))
+                    .values(**values)
                 )
                 if claimed.rowcount == 1:
-                    return row
+                    # The ORM update syncs `row` (synchronize_session), so a group
+                    # row now carries the member it starts on.
+                    return row, problem
         return None
 
     async def _fail(self, row: Conversation, why: str) -> None:
@@ -213,10 +250,15 @@ class Scheduler:
             current = now or datetime.now(UTC)
             if not detached.try_reserve():
                 break
-            row = await self._claim_next(current)
-            if row is None:
+            claimed = await self._claim_next(current, router.running.busy_agents())
+            if claimed is None:
                 detached.release()
                 break
+            row, problem = claimed
+            if problem is not None:
+                detached.release()
+                await self._fail(row, problem)
+                continue
             token = await scheduled_dispatch_token(self._state, row.target_agent, row.schedule_json or {})
             if isinstance(token, DispatchRefusal):
                 detached.release()
@@ -245,5 +287,8 @@ class Scheduler:
                 raise
             detached.spawn(started_task.id, run)
             started += 1
-            log.info("schedule.started", task_id=row.task_id, target=row.target_agent, late_s=round(late, 1))
+            log.info(
+                "schedule.started", task_id=row.task_id, target=row.target_agent,
+                group=row.target_group, late_s=round(late, 1),
+            )
         return started

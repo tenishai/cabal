@@ -131,6 +131,10 @@ class Conversation(Base):
     # re-checks revocation against them and mints a fresh dispatch token.
     not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     schedule_json: Mapped[dict | None] = mapped_column(JSON)
+    # cabal issue 423 — a task sent to a group (`[groups]` in identity.toml).
+    # While it waits, `target_agent` is the member it was addressed through;
+    # the Scheduler moves it to the first idle member when it starts the task.
+    target_group: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=_utcnow_default()
     )
