@@ -297,6 +297,21 @@ class PersonaConfig(_Open):
             raise ValueError(f"a token budget must be >= 1 (got {v})")
         return v
 
+    @field_validator("leg_token_budget_override")
+    @classmethod
+    def _leg_budget_covers_a_call(cls, v: int | None) -> int | None:
+        # Every model call reserves RESERVE_PER_DISPATCH up front, so a smaller
+        # allotment passes the fan-out's affordability check and then fails
+        # every worker's first call with 702, after the plan call was paid for.
+        from cabal.core.llm.budget import RESERVE_PER_DISPATCH
+
+        if v is not None and v < RESERVE_PER_DISPATCH:
+            raise ValueError(
+                f"leg_token_budget_override must be at least {RESERVE_PER_DISPATCH} "
+                f"(got {v}): each model call reserves that much before it runs"
+            )
+        return v
+
     #: Extra keyword arguments passed through to `litellm.acompletion`, for
     #: provider- or model-specific knobs cabal has no first-class field for.
     #: Deliberately untyped and unvalidated: the set is defined by the provider,
