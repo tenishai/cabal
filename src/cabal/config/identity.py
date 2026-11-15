@@ -280,6 +280,23 @@ class PersonaConfig(_Open):
                 "as 1."
             )
         return v
+    #: Issue 394, for a primus. Tokens each fan-out leg (the reviewer too) may
+    #: spend, carved out of the fan-out's budget when the leg starts. Unset
+    #: means the token budget's default (200k).
+    leg_token_budget_override: int | None = None
+    #: Issue 394, for a primus. Tokens the whole fan-out may spend: the primus's
+    #: own plan and aggregate calls plus every leg. A fan-out that can't cover
+    #: every leg's allotment and one aggregate call is refused before any leg
+    #: starts. Unset means one default budget plus one allotment per leg.
+    fanout_token_budget_override: int | None = None
+
+    @field_validator("leg_token_budget_override", "fanout_token_budget_override")
+    @classmethod
+    def _token_budget_positive(cls, v: int | None) -> int | None:
+        if v is not None and v < 1:
+            raise ValueError(f"a token budget must be >= 1 (got {v})")
+        return v
+
     #: Extra keyword arguments passed through to `litellm.acompletion`, for
     #: provider- or model-specific knobs cabal has no first-class field for.
     #: Deliberately untyped and unvalidated: the set is defined by the provider,

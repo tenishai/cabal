@@ -48,6 +48,7 @@ from cabal.core.guardrails_builtin import (
     next_delegation_depth,
 )
 from cabal.core.hooks.registry import HookName, HookRegistry
+from cabal.core.llm.budget import BudgetExhaustedError, BudgetGuard
 from cabal.core.llm.litellm_client import LiteLLMClient, LLMTruncatedError
 
 log = structlog.get_logger(__name__)
@@ -170,6 +171,8 @@ class PrimusPersona(LLMPersona):
         max_legs: int = MAX_LEGS_PER_FANOUT,
         delegation_budget: DelegationBudgetGuardrail | None = None,
         delegation_depth: DelegationDepthGuardrail | None = None,
+        leg_token_budget: int | None = None,
+        fanout_token_budget: int | None = None,
     ) -> None:
         legs = [role for role in subordinates if role != "reviewer"]
         if not legs:
@@ -295,8 +298,44 @@ class PrimusPersona(LLMPersona):
         # delegation could not accumulate depth and the limit of 8 was
         # unreachable by accumulation.
         self._delegation_depth = delegation_depth
+        # Issue 394: token spend for the whole fan-out. Each leg (the reviewer
+        # too) gets `leg_token_budget` carved out of the root task's budget,
+        # which is `fanout_token_budget`. None means the guard's default per
+        # leg, and a root of one default for the primus's own calls plus one
+        # allotment per leg -- the most the old fresh-budget-per-leg code could
+        # spend, so the defaults bound today's behaviour without narrowing it.
+        self._leg_token_budget = leg_token_budget
+        self._fanout_token_budget = fanout_token_budget
+
+    def _token_budget(self) -> BudgetGuard | None:
+        return getattr(self.llm_client, "budget", None)
+
+    def _leg_allotment(self, budget: BudgetGuard) -> int:
+        return self._leg_token_budget or budget.default_budget
+
+    def _fanout_budget(self, budget: BudgetGuard) -> int:
+        if self._fanout_token_budget is not None:
+            return self._fanout_token_budget
+        return budget.default_budget + self._leg_allotment(budget) * len(self.subordinates)
 
     async def handle_task(self, task: Task) -> Task:
+        budget = self._token_budget()
+        if budget is not None and not budget.has_budget(task.id):
+            budget.set_budget(task.id, self._fanout_budget(budget))
+        try:
+            return await self._handle_fanout(task)
+        finally:
+            if budget is not None:
+                log.info(
+                    "primus.fanout_spend",
+                    persona=self.name,
+                    task_id=task.id,
+                    tokens=budget.spent(task.id),
+                    remaining=budget.remaining(task.id),
+                )
+                budget.reset(task.id)
+
+    async def _handle_fanout(self, task: Task) -> Task:
         # cabal#11 — the parent dispatch node (task.id) is registered by the
         # router; checks here cancel the primus's own pipeline between stages.
         self.abort_coordinator.raise_if_aborted(task.id)
@@ -344,6 +383,7 @@ class PrimusPersona(LLMPersona):
                     # (#156 r3 Nit).
                     "This is a configuration error; no plan can avoid it."
                 )
+            self._check_affordable(task, leg_roles)
             leg_outputs = await self._dispatch_legs(task, leg_roles, plan_text)
             reviewer_critique: str | None = None
             self.abort_coordinator.raise_if_aborted(task.id)
@@ -400,6 +440,31 @@ class PrimusPersona(LLMPersona):
         )
 
     # ---- internal pipeline -------------------------------------------------
+
+    def _check_affordable(self, task: Task, leg_roles: list[str]) -> None:
+        """Refuse the fan-out before any leg starts if the root can't cover every
+        leg's allotment and still keep one reservation for the aggregate (issue 394).
+
+        All or nothing, because a primus's legs are the roles its operator declared:
+        running some of them would drop declared work, which the breadth check in
+        __init__ refuses for the same reason.
+        """
+        budget = self._token_budget()
+        if budget is None:
+            return
+        needed = len(leg_roles) + (1 if "reviewer" in self.subordinates else 0)
+        allotment = self._leg_allotment(budget)
+        can = budget.affordable_legs(task.id, allotment, keep=budget.reserve_per_dispatch)
+        if can < needed:
+            raise _LegFailedError(
+                role="fan-out",
+                code=CODE_BUDGET_EXHAUSTED,
+                message=(
+                    f"{needed} workers at {allotment} tokens each need "
+                    f"{needed * allotment + budget.reserve_per_dispatch} with the "
+                    f"aggregate step; {budget.remaining(task.id)} left, enough for {can}"
+                ),
+            )
 
     async def _dispatch_legs(
         self, task: Task, roles: list[str], instruction: str
@@ -588,7 +653,7 @@ class PrimusPersona(LLMPersona):
                         # none to plan. That is the same noise the aggregate
                         # hop was deliberately spared, multiplied by the
                         # fan-out width. The primus keeps it; the legs do not.
-                        if k != BUDGET_KEY
+                        if k not in (BUDGET_KEY, "cabal_token_budget")
                     },
                     "cabal_parent_task": parent_task.id,
                     "cabal_subordinate_role": role,
@@ -745,6 +810,16 @@ class PrimusPersona(LLMPersona):
         # the parent reaches its in-flight LLM call. The primus calls
         # handle_task directly (bypassing the router), so the node must be
         # registered here.
+        # Issue 394: the leg's calls draw on an allotment carved from the root's
+        # budget, not on a fresh default budget under its own id.
+        budget = self._token_budget()
+        if budget is not None:
+            try:
+                budget.open_leg(sub_task.id, parent_task.id, self._leg_allotment(budget))
+            except BudgetExhaustedError as exc:
+                raise _LegFailedError(
+                    role=role, code=CODE_BUDGET_EXHAUSTED, message=str(exc)
+                ) from exc
         self.abort_coordinator.register(
             sub_task.id, parent_id=parent_task.id, kind=KIND_SUBORDINATE
         )
@@ -754,6 +829,14 @@ class PrimusPersona(LLMPersona):
             await self._fire(HookName.SUBORDINATE_RETURNED, response, role)
         finally:
             self.abort_coordinator.complete(sub_task.id)
+            if budget is not None:
+                log.info(
+                    "primus.leg_spend",
+                    persona=self.name,
+                    task_id=parent_task.id,
+                    role=role,
+                    tokens=budget.close_leg(sub_task.id),
+                )
 
         # A FAILED LEG IS NOT OUTPUT (cabal#134 review). This read the parts
         # without ever looking at the state, so a subordinate that failed —

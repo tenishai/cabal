@@ -98,6 +98,9 @@ class WrightPrimusPersona(PrimusPersona):
         # instance; a second instance would double a conversation's allowance.
         delegation_budget: DelegationBudgetGuardrail | None = None,
         delegation_depth: DelegationDepthGuardrail | None = None,
+        # Issue 394: a token budget per leg and for the whole fan-out.
+        leg_token_budget: int | None = None,
+        fanout_token_budget: int | None = None,
     ) -> None:
         super().__init__(
             llm_client,
@@ -113,4 +116,6 @@ class WrightPrimusPersona(PrimusPersona):
             max_legs=max_legs,
             delegation_budget=delegation_budget,
             delegation_depth=delegation_depth,
+            leg_token_budget=leg_token_budget,
+            fanout_token_budget=fanout_token_budget,
         )

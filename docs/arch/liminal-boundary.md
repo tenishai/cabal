@@ -2,7 +2,7 @@
 card: arch-card:cabal-liminal-boundary
 updated: 2026-10-26
 anchor: src/cabal/core/tools/mcp_proxy.py sha=4623908dbaddc1f2ba1688ddad9834fa73f1d5a1
-anchor: src/cabal/core/persona_factory.py sha=e1825f818414b99c8b2d60f46f21a6792230f534
+anchor: src/cabal/core/persona_factory.py sha=466a077cf4016055624a89187423dd74bcece0ed
 anchor: src/cabal/handlers/__init__.py sha=2e5f64bd92cf389a3ccaffb7bf7c44fdeef49580
 anchor: pyproject.toml sha=381f5746fd203c546daa2c4ec37900aafa42c4de
 ---

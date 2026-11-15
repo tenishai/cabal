@@ -158,6 +158,9 @@ def register_personas_from_identity(
                         if persona_cfg.max_legs_override is not None
                         else {}
                     ),
+                    # Issue 394: the fan-out's token budgets.
+                    leg_token_budget=persona_cfg.leg_token_budget_override,
+                    fanout_token_budget=persona_cfg.fanout_token_budget_override,
                 )
             except ValueError as exc:
                 log.error(
