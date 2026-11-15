@@ -290,6 +290,18 @@ safety_tier = "strict"
 #
 # Lowers only. A value above the module ceiling (8) is clamped to it and
 # logged. A value below 1 is refused outright when the config loads.
+#
+# leg_token_budget_override = 100000
+# fanout_token_budget_override = 300000
+#
+# TOKEN SPEND FOR THE FAN-OUT (issue 394). Each worker -- every leg AND the
+# reviewer, since both make model calls -- gets `leg_token_budget_override`
+# tokens, carved out of the fan-out's budget when it starts and returned
+# unused when it ends. `fanout_token_budget_override` is the ceiling for
+# the whole fan-out: the primus's plan and aggregate calls plus every
+# worker. If it can't cover every worker and one aggregate call, the
+# fan-out is refused before any worker starts. Unset: 200000 per worker,
+# and a fan-out of 200000 plus one allotment per worker.
 
 [personas.mason.subordinates.implementer]
 model = "anthropic/claude-sonnet-4-6"
