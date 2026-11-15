@@ -301,7 +301,9 @@ safety_tier = "strict"
 # the whole fan-out: the primus's plan and aggregate calls plus every
 # worker. If it can't cover every worker and one aggregate call, the
 # fan-out is refused before any worker starts. Unset: 200000 per worker,
-# and a fan-out of 200000 plus one allotment per worker.
+# and a fan-out of 200000 plus one allotment per worker. A worker's
+# allotment must be at least 50000, the amount each model call reserves
+# before it runs; a smaller one is refused when the config loads.
 
 [personas.mason.subordinates.implementer]
 model = "anthropic/claude-sonnet-4-6"

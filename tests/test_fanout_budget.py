@@ -282,3 +282,15 @@ def test_identity_refuses_a_non_positive_token_budget() -> None:
         PersonaConfig(role="primus", leg_token_budget_override=0)
     with pytest.raises(ValidationError):
         PersonaConfig(role="primus", fanout_token_budget_override=-5)
+
+
+def test_identity_refuses_an_allotment_below_one_call_reservation() -> None:
+    from pydantic import ValidationError
+
+    from cabal.config.identity import PersonaConfig
+    from cabal.core.llm.budget import RESERVE_PER_DISPATCH
+
+    with pytest.raises(ValidationError, match="at least"):
+        PersonaConfig(role="primus", leg_token_budget_override=RESERVE_PER_DISPATCH - 1)
+    ok = PersonaConfig(role="primus", leg_token_budget_override=RESERVE_PER_DISPATCH)
+    assert ok.leg_token_budget_override == RESERVE_PER_DISPATCH
