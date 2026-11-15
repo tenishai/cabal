@@ -13,7 +13,17 @@ from fastapi import FastAPI
 from cabal.config.identity import ReviewConfig, ReviewRepoConfig
 from cabal.core import reviews as store
 from cabal.core.db import open_session
-from cabal.core.review_engine import CheckRun, OpenPull, Review, ReviewEngine, ci_state
+from cabal.core.review_engine import (
+    COMPARE_FILE_CAP,
+    BaseChanges,
+    CheckRun,
+    GitHubREST,
+    OpenPull,
+    Review,
+    ReviewEngine,
+    base_overlap,
+    ci_state,
+)
 from tests.test_review_engine import _drive, _prepare
 
 SHA = "4cc6d008c35e6f21f8fb58140c17350bfa22ca1d"
@@ -37,6 +47,8 @@ class MergeGitHub:
         self.ci_reads = 0
         self.merges: list[tuple[str, int, str, str]] = []
         self.review_list = [Review("prudence-tenishai", "APPROVED", SHA, 7, "2026-11-13T12:00:00Z")] if approve else []
+        self.changes: BaseChanges | Exception = BaseChanges("main", 0, frozenset(), True)
+        self.files = frozenset({"src/app.py", "tests/test_app.py"})
 
     async def head_sha(self, repo: str, pr: int) -> str:
         return SHA
@@ -58,6 +70,14 @@ class MergeGitHub:
 
     async def merged_as(self, repo: str, pr: int, sha: str) -> str | None:
         return self.already
+
+    async def base_changes(self, repo: str, pr: int, sha: str) -> BaseChanges:
+        if isinstance(self.changes, Exception):
+            raise self.changes
+        return self.changes
+
+    async def pr_files(self, repo: str, pr: int) -> frozenset[str]:
+        return self.files
 
     async def merge(self, repo: str, pr: int, sha: str, method: str) -> str:
         if self.merge_error is not None:
@@ -498,3 +518,97 @@ async def test_a_lost_reply_before_the_timeout_is_retried_not_checked(app: FastA
     run_id = await _merging(app)
     await engine.tick()
     assert (await _run(app, run_id))["state"] == "merging"
+
+
+# ---- the base moved (agents issue 167) -------------------------------------------------
+
+
+def test_base_overlap() -> None:
+    pr = frozenset({"src/app.py", "README.md"})
+    assert base_overlap(BaseChanges("main", 0, frozenset(), True), pr) is None
+    assert base_overlap(BaseChanges("main", 3, frozenset({"docs/x.md"}), True), pr) is None
+    why = base_overlap(BaseChanges("main", 3, frozenset({"src/app.py", "docs/x.md"}), True), pr)
+    assert why == "main moved since the merge-base (3 commits) and touches src/app.py; update the branch"
+    cut = base_overlap(BaseChanges("main", 400, frozenset({"docs/x.md"}), False), pr)
+    assert cut is not None and "can't be ruled out" in cut
+    many = frozenset(f"f{i}" for i in range(7))
+    assert base_overlap(BaseChanges("main", 1, many, True), many).endswith("f4 and 2 more; update the branch")
+
+
+async def test_a_base_that_touched_the_prs_files_is_not_merged(app: FastAPI) -> None:
+    gh = MergeGitHub()
+    gh.changes = BaseChanges("main", 2, frozenset({"src/app.py"}), True)
+    engine = _engine(app, gh)
+    run_id = await _merging(app)
+    await engine.tick()
+    body = await _run(app, run_id)
+    assert body["state"] == "unmerged" and "touches src/app.py" in body["reason"]
+    assert gh.merges == []
+
+
+async def test_a_base_that_moved_elsewhere_still_merges(app: FastAPI) -> None:
+    gh = MergeGitHub()
+    gh.changes = BaseChanges("main", 2, frozenset({"docs/other.md"}), True)
+    engine = _engine(app, gh)
+    run_id = await _merging(app)
+    await engine.tick()
+    assert (await _run(app, run_id))["state"] == "merged"
+    assert gh.merges == [(REPO, 139, SHA, "squash")]
+
+
+async def test_an_unreadable_base_waits_then_refuses_on_a_hard_error(app: FastAPI) -> None:
+    gh = MergeGitHub()
+    gh.changes = httpx.ConnectError("down")
+    engine = _engine(app, gh)
+    run_id = await _merging(app)
+    await engine.tick()
+    assert (await _run(app, run_id))["state"] == "merging" and gh.merges == []
+    gh.changes = _error(404)
+    await engine.tick()
+    body = await _run(app, run_id)
+    assert body["state"] == "unmerged" and body["reason"] == "the base's changes unreadable: HTTP 404"
+    assert gh.merges == []
+
+
+async def test_rest_base_changes_and_pr_files() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        path = request.url.path
+        if path == "/repos/o/r/pulls/5":
+            return httpx.Response(200, json={"base": {"ref": "release/1.x"}, "head": {"sha": SHA}})
+        if path == f"/repos/o/r/compare/{SHA}...release/1.x":
+            files = [{"filename": "a.py"}, {"filename": "b.py", "previous_filename": "old_b.py"}]
+            return httpx.Response(200, json={"ahead_by": 2, "files": files})
+        if path == "/repos/o/r/pulls/5/files":
+            page = int(request.url.params["page"])
+            batch = [{"filename": f"p{page}-{i}.py"} for i in range(100)]
+            return httpx.Response(200, json=batch if page == 1 else [{"filename": "c.py", "previous_filename": "old_b.py"}])
+        return httpx.Response(500)
+
+    gh = GitHubREST("https://api.example/", "t0k", transport=httpx.MockTransport(handler))
+    try:
+        changes = await gh.base_changes("o/r", 5, SHA)
+        files = await gh.pr_files("o/r", 5)
+    finally:
+        await gh.aclose()
+    assert changes == BaseChanges("release/1.x", 2, frozenset({"a.py", "b.py", "old_b.py"}), True)
+    assert len(files) == 102 and {"c.py", "old_b.py"} <= files
+    # A rename on one side and an edit of the old path on the other still overlap.
+    assert base_overlap(changes, files) is not None
+
+
+async def test_rest_marks_a_capped_compare_incomplete() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/5"):
+            return httpx.Response(200, json={"base": {"ref": "main"}})
+        files = [{"filename": f"f{i}"} for i in range(COMPARE_FILE_CAP)]
+        return httpx.Response(200, json={"ahead_by": 900, "files": files})
+
+    gh = GitHubREST("https://api.example/", None, transport=httpx.MockTransport(handler))
+    try:
+        changes = await gh.base_changes("o/r", 5, SHA)
+    finally:
+        await gh.aclose()
+    assert changes.complete is False and changes.ahead == 900

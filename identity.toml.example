@@ -365,6 +365,9 @@ max_tokens = 16384
 # ci_timeout_s = 3600            # the merge gate's wait for green CI, from approval
 # [review.repos."tenishai/techne-next"]
 # merge = true                   # approved runs merge once CI is green, pinned to the sha (default false)
+#                                # It refuses when the base branch has changed, since the merge-base,
+#                                # a file the PR changes; update the branch and review again. Paths
+#                                # only: a base change to a file the PR merely depends on passes.
 # ci = "github"                  # every check run and commit status green; "none" skips the wait
 #                                # The gate sees only checks that have reported: it can't tell a
 #                                # required check that hasn't started yet (a chained workflow_run)
