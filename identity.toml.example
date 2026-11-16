@@ -359,7 +359,10 @@ max_tokens = 16384
 # cleanup_command = ["rm", "-rf", "{workspace}"]
 # notify_command = ["/path/to/notify-review.sh"]   # gets the run as JSON on stdin
 # github_token_env = "CABAL_GITHUB_TOKEN"          # read PRs, reviews and CI; remove labels; merge
+#                                # The token's account needs write on every watched repo: with
+#                                # read it can't see roles (every labeller reads as none) or remove labels.
 # label = "ready-for-review"     # a PR carrying it in a watched repo is reviewed at its head
+#                                # unless GitHub says it conflicts with its base: then the label comes off.
 # label_min_role = "write"      # least role whose label counts (triage can label on GitHub)
 # watch_poll_seconds = 300
 # ci_timeout_s = 3600            # the merge gate's wait for green CI, from approval

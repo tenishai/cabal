@@ -15,6 +15,7 @@ from cabal.core import reviews as store
 from cabal.core.db import open_session
 from cabal.core.review_engine import (
     COMPARE_FILE_CAP,
+    PR_FILE_CAP,
     BaseChanges,
     CheckRun,
     GitHubREST,
@@ -49,6 +50,7 @@ class MergeGitHub:
         self.review_list = [Review("prudence-tenishai", "APPROVED", SHA, 7, "2026-11-13T12:00:00Z")] if approve else []
         self.changes: BaseChanges | Exception = BaseChanges("main", 0, frozenset(), True)
         self.files = frozenset({"src/app.py", "tests/test_app.py"})
+        self.files_complete = True
 
     async def head_sha(self, repo: str, pr: int) -> str:
         return SHA
@@ -76,8 +78,8 @@ class MergeGitHub:
             raise self.changes
         return self.changes
 
-    async def pr_files(self, repo: str, pr: int) -> frozenset[str]:
-        return self.files
+    async def pr_files(self, repo: str, pr: int) -> tuple[frozenset[str], bool]:
+        return self.files, self.files_complete
 
     async def merge(self, repo: str, pr: int, sha: str, method: str) -> str:
         if self.merge_error is not None:
@@ -590,11 +592,11 @@ async def test_rest_base_changes_and_pr_files() -> None:
     gh = GitHubREST("https://api.example/", "t0k", transport=httpx.MockTransport(handler))
     try:
         changes = await gh.base_changes("o/r", 5, SHA)
-        files = await gh.pr_files("o/r", 5)
+        files, complete = await gh.pr_files("o/r", 5)
     finally:
         await gh.aclose()
     assert changes == BaseChanges("release/1.x", 2, frozenset({"a.py", "b.py", "old_b.py"}), True)
-    assert len(files) == 102 and {"c.py", "old_b.py"} <= files
+    assert len(files) == 102 and {"c.py", "old_b.py"} <= files and complete
     # A rename on one side and an edit of the old path on the other still overlap.
     assert base_overlap(changes, files) is not None
 
@@ -612,3 +614,55 @@ async def test_rest_marks_a_capped_compare_incomplete() -> None:
     finally:
         await gh.aclose()
     assert changes.complete is False and changes.ahead == 900
+
+
+def test_base_overlap_refuses_when_the_prs_file_list_is_cut_short() -> None:
+    changes = BaseChanges("main", 2, frozenset({"docs/x.md"}), True)
+    why = base_overlap(changes, frozenset({"src/app.py"}), False)
+    assert why is not None and f"only {PR_FILE_CAP} of the PR's files" in why
+    # Nothing new on the base: a long PR file list doesn't matter.
+    assert base_overlap(BaseChanges("main", 0, frozenset(), True), frozenset({"a"}), False) is None
+    # A hit among the files it did list is still reported as a hit.
+    hit = base_overlap(BaseChanges("main", 1, frozenset({"a"}), True), frozenset({"a"}), False)
+    assert hit is not None and "touches a" in hit
+
+
+async def test_a_cut_short_pr_file_list_is_not_merged(app: FastAPI) -> None:
+    gh = MergeGitHub()
+    gh.changes = BaseChanges("main", 2, frozenset({"docs/other.md"}), True)
+    gh.files_complete = False
+    engine = _engine(app, gh)
+    run_id = await _merging(app)
+    await engine.tick()
+    body = await _run(app, run_id)
+    assert body["state"] == "unmerged" and "can't be ruled out" in body["reason"]
+    assert gh.merges == []
+
+
+async def test_rest_pr_files_stops_at_githubs_cap() -> None:
+    pages: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        pages.append(page)
+        return httpx.Response(200, json=[{"filename": f"p{page}-{i}"} for i in range(100)])
+
+    gh = GitHubREST("https://api.example/", None, transport=httpx.MockTransport(handler))
+    try:
+        files, complete = await gh.pr_files("o/r", 5)
+    finally:
+        await gh.aclose()
+    assert len(files) == PR_FILE_CAP and complete is False and pages[-1] == PR_FILE_CAP // 100
+
+
+async def test_rest_mergeable() -> None:
+    answers = iter([None, False, True])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"mergeable": next(answers)})
+
+    gh = GitHubREST("https://api.example/", None, transport=httpx.MockTransport(handler))
+    try:
+        assert [await gh.mergeable("o/r", 5) for _ in range(3)] == [None, False, True]
+    finally:
+        await gh.aclose()
