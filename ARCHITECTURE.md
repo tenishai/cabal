@@ -2,7 +2,7 @@
 card: repo-card:cabal
 updated: 2026-11-13
 anchor: pyproject.toml sha=381f5746fd203c546daa2c4ec37900aafa42c4de
-anchor: src/cabal/core/app.py sha=ba302cc3e4b897e55715be8cf65bd0c8c2fc6ca8
+anchor: src/cabal/core/app.py sha=af7da80d21cd85c84c26dec71991d68825ad307b
 ---
 # cabal — repo card
 

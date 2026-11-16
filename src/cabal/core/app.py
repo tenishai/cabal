@@ -860,8 +860,10 @@ def create_app(
         _app.state.meter = None
         meter_cfg = identity.meter if identity is not None else None
         if meter_cfg is not None and meter_cfg.enabled:
-            from cabal.core.meter import Meter
+            from cabal.core.meter import Meter, install_access_log_filter
 
+            # The key is in the URL path; keep it out of the access log.
+            install_access_log_filter()
             _app.state.meter = Meter(meter_cfg, dispatch_router.running, sessionmaker)
             log.info(
                 "meter.enabled",

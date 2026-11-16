@@ -339,3 +339,54 @@ async def test_upstream_down_is_502(metered) -> None:
     app.state.meter.client = httpx.AsyncClient(transport=httpx.MockTransport(boom))
     r = await _call(c)
     assert r.status_code == 502
+
+
+@pytest.mark.parametrize("metered", [{"task_budget": 10, "root_budget": 100}], indirect=True)
+@pytest.mark.parametrize("leg_first", [True, False])
+async def test_a_metered_root_keeps_the_root_budget(metered, leg_first) -> None:
+    """Prudence on PR 442: a root running on a metered agent must draw on root_budget,
+    in either call order, not have it replaced by a task_budget."""
+    app, c, upstream = metered
+    upstream.usage = {"input_tokens": 1, "output_tokens": 1}
+    _run(app, "root-1", "wright1")
+    _run(app, "leg-1", "wright2", caller="agent:wright1")
+    order = [KEY2, KEY] if leg_first else [KEY, KEY2]
+    for key in order:
+        assert (await _call(c, key)).status_code == 200
+        await _settled(app)
+    budget = app.state.meter.budget
+    # 100 - 10 carved for the leg - 2 the root spent itself.
+    assert budget.remaining("root-1") == 88
+    assert budget.remaining("leg-1") == 8
+
+
+def test_access_log_hides_the_key() -> None:
+    import logging
+
+    from cabal.core.meter import MeterKeyFilter, redact_meter_key
+
+    assert (
+        redact_meter_key("/meter/abc-123/v1/messages?beta=true")
+        == "/meter/<key>/v1/messages?beta=true"
+    )
+    assert redact_meter_key("/agents/x/a2a") == "/agents/x/a2a"
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:1", "POST", "/meter/SECRET-KEY/v1/messages", "1.1", 200),
+        None,
+    )
+    assert MeterKeyFilter().filter(record)
+    assert "SECRET-KEY" not in record.getMessage()
+    assert "/meter/<key>/v1/messages" in record.getMessage()
+
+
+async def test_meter_app_filters_the_access_log(metered) -> None:
+    import logging
+
+    from cabal.core.meter import MeterKeyFilter
+
+    assert any(isinstance(f, MeterKeyFilter) for f in logging.getLogger("uvicorn.access").filters)

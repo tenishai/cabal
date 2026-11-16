@@ -27,7 +27,12 @@ runs nothing is counted as `unattributed`.
 
 With `task_budget` set, a task whose budget is spent has its calls refused with
 a 400 `invalid_request_error`: measured on Claude Code 2.1.325, a 400 stops it at
-once, while 429 and 5xx are retried for about three minutes.
+once, while 429 and 5xx are retried for about three minutes. The check is made
+before a call and the spend settled when its response ends, so calls a task
+makes at the same time can each overrun the budget by up to one call.
+
+The key travels in the URL path, so `install_access_log_filter` redacts it from
+uvicorn's access log; identity.toml keeps only its SHA-256.
 
 Declared state, in the shape cabal issue 260 asks for:
     what: per-task budgets (an own BudgetGuard, in memory) and `meter_spend` rows
@@ -41,6 +46,8 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
+import re
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -88,6 +95,32 @@ _HOP = frozenset(
 _JSON_CAP = 16 * 1024 * 1024
 #: How far up the running list a root is looked for.
 _ROOT_DEPTH = 16
+
+
+_METER_PATH = re.compile(r"(/meter/)[^/?\s]+")
+
+
+def redact_meter_key(path: str) -> str:
+    """`/meter/<key>/...` with the key replaced, for anything that logs a path."""
+    return _METER_PATH.sub(r"\1<key>", path)
+
+
+class MeterKeyFilter(logging.Filter):
+    """Redacts meter keys from uvicorn's access log lines, whose args are
+    (client, method, path, http_version, status)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            record.args = (*args[:2], redact_meter_key(args[2]), *args[3:])
+        return True
+
+
+def install_access_log_filter() -> None:
+    """Add MeterKeyFilter to uvicorn's access logger, once."""
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, MeterKeyFilter) for f in access.filters):
+        access.addFilter(MeterKeyFilter())
 
 
 def key_sha256(key: str) -> str:
@@ -322,11 +355,15 @@ class Meter:
     def _open_budget(self, task: str, root: str) -> None:
         allotment = self.config.task_budget
         assert allotment is not None
-        if root != task and self.config.root_budget is not None:
+        if self.config.root_budget is not None:
+            # The root's budget is set once, by whichever of its tasks calls first,
+            # and kept after: a metered root's own calls draw on it too (part 1's
+            # `affordable_legs(keep=)`), never on a task_budget of their own.
             if not self.budget.has_budget(root):
                 self.budget.set_budget(root, self.config.root_budget)
                 self._roots.add(root)
-            self.budget.open_leg(task, root, allotment)
+            if root != task:
+                self.budget.open_leg(task, root, allotment)
         else:
             self.budget.set_budget(task, allotment)
         self._open[task] = root
