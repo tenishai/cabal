@@ -28,8 +28,9 @@ runs nothing is counted as `unattributed`.
 With `task_budget` set, a task whose budget is spent has its calls refused with
 a 400 `invalid_request_error`: measured on Claude Code 2.1.325, a 400 stops it at
 once, while 429 and 5xx are retried for about three minutes. The check is made
-before a call and the spend settled when its response ends, so calls a task
-makes at the same time can each overrun the budget by up to one call.
+before a call and the spend settled when its response ends, so it is not a hard
+cap: every call in flight when the budget runs out was already admitted, and the
+task can overrun by what all of those calls spend.
 
 The key travels in the URL path, so `install_access_log_filter` redacts it from
 uvicorn's access log; identity.toml keeps only its SHA-256.
