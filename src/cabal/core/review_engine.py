@@ -107,6 +107,16 @@ class TimelineEvent:
 
 
 @dataclass(frozen=True)
+class BaseChanges:
+    """What the base branch gained since the PR's merge-base."""
+
+    ref: str
+    ahead: int  # commits on the base that the head lacks
+    files: frozenset[str]
+    complete: bool  # False when GitHub cut the file list short
+
+
+@dataclass(frozen=True)
 class CheckRun:
     name: str
     status: str  # queued, in_progress, completed
@@ -124,6 +134,8 @@ class GitHub(Protocol):
     async def ci(self, repo: str, sha: str) -> tuple[list[CheckRun], list[tuple[str, str]]]: ...
     async def merge(self, repo: str, pr: int, sha: str, method: str) -> str: ...
     async def merged_as(self, repo: str, pr: int, sha: str) -> str | None: ...
+    async def pr_files(self, repo: str, pr: int) -> frozenset[str]: ...
+    async def base_changes(self, repo: str, pr: int, sha: str) -> BaseChanges: ...
 
 
 class GitHubREST:
@@ -248,6 +260,35 @@ class GitHubREST:
             return str(body.get("merge_commit_sha") or "")
         return None
 
+    async def pr_files(self, repo: str, pr: int) -> frozenset[str]:
+        """The paths the PR changes, a rename's old path included."""
+        out: set[str] = set()
+        page = 1
+        while True:
+            resp = await self._client.get(f"/repos/{repo}/pulls/{pr}/files", params={"per_page": 100, "page": page})
+            resp.raise_for_status()
+            batch = resp.json()
+            out |= _paths(batch)
+            if len(batch) < 100:
+                return frozenset(out)
+            page += 1
+
+    async def base_changes(self, repo: str, pr: int, sha: str) -> BaseChanges:
+        """The base branch's commits and files since its merge-base with `sha`."""
+        resp = await self._client.get(f"/repos/{repo}/pulls/{pr}")
+        resp.raise_for_status()
+        ref = str(resp.json()["base"]["ref"])
+        resp = await self._client.get(f"/repos/{repo}/compare/{sha}...{quote(ref, safe='/')}")
+        resp.raise_for_status()
+        body = resp.json()
+        files = body.get("files") or []
+        return BaseChanges(
+            ref=ref,
+            ahead=int(body.get("ahead_by") or 0),
+            files=frozenset(_paths(files)),
+            complete=len(files) < COMPARE_FILE_CAP,
+        )
+
     async def reviews(self, repo: str, pr: int) -> list[Review]:
         out: list[Review] = []
         page = 1
@@ -270,6 +311,40 @@ class GitHubREST:
             if len(batch) < 100:
                 return out
             page += 1
+
+
+# GitHub's compare endpoint lists at most this many files.
+COMPARE_FILE_CAP = 300
+
+
+def _paths(files: list[dict[str, Any]]) -> set[str]:
+    out: set[str] = set()
+    for f in files:
+        out.add(str(f.get("filename", "")))
+        if f.get("previous_filename"):
+            out.add(str(f["previous_filename"]))
+    out.discard("")
+    return out
+
+
+def base_overlap(changes: BaseChanges, pr_files: frozenset[str]) -> str | None:
+    """Why the base has moved under the PR, or None if it hasn't in a way that matters.
+
+    The approval covers the PR's files as they stood at its merge-base. A base
+    commit since then that touches one of them makes a tree nobody reviewed.
+    Path overlap only: a base change to another file the PR depends on passes."""
+    if changes.ahead == 0:
+        return None
+    if not changes.complete:
+        return (
+            f"{changes.ref} has {changes.ahead} commits since the merge-base and GitHub lists only "
+            f"{COMPARE_FILE_CAP} of their files, so overlap with the PR can't be ruled out; update the branch"
+        )
+    hit = sorted(changes.files & pr_files)
+    if not hit:
+        return None
+    shown = ", ".join(hit[:5]) + (f" and {len(hit) - 5} more" if len(hit) > 5 else "")
+    return f"{changes.ref} moved since the merge-base ({changes.ahead} commits) and touches {shown}; update the branch"
 
 
 def _is_fork(p: dict[str, Any]) -> bool:
@@ -975,6 +1050,17 @@ class ReviewEngine:
         blocked = approval_blocked(reviews, approvers, sha)
         if blocked is not None:
             await self._end_merge(run_id, "unmerged", blocked[:300])
+            return
+        # The merge is pinned to the head, not the base. If the base has since
+        # changed a file the PR changes, the merged tree is one nobody reviewed
+        # (agents issue 167).
+        try:
+            moved = base_overlap(await self._gh.base_changes(repo, pr, sha), await self._gh.pr_files(repo, pr))
+        except Exception as exc:  # noqa: BLE001 -- sorted by _gate_unreadable
+            await self._gate_unreadable(run_id, exc, "the base's changes", waited, late)
+            return
+        if moved is not None:
+            await self._end_merge(run_id, "unmerged", moved[:300])
             return
         # Claim the run before merging: a cancel that landed during the reads
         # has moved it off `merging`, and wins. (updated_at stays: it times the wait.)
