@@ -105,6 +105,7 @@ from cabal.core.routes import (
     auth,
     directory,
     healthz,
+    meter,
     reviews,
     tasks,
     well_known,
@@ -855,6 +856,20 @@ def create_app(
             )
             await _app.state.review_engine.start()
 
+        # The token meter (issue 394, part 2): only when [meter] enabled is set.
+        _app.state.meter = None
+        meter_cfg = identity.meter if identity is not None else None
+        if meter_cfg is not None and meter_cfg.enabled:
+            from cabal.core.meter import Meter
+
+            _app.state.meter = Meter(meter_cfg, dispatch_router.running, sessionmaker)
+            log.info(
+                "meter.enabled",
+                agents=sorted(meter_cfg.agents),
+                task_budget=meter_cfg.task_budget,
+                root_budget=meter_cfg.root_budget,
+            )
+
         heartbeat = HeartbeatScheduler(sessionmaker)
         heartbeat.watch(registered_persona_names)
         await heartbeat.start()
@@ -874,6 +889,8 @@ def create_app(
             if review_github is not None:
                 await review_github.aclose()
             await _app.state.detached.drain(cabal_cfg.detached_drain_seconds)
+            if _app.state.meter is not None:
+                await _app.state.meter.aclose()
             await heartbeat.stop()
             await http_client.aclose()
             mcp_client = getattr(_app.state, "mcp_http_client", None)
@@ -904,6 +921,7 @@ def create_app(
     app.include_router(admin.router)
     app.include_router(reviews.router)
     app.include_router(directory.router)
+    app.include_router(meter.router)
     app.include_router(a2a_jsonrpc.router)
     app.include_router(a2a_v1.router)
 

@@ -411,3 +411,42 @@ class ReviewStep(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     run: Mapped[ReviewRun] = relationship(back_populates="steps")
+
+
+# ---------- meter_spend -------------------------------------------------------
+
+
+class MeterSpend(Base):
+    """What the token meter measured for one task on a metered agent (cabal
+    issue 394, part 2). `kind` is `task` for calls made while the agent ran
+    exactly one task, `unattributed` while it ran none, and `ambiguous` while it
+    ran several; those two keep one row per agent with `task_id` empty.
+    `reported` is the agent's own usage report, when it sends one, kept next to
+    the measured numbers so the two can be compared.
+    """
+
+    __tablename__ = "meter_spend"
+    __table_args__ = (
+        UniqueConstraint("agent", "kind", "task_id", name="uq_meter_spend_task"),
+        Index("ix_meter_spend_root", "root_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    agent: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    task_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    root_id: Mapped[str | None] = mapped_column(String)
+    calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    refused_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reported: Mapped[dict | None] = mapped_column(JSON)
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )

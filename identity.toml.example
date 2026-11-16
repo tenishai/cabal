@@ -343,6 +343,23 @@ max_tokens = 16384
 # [groups]
 # wright = ["wright-secundus", "wright-tertius", "wright-quartus"]
 
+# The token meter (cabal issue 394, part 2). Off unless enabled. A metered agent's
+# model base URL is <cabal>/meter/<key> (ergon sets ANTHROPIC_BASE_URL or
+# ERGON_MODEL_API_BASE when the set file says `[cabal] meter = true`, and writes
+# this section). Each call is forwarded to `upstream` unchanged: the caller's own
+# Authorization goes through, and cabal never stores or swaps a credential. The
+# usage on the response is charged to the task the agent is running. Only input +
+# output tokens count against a budget; cache tokens are recorded, not charged.
+# Rows are in the `meter_spend` table. An agent running two tasks at once can't
+# have a call pinned to either; such calls are counted as `ambiguous`.
+# [meter]
+# enabled = true
+# task_budget = 2000000   # per task; unset = measure only. Over it: a 400.
+# root_budget = 8000000   # all metered tasks under one root; needs task_budget
+# [meter.agents.wright-secundus]
+# key_sha256 = "<sha256 of the key in the agent's base URL>"
+# upstream = "https://api.anthropic.com"
+
 # The review workflow (cabal issue 399). Off unless enabled. Queue a run with
 # `cbl review start <owner/repo> <pr> --sha <sha>`; the engine takes it through the
 # seats in order, reading each seat's outcome itself, never its exit code.

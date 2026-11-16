@@ -30,6 +30,7 @@ Declared state, in the shape cabal issue 260 asks for:
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -72,6 +73,9 @@ def _subject_agents(sub: str | None) -> set[str]:
 class RunningTasks:
     _tasks: dict[str, RunningTask] = field(default_factory=dict)
     _drain: _Drain | None = None
+    #: Called with each task as it leaves the list (the token meter closes the
+    #: task's budget, cabal issue 394). A listener that raises is logged and skipped.
+    on_remove: list[Callable[[RunningTask], None]] = field(default_factory=list)
 
     # -- tasks -----------------------------------------------------------
 
@@ -86,8 +90,15 @@ class RunningTasks:
         (PR 407 round 3)."""
         if entry is not None and self._tasks.get(task_id) is not entry:
             return
-        if self._tasks.pop(task_id, None) is not None:
-            log.debug("running.remove", task_id=task_id, running=len(self._tasks))
+        removed = self._tasks.pop(task_id, None)
+        if removed is None:
+            return
+        log.debug("running.remove", task_id=task_id, running=len(self._tasks))
+        for listener in self.on_remove:
+            try:
+                listener(removed)
+            except Exception:
+                log.exception("running.on_remove_failed", task_id=task_id)
 
     def get(self, task_id: str) -> RunningTask | None:
         return self._tasks.get(task_id)

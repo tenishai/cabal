@@ -31,6 +31,7 @@ log = structlog.get_logger(__name__)
 KNOWN_TOP_LEVEL = {
     "cabal",
     "groups",
+    "meter",
     "review",
     "personas",
     "litellm",
@@ -679,6 +680,41 @@ class ReviewConfig(_Open):
     ci_timeout_s: float = Field(default=3600.0, gt=0)
 
 
+class MeterAgentConfig(_Open):
+    """One metered agent: `[meter.agents.<name>]`. The agent calls
+    `<cabal>/meter/<key>/...` and cabal forwards to `upstream`. Only the key's
+    SHA-256 is kept here, so this file never holds a usable key."""
+
+    key_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    upstream: str = Field(pattern=r"^https?://")
+
+
+class MeterConfig(_Open):
+    """The token meter for federated agents (cabal issue 394, part 2): `[meter]`.
+
+    Off unless `enabled`. A metered agent's model calls pass through cabal, which
+    reads the usage on each response and charges it to the task the agent is
+    running. Only input and output tokens count against a budget; cache tokens
+    are recorded and never charged (Rich, 2026-11-16). With no `task_budget` the
+    meter only measures.
+    """
+
+    enabled: bool = False
+    # Tokens (input + output) one task on a metered agent may spend. Unset: no limit.
+    task_budget: int | None = Field(default=None, gt=0)
+    # Tokens all the metered tasks under one root task may spend together. Each
+    # task's `task_budget` is carved out of it when the task makes its first call,
+    # so a root that can't cover another task refuses it. Needs `task_budget`.
+    root_budget: int | None = Field(default=None, gt=0)
+    agents: dict[str, MeterAgentConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _root_needs_task(self) -> MeterConfig:
+        if self.root_budget is not None and self.task_budget is None:
+            raise ValueError("meter.root_budget needs meter.task_budget")
+        return self
+
+
 class IdentityConfig(_Open):
     cabal: CabalConfig = Field(default_factory=CabalConfig)
     personas: dict[str, PersonaConfig] = Field(default_factory=dict)
@@ -693,6 +729,7 @@ class IdentityConfig(_Open):
     # goes to them when several are idle. A task sent to a group starts on
     # the first member with nothing running.
     groups: dict[str, list[str]] = Field(default_factory=dict)
+    meter: MeterConfig = Field(default_factory=MeterConfig)
 
 
 def load_identity(path: str | Path) -> IdentityConfig:
