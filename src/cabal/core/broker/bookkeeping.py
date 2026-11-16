@@ -156,8 +156,11 @@ class Bookkeeper:
                     },
                 )
             )
+        # A group task is addressed through a member, but runs on whichever member
+        # is idle when it starts (schedule.started names that one), so log the group.
         log.info(
-            "dispatch.scheduled", task_id=task.id, target=target.name, group=target_group,
+            "dispatch.scheduled", task_id=task.id,
+            target=f"group:{target_group}" if target_group else target.name, group=target_group,
             not_before=not_before.isoformat(),
         )
 

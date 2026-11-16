@@ -134,7 +134,8 @@ class GitHub(Protocol):
     async def ci(self, repo: str, sha: str) -> tuple[list[CheckRun], list[tuple[str, str]]]: ...
     async def merge(self, repo: str, pr: int, sha: str, method: str) -> str: ...
     async def merged_as(self, repo: str, pr: int, sha: str) -> str | None: ...
-    async def pr_files(self, repo: str, pr: int) -> frozenset[str]: ...
+    async def pr_files(self, repo: str, pr: int) -> tuple[frozenset[str], bool]: ...
+    async def mergeable(self, repo: str, pr: int) -> bool | None: ...
     async def base_changes(self, repo: str, pr: int, sha: str) -> BaseChanges: ...
 
 
@@ -260,18 +261,29 @@ class GitHubREST:
             return str(body.get("merge_commit_sha") or "")
         return None
 
-    async def pr_files(self, repo: str, pr: int) -> frozenset[str]:
-        """The paths the PR changes, a rename's old path included."""
+    async def pr_files(self, repo: str, pr: int) -> tuple[frozenset[str], bool]:
+        """The paths the PR changes, a rename's old path included, and whether
+        that is all of them: GitHub lists at most PR_FILE_CAP files."""
         out: set[str] = set()
+        listed = 0
         page = 1
         while True:
             resp = await self._client.get(f"/repos/{repo}/pulls/{pr}/files", params={"per_page": 100, "page": page})
             resp.raise_for_status()
             batch = resp.json()
             out |= _paths(batch)
-            if len(batch) < 100:
-                return frozenset(out)
+            listed += len(batch)
+            if len(batch) < 100 or listed >= PR_FILE_CAP:
+                return frozenset(out), listed < PR_FILE_CAP
             page += 1
+
+    async def mergeable(self, repo: str, pr: int) -> bool | None:
+        """False if the PR conflicts with its base. None while GitHub is still
+        working it out, which it does the first time anyone asks."""
+        resp = await self._client.get(f"/repos/{repo}/pulls/{pr}")
+        resp.raise_for_status()
+        value = resp.json().get("mergeable")
+        return None if value is None else bool(value)
 
     async def base_changes(self, repo: str, pr: int, sha: str) -> BaseChanges:
         """The base branch's commits and files since its merge-base with `sha`."""
@@ -313,8 +325,10 @@ class GitHubREST:
             page += 1
 
 
-# GitHub's compare endpoint lists at most this many files.
+# GitHub's compare endpoint lists at most this many files, and a PR's files
+# endpoint at most PR_FILE_CAP.
 COMPARE_FILE_CAP = 300
+PR_FILE_CAP = 3000
 
 
 def _paths(files: list[dict[str, Any]]) -> set[str]:
@@ -327,7 +341,7 @@ def _paths(files: list[dict[str, Any]]) -> set[str]:
     return out
 
 
-def base_overlap(changes: BaseChanges, pr_files: frozenset[str]) -> str | None:
+def base_overlap(changes: BaseChanges, pr_files: frozenset[str], pr_complete: bool = True) -> str | None:
     """Why the base has moved under the PR, or None if it hasn't in a way that matters.
 
     The approval covers the PR's files as they stood at its merge-base. A base
@@ -341,6 +355,11 @@ def base_overlap(changes: BaseChanges, pr_files: frozenset[str]) -> str | None:
             f"{COMPARE_FILE_CAP} of their files, so overlap with the PR can't be ruled out; update the branch"
         )
     hit = sorted(changes.files & pr_files)
+    if not hit and not pr_complete:
+        return (
+            f"{changes.ref} has {changes.ahead} commits since the merge-base and GitHub lists only "
+            f"{PR_FILE_CAP} of the PR's files, so overlap can't be ruled out; update the branch"
+        )
     if not hit:
         return None
     shown = ", ".join(hit[:5]) + (f" and {len(hit) - 5} more" if len(hit) > 5 else "")
@@ -648,7 +667,15 @@ class ReviewEngine:
             need = "write"
         role = await self._gh.role(repo, actor)
         if ROLE_RANK.get(role, 0) < ROLE_RANK[need]:
-            return actor, f"{actor} has {role} access, and a label here needs {need}"
+            why = f"{actor} has {role} access, and a label here needs {need}"
+            if ROLE_RANK.get(role, 0) < ROLE_RANK["triage"]:
+                # Putting a label on takes triage, so this reading is suspect: a
+                # token with only read on the repo sees every role as none.
+                why += " (adding a label takes triage, so the watcher's token may be unable to read roles: its account needs write on the repo)"
+            return actor, why
+        # A PR that conflicts with its base can't merge; don't spend a review on it.
+        if await self._gh.mergeable(repo, pull.number) is False:
+            return actor, "the PR conflicts with its base branch; resolve the conflict, then label it again"
         return actor, None
 
     async def _refuse_label(self, repo: str, pull: OpenPull, reason: str) -> None:
@@ -1053,9 +1080,10 @@ class ReviewEngine:
             return
         # The merge is pinned to the head, not the base. If the base has since
         # changed a file the PR changes, the merged tree is one nobody reviewed
-        # (agents issue 167).
+        # (agents issue 167). The base can still move between this read and the
+        # merge call: GitHub's merge takes no base sha, so that window stays open.
         try:
-            moved = base_overlap(await self._gh.base_changes(repo, pr, sha), await self._gh.pr_files(repo, pr))
+            moved = base_overlap(await self._gh.base_changes(repo, pr, sha), *await self._gh.pr_files(repo, pr))
         except Exception as exc:  # noqa: BLE001 -- sorted by _gate_unreadable
             await self._gate_unreadable(run_id, exc, "the base's changes", waited, late)
             return

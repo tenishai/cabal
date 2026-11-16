@@ -97,6 +97,16 @@ async def test_a_group_task_is_recorded_waiting_for_a_member(gapp: FastAPI, gcli
 
 
 @pytest.mark.asyncio
+async def test_the_scheduled_log_names_the_group_not_the_member(gapp: FastAPI, gclient: AsyncClient) -> None:
+    from structlog.testing import capture_logs
+
+    with capture_logs() as logs:
+        task_id = await _queue(gapp, gclient)
+    line = next(e for e in logs if e["event"] == "dispatch.scheduled" and e["task_id"] == task_id)
+    assert line["target"] == f"group:{GROUP}" and line["group"] == GROUP
+
+
+@pytest.mark.asyncio
 async def test_bad_group_requests_are_refused(gapp: FastAPI, gclient: AsyncClient) -> None:
     token = await _token(gapp)
     body = (await _send(gclient, token, group="nobody")).json()

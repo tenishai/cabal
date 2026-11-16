@@ -31,6 +31,7 @@ class WatchGitHub:
         self.comments: list[tuple[str, int, str]] = []
         self.timeline_error: Exception | None = None
         self.remove_error: Exception | None = None
+        self.conflicts: dict[int, bool | None] = {}  # pr -> mergeable; default True
 
     async def timeline(self, repo: str, pr: int) -> list[TimelineEvent]:
         if self.timeline_error is not None:
@@ -43,6 +44,9 @@ class WatchGitHub:
 
     async def role(self, repo: str, login: str) -> str:
         return self.roles.get(login, "admin")
+
+    async def mergeable(self, repo: str, pr: int) -> bool | None:
+        return self.conflicts.get(pr, True)
 
     async def comment(self, repo: str, pr: int, body: str) -> None:
         self.comments.append((repo, pr, body))
@@ -271,6 +275,28 @@ async def test_an_outsider_reads_as_none(app: FastAPI) -> None:
     gh.roles["dimartin"] = "none"
     assert await _engine(app, gh).watch() == 0
     assert "has none access" in gh.comments[0][2]
+    assert "its account needs write on the repo" in gh.comments[0][2]
+
+
+async def test_a_triage_refusal_doesnt_blame_the_token(app: FastAPI) -> None:
+    gh = WatchGitHub({REPO: [_pull(139)]})
+    gh.roles["dimartin"] = "triage"
+    assert await _engine(app, gh).watch() == 0
+    assert "unable to read roles" not in gh.comments[0][2]
+
+
+async def test_a_conflicting_pr_is_refused(app: FastAPI) -> None:
+    gh = WatchGitHub({REPO: [_pull(139)]})
+    gh.conflicts[139] = False
+    assert await _engine(app, gh).watch() == 0
+    assert "conflicts with its base branch" in gh.comments[0][2]
+    assert gh.removed == [(REPO, 139, LABEL)]
+
+
+async def test_a_pr_github_hasnt_checked_yet_is_queued(app: FastAPI) -> None:
+    gh = WatchGitHub({REPO: [_pull(139)]})
+    gh.conflicts[139] = None  # still computing: the merge gate is the backstop
+    assert await _engine(app, gh).watch() == 1
 
 
 async def test_a_head_committed_after_the_label_is_refused(app: FastAPI) -> None:
