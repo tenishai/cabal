@@ -347,9 +347,15 @@ class Meter:
                 return f"cabal meter: {exc}"
         left = self.budget.remaining(task)
         if left <= 0:
+            # A metered root draws on root_budget, not a task_budget of its own.
+            limit = (
+                self.config.root_budget
+                if self.config.root_budget is not None and self._open[task] == task
+                else self.config.task_budget
+            )
             return (
                 f"cabal meter: task {task!r} has spent its token budget "
-                f"({self.config.task_budget} input + output tokens)"
+                f"({limit} input + output tokens)"
             )
         return None
 

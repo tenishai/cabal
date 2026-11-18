@@ -360,6 +360,18 @@ async def test_a_metered_root_keeps_the_root_budget(metered, leg_first) -> None:
     assert budget.remaining("leg-1") == 8
 
 
+@pytest.mark.parametrize("metered", [{"task_budget": 10, "root_budget": 3}], indirect=True)
+async def test_a_spent_metered_root_quotes_the_root_budget(metered) -> None:
+    """Prudence on PR 442: the refusal names the budget the root actually drew on."""
+    app, c, _ = metered
+    _run(app, "root-1", "wright1")
+    assert (await _call(c)).status_code == 200
+    await _settled(app)
+    r = await _call(c)
+    assert r.status_code == 400
+    assert "(3 input + output tokens)" in r.json()["error"]["message"]
+
+
 def test_access_log_hides_the_key() -> None:
     import logging
 
