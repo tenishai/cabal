@@ -446,6 +446,11 @@ async def _send_message(
         # Kept for every later round: an answer re-queues the task to whichever
         # member is idle, which may not have seen the brief (issue 423).
         task.metadata["cabal_group_brief"] = _text_of(message)
+    else:
+        # The same for any task (issue 145): its history may open with an
+        # earlier conversation replayed from its contextId, so the brief is
+        # recorded here, not looked for there.
+        task.metadata["cabal_brief"] = _text_of(message)
     detach = cfg is not None and bool(cfg.return_immediately)
     detached = request.app.state.detached
     reserve = detach and not_before is None
@@ -593,8 +598,10 @@ async def _replay(
 async def _continue_task(
     request: Request, agent_name: str, raw_token: str, request_id: Any, req: SendMessageRequestV1
 ) -> JSONResponse:
-    """A SendMessage that names a task (spec 3.4.3). The checks run now; a new
-    turn on a paused task waits until a persona can pause one (#145)."""
+    """A SendMessage that names a task (spec 3.4.3): the answer to a task that
+    stopped in `input-required` (issue 145). Any other unfinished state is
+    refused: a new turn on a task that is still running or queued has nothing
+    to answer."""
     claims = verify_caller(request, raw_token)
     if isinstance(claims, DispatchRefusal):
         return _refuse(claims, request_id)
@@ -612,13 +619,13 @@ async def _continue_task(
                 message=f"the task is {row.state}; send a new message in its contextId instead",
             ),
         )
-    if row.target_group is not None and row.state == "input-required":
-        return await _answer_group_task(request, row, claims, req, request_id)
+    if row.state == "input-required":
+        return await _answer_task(request, row, claims, req, request_id)
     return _error(
         request_id,
         a2a_error(
             UNSUPPORTED_OPERATION,
-            message=f"the task is {row.state}; a new turn on an unfinished task is not supported until #145",
+            message=f"the task is {row.state}; only a task in input-required takes an answer",
         ),
     )
 
@@ -629,30 +636,58 @@ def _text_of(message: Message | None) -> str:
     return "\n".join(p.text for p in message.parts if isinstance(p, TextPart)).strip()
 
 
-async def _answer_group_task(
+def _brief_of(prior: Task) -> str:
+    """The task's own brief, recorded at send time (`cabal_group_brief` for a
+    group task, issue 423; `cabal_brief` for any other, issue 145).
+
+    A task sent before that, or through another door, has none recorded. Its
+    stored history is the conversation replayed from its contextId followed by
+    its own message (`router.py`, the stored-history rule), so the brief is the
+    LAST user message there. The first would be an earlier task's request."""
+    kept = prior.metadata.get("cabal_group_brief") or prior.metadata.get("cabal_brief")
+    if kept:
+        return str(kept)
+    for message in reversed(prior.history):
+        if message.role == "user":
+            return _text_of(message)
+    return ""
+
+
+async def _answer_task(
     request: Request, row: Conversation, claims: dict[str, Any], req: SendMessageRequestV1, request_id: Any
 ) -> JSONResponse:
-    """An answer to a group task that ended asking a question (cabal issue 423).
+    """An answer to a task that ended asking a question (issues 423 and 145).
 
-    The member that asked is already free: its task ended `input-required`. The
-    answer puts the task back in the group's queue, under the same id and
-    contextId, for whichever member is idle next (the one that asked, if it is).
-    That member may not have seen the task, so the message it gets carries the
-    brief, the asker's hand-off and the answer. Work in progress lives in git
-    and the task's doc, not here: cabal carries only the text."""
+    The agent that asked is already free: its turn ended `input-required`, so
+    nothing was held while the question waited. The answer puts the task back
+    in the queue, under the same id and contextId: a group task for whichever
+    member is idle next (the one that asked, if it is), any other task for the
+    agent that asked. A group member may not have seen the task, and an agent
+    keeps no state between turns, so the message carries the brief, the
+    asker's hand-off and the answer. Work in progress lives in git and the
+    task's doc, not here: cabal carries only the text."""
     try:
         answer = _text_of(message_from_v1(req.message))
     except UnsupportedPartError as exc:
         return _error(request_id, a2a_error(CONTENT_TYPE_NOT_SUPPORTED, message=str(exc)))
     if not answer:
         return _params_error(request_id, "an answer needs some text")
-    prior = Task.model_validate(row.result_json or {})
+    if not row.result_json:
+        # Every dispatch stores its task; a row without one has nothing to continue.
+        return _error(
+            request_id,
+            a2a_error(UNSUPPORTED_OPERATION, message="the task has no stored state to continue"),
+        )
+    prior = Task.model_validate(row.result_json)
     asker = row.target_agent
     answerer = claims.get("sub") or "the operator"
-    brief = str(prior.metadata.get("cabal_group_brief") or "")
-    rounds = int(prior.metadata.get("cabal_group_round") or 1) + 1
+    group = row.target_group
+    brief = _brief_of(prior)
+    round_key = "cabal_group_round" if group is not None else "cabal_answer_round"
+    rounds = int(prior.metadata.get(round_key) or 1) + 1
+    sent_to = f", sent to group {group}" if group is not None else ""
     text = (
-        f"This continues task {row.task_id}, sent to group {row.target_group}. {asker} stopped with "
+        f"This continues task {row.task_id}{sent_to}. {asker} stopped with "
         f"questions; {answerer} answered. Pick up from the hand-off: the work so far is in git and the "
         f"task's doc.\n\n## Brief\n\n{brief or '(not recorded)'}\n\n"
         f"## Hand-off from {asker}\n\n{_text_of(prior.status.message) or '(none)'}\n\n"
@@ -663,7 +698,7 @@ async def _answer_group_task(
         update={
             "status": TaskStatus(state="submitted", message=Message(role="user", parts=[TextPart(text=text)])),
             "history": history,
-            "metadata": {**prior.metadata, "cabal_asked_by": asker, "cabal_group_round": rounds},
+            "metadata": {**prior.metadata, "cabal_asked_by": asker, round_key: rounds},
         }
     )
     stored = {k: claims[k] for k in ("sub", "cabal_persona", "cabal_scope", "aud", "iat", "exp") if k in claims}
@@ -687,11 +722,14 @@ async def _answer_group_task(
         session.add(
             Event(
                 task_id=row.task_id,
-                event_type="dispatch_group_answered",
-                payload_json={"group": row.target_group, "asked_by": asker, "answered_by": answerer, "round": rounds},
+                event_type="dispatch_group_answered" if group is not None else "dispatch_answered",
+                payload_json={"group": group, "asked_by": asker, "answered_by": answerer, "round": rounds},
             )
         )
-    log.info("dispatch.group_answered", task_id=row.task_id, group=row.target_group, asked_by=asker, round=rounds)
+    log.info(
+        "dispatch.group_answered" if group is not None else "dispatch.answered",
+        task_id=row.task_id, group=group, asked_by=asker, round=rounds,
+    )
     refreshed = await _load_row(request, row.task_id)
     assert refreshed is not None
     return _result(request_id, {"task": _row_to_v1(refreshed)})

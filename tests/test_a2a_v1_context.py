@@ -269,7 +269,7 @@ async def test_a_finished_task_takes_no_new_turn(app: FastAPI, client: AsyncClie
 
 
 @pytest.mark.asyncio
-async def test_an_unfinished_task_waits_for_145(app: FastAPI, client: AsyncClient) -> None:
+async def test_a_paused_task_with_nothing_stored_takes_no_answer(app: FastAPI, client: AsyncClient) -> None:
     async with app.state.sessionmaker() as s:
         echo = await bulletin_store.get_active(s, "echo")
         assert echo is not None
@@ -286,4 +286,25 @@ async def test_an_unfinished_task_waits_for_145(app: FastAPI, client: AsyncClien
     token = await _token(app, "agent:alice")
     r = await _send(client, token, "answer", taskId="t-paused")
     assert _code(r) == -32004
-    assert "#145" in r.json()["error"]["message"]
+    assert "no stored state to continue" in r.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_running_task_takes_no_answer(app: FastAPI, client: AsyncClient) -> None:
+    async with app.state.sessionmaker() as s:
+        echo = await bulletin_store.get_active(s, "echo")
+        assert echo is not None
+        s.add(
+            Conversation(
+                task_id="t-working",
+                target_agent="echo",
+                target_generation=echo.generation,
+                caller_agent="agent:alice",
+                state="working",
+            )
+        )
+        await s.commit()
+    token = await _token(app, "agent:alice")
+    r = await _send(client, token, "answer", taskId="t-working")
+    assert _code(r) == -32004
+    assert "the task is working; only a task in input-required takes an answer" in r.json()["error"]["message"]

@@ -441,21 +441,10 @@ async def test_answers_that_dont_apply_are_refused(gapp: FastAPI, gclient: Async
     task_id = await _asking(gapp, gclient, token)
     empty = await _answer(gclient, token, "tck", task_id, text="")
     assert empty["error"]["code"] == -32602 and "needs some text" in empty["error"]["message"]
-    # Not a group task: a new turn on a paused task is still #145's.
-    plain = (
-        await gclient.post(
-            "/agents/tck/a2a",
-            json={"jsonrpc": "2.0", "id": 12, "method": "SendMessage", "params": {
-                "message": {"messageId": "tck-input-required-2", "role": "ROLE_USER", "parts": [{"text": "q"}]},
-                "configuration": {"returnImmediately": True}}},
-            headers={"A2A-Version": "1.0", "Authorization": f"Bearer {token}"},
-        )
-    ).json()["result"]["task"]["id"]
-    await _until_state(gapp, plain, "input-required")
-    assert "#145" in (await _answer(gclient, token, "tck", plain))["error"]["message"]
-    # A group task that is waiting, not asking.
+    # A group task that is waiting for a member, not asking.
     waiting = await _queue(gapp, gclient, token)
-    assert "#145" in (await _answer(gclient, token, "echo", waiting))["error"]["message"]
+    refused = (await _answer(gclient, token, "echo", waiting))["error"]["message"]
+    assert "only a task in input-required takes an answer" in refused
     # Someone else's task is not theirs to answer.
     bob = await _token(gapp, sub="agent:bob")
     assert (await _answer(gclient, bob, "tck", task_id))["error"]["code"] == -32001
@@ -495,3 +484,124 @@ async def test_the_continuation_runs_under_the_answerers_authority(gapp: FastAPI
     done = await _until_state(gapp, task_id, "completed")
     assert done.caller_agent == "agent:alice"
     assert _get_state(await _get(gclient, alice, "tck", task_id)) == "TASK_STATE_COMPLETED"
+
+
+
+# ---- answering a task that is not a group's (issue 145) ----------------------------
+
+
+async def _plain_asking(app: FastAPI, client: AsyncClient, token: str) -> str:
+    """A task sent straight to tck, which ends it input-required."""
+    body = (
+        await client.post(
+            "/agents/tck/a2a",
+            json={"jsonrpc": "2.0", "id": 12, "method": "SendMessage", "params": {
+                "message": {"messageId": "tck-input-required-2", "role": "ROLE_USER", "parts": [{"text": "port it"}]},
+                "configuration": {"returnImmediately": True}}},
+            headers={"A2A-Version": "1.0", "Authorization": f"Bearer {token}"},
+        )
+    ).json()
+    task_id = str(body["result"]["task"]["id"])
+    await _until_state(app, task_id, "input-required")
+    return task_id
+
+
+@pytest.mark.asyncio
+async def test_an_answer_puts_a_plain_task_back_to_the_agent_that_asked(
+    gapp: FastAPI, gclient: AsyncClient
+) -> None:
+    token = await _token(gapp)
+    task_id = await _plain_asking(gapp, gclient, token)
+    asked = await _row(gapp, task_id)
+    body = await _answer(gclient, token, "tck", task_id)
+    assert body["result"]["task"]["status"]["state"] == "TASK_STATE_SUBMITTED", body
+    row = await _row(gapp, task_id)
+    assert (row.state, row.target_agent, row.target_group) == ("scheduled", "tck", None)
+    sent = row.result_json["status"]["message"]["parts"][0]["text"]
+    assert sent.startswith(f"This continues task {task_id}. tck stopped")
+    assert "sent to group" not in sent
+    assert "## Brief\n\nport it" in sent
+    assert "## Hand-off from tck\n\ninput required" in sent
+    assert "## Answer from agent:alice\n\nuse plan B" in sent
+    meta = row.result_json["metadata"]
+    assert (meta["cabal_asked_by"], meta["cabal_answer_round"]) == ("tck", 2)
+    assert "cabal_group_round" not in meta
+    assert await gapp.state.scheduler.tick(now=_later()) == 1
+    done = await _until_state(gapp, task_id, "completed")
+    assert done.target_agent == "tck"
+    assert done.result_json["contextId"] == asked.result_json["contextId"]
+    async with gapp.state.sessionmaker() as s:
+        from cabal.core.models import Event
+
+        events = (await s.execute(select(Event).where(Event.task_id == task_id))).scalars().all()
+    answered = [e for e in events if e.event_type == "dispatch_answered"]
+    assert len(answered) == 1 and answered[0].payload_json["group"] is None
+
+
+@pytest.mark.asyncio
+async def test_only_the_tasks_caller_or_the_operator_may_answer_a_plain_task(
+    gapp: FastAPI, gclient: AsyncClient
+) -> None:
+    alice = await _token(gapp)
+    task_id = await _plain_asking(gapp, gclient, alice)
+    bob = await _token(gapp, sub="agent:bob")
+    assert (await _answer(gclient, bob, "tck", task_id))["error"]["code"] == -32001
+    op = await _operator(gapp, gclient)
+    assert "result" in await _answer(gclient, op, "tck", task_id)
+
+
+@pytest.mark.asyncio
+async def test_a_second_answer_to_the_same_question_is_refused(gapp: FastAPI, gclient: AsyncClient) -> None:
+    token = await _token(gapp)
+    task_id = await _plain_asking(gapp, gclient, token)
+    assert "result" in await _answer(gclient, token, "tck", task_id)
+    again = (await _answer(gclient, token, "tck", task_id))["error"]["message"]
+    assert "the task is scheduled; only a task in input-required takes an answer" in again
+
+
+
+@pytest.mark.asyncio
+async def test_a_plain_task_in_an_earlier_context_answers_with_its_own_brief(
+    gapp: FastAPI, gclient: AsyncClient
+) -> None:
+    """Prudence on PR 445: a send naming an existing contextId replays the
+    earlier conversation into the task's history, so the brief must not be
+    taken from its start."""
+    token = await _token(gapp)
+    headers = {"A2A-Version": "1.0", "Authorization": f"Bearer {token}"}
+
+    async def send(msgid: str, text: str, context: str | None = None) -> str:
+        msg: dict[str, Any] = {"messageId": msgid, "role": "ROLE_USER", "parts": [{"text": text}]}
+        if context:
+            msg["contextId"] = context
+        body = (await gclient.post("/agents/tck/a2a", headers=headers, json={
+            "jsonrpc": "2.0", "id": 14, "method": "SendMessage",
+            "params": {"message": msg, "configuration": {"returnImmediately": True}}})).json()
+        return str(body["result"]["task"]["id"])
+
+    first = await send("m-earlier", "EARLIER REQUEST")
+    done = await _until_state(gapp, first, "completed")
+    context = done.result_json["contextId"]
+    task_id = await send("tck-input-required-3", "port it", context)
+    asking = await _until_state(gapp, task_id, "input-required")
+    assert asking.result_json["metadata"]["cabal_brief"] == "port it"
+    await _answer(gclient, token, "tck", task_id)
+    sent = (await _row(gapp, task_id)).result_json["status"]["message"]["parts"][0]["text"]
+    assert "## Brief\n\nport it" in sent
+    assert "EARLIER REQUEST" not in sent
+
+
+def test_brief_of_falls_back_to_the_tasks_own_message() -> None:
+    """A row paused before send-time briefs existed: the last user message in
+    its history is its own, after any replayed conversation."""
+    from cabal.core.a2a.types import Message, TaskStatus, TextPart
+    from cabal.core.routes.a2a_v1 import _brief_of
+
+    def msg(role: str, text: str) -> Message:
+        return Message(role=role, parts=[TextPart(text=text)])
+
+    task = Task(
+        id="t", contextId="c", status=TaskStatus(state="input-required", message=msg("agent", "q?")),
+        history=[msg("user", "earlier"), msg("agent", "done"), msg("user", "port it")],
+    )
+    assert _brief_of(task) == "port it"
