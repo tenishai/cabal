@@ -33,7 +33,8 @@ Pull requests and issues are in tenishai/cabal.
   answerer's claims, and the task stays its caller's.
 - Any task that ends with questions takes an answer (issue 145). The answer path above now
   serves every task in `input-required`, not only a group's: a task sent straight to an agent
-  goes back to that agent, with the brief (its first user message), the hand-off and the answer,
+  goes back to that agent, with the brief (recorded at send time in `cabal_brief`; for an older
+  row, its own message, the last user message in its history), the hand-off and the answer,
   counting rounds in `cabal_answer_round` and recording `dispatch_answered`. Nothing is held while
   the question waits, since the asking agent's turn has ended. The task's own caller or the
   operator may answer. This replaces the issue's first design, a pause held at a checkpoint.

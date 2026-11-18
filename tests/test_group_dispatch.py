@@ -557,3 +557,51 @@ async def test_a_second_answer_to_the_same_question_is_refused(gapp: FastAPI, gc
     assert "result" in await _answer(gclient, token, "tck", task_id)
     again = (await _answer(gclient, token, "tck", task_id))["error"]["message"]
     assert "the task is scheduled; only a task in input-required takes an answer" in again
+
+
+
+@pytest.mark.asyncio
+async def test_a_plain_task_in_an_earlier_context_answers_with_its_own_brief(
+    gapp: FastAPI, gclient: AsyncClient
+) -> None:
+    """Prudence on PR 445: a send naming an existing contextId replays the
+    earlier conversation into the task's history, so the brief must not be
+    taken from its start."""
+    token = await _token(gapp)
+    headers = {"A2A-Version": "1.0", "Authorization": f"Bearer {token}"}
+
+    async def send(msgid: str, text: str, context: str | None = None) -> str:
+        msg: dict[str, Any] = {"messageId": msgid, "role": "ROLE_USER", "parts": [{"text": text}]}
+        if context:
+            msg["contextId"] = context
+        body = (await gclient.post("/agents/tck/a2a", headers=headers, json={
+            "jsonrpc": "2.0", "id": 14, "method": "SendMessage",
+            "params": {"message": msg, "configuration": {"returnImmediately": True}}})).json()
+        return str(body["result"]["task"]["id"])
+
+    first = await send("m-earlier", "EARLIER REQUEST")
+    done = await _until_state(gapp, first, "completed")
+    context = done.result_json["contextId"]
+    task_id = await send("tck-input-required-3", "port it", context)
+    asking = await _until_state(gapp, task_id, "input-required")
+    assert asking.result_json["metadata"]["cabal_brief"] == "port it"
+    await _answer(gclient, token, "tck", task_id)
+    sent = (await _row(gapp, task_id)).result_json["status"]["message"]["parts"][0]["text"]
+    assert "## Brief\n\nport it" in sent
+    assert "EARLIER REQUEST" not in sent
+
+
+def test_brief_of_falls_back_to_the_tasks_own_message() -> None:
+    """A row paused before send-time briefs existed: the last user message in
+    its history is its own, after any replayed conversation."""
+    from cabal.core.a2a.types import Message, TaskStatus, TextPart
+    from cabal.core.routes.a2a_v1 import _brief_of
+
+    def msg(role: str, text: str) -> Message:
+        return Message(role=role, parts=[TextPart(text=text)])
+
+    task = Task(
+        id="t", contextId="c", status=TaskStatus(state="input-required", message=msg("agent", "q?")),
+        history=[msg("user", "earlier"), msg("agent", "done"), msg("user", "port it")],
+    )
+    assert _brief_of(task) == "port it"

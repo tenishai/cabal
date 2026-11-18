@@ -446,6 +446,11 @@ async def _send_message(
         # Kept for every later round: an answer re-queues the task to whichever
         # member is idle, which may not have seen the brief (issue 423).
         task.metadata["cabal_group_brief"] = _text_of(message)
+    else:
+        # The same for any task (issue 145): its history may open with an
+        # earlier conversation replayed from its contextId, so the brief is
+        # recorded here, not looked for there.
+        task.metadata["cabal_brief"] = _text_of(message)
     detach = cfg is not None and bool(cfg.return_immediately)
     detached = request.app.state.detached
     reserve = detach and not_before is None
@@ -632,12 +637,17 @@ def _text_of(message: Message | None) -> str:
 
 
 def _brief_of(prior: Task) -> str:
-    """The task's first brief: kept on a group task at send time (issue 423),
-    otherwise the first user message in its history."""
-    kept = prior.metadata.get("cabal_group_brief")
+    """The task's own brief, recorded at send time (`cabal_group_brief` for a
+    group task, issue 423; `cabal_brief` for any other, issue 145).
+
+    A task sent before that, or through another door, has none recorded. Its
+    stored history is the conversation replayed from its contextId followed by
+    its own message (`router.py`, the stored-history rule), so the brief is the
+    LAST user message there. The first would be an earlier task's request."""
+    kept = prior.metadata.get("cabal_group_brief") or prior.metadata.get("cabal_brief")
     if kept:
         return str(kept)
-    for message in prior.history:
+    for message in reversed(prior.history):
         if message.role == "user":
             return _text_of(message)
     return ""
