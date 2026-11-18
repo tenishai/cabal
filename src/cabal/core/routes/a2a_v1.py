@@ -816,7 +816,16 @@ async def _list_tasks(
     is_operator, sub = _owner_filter(claims)
     page_size = req.page_size or _DEFAULT_PAGE_SIZE
 
-    where = [Conversation.target_agent == agent_name]
+    # The tasks on this persona, as `_visible` reads them: its own, and a group
+    # task of any group it is in, whichever member runs it (cabal issue 314: an
+    # outsider holding one member's token must find a question another member
+    # stopped with).
+    identity = getattr(request.app.state, "identity", None)
+    groups = [g for g, members in (identity.groups if identity is not None else {}).items() if agent_name in members]
+    on_persona = Conversation.target_agent == agent_name
+    if groups:
+        on_persona = or_(on_persona, Conversation.target_group.in_(groups))
+    where = [on_persona]
     if not is_operator:
         if sub is None:
             return _result(

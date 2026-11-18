@@ -77,7 +77,6 @@ def _idle(app: FastAPI, agent: str) -> None:
     app.state.dispatch_router.running.remove(f"busy-{agent}")
 
 
-
 def _later() -> datetime:
     return datetime.now(UTC) + timedelta(seconds=1)
 
@@ -486,7 +485,6 @@ async def test_the_continuation_runs_under_the_answerers_authority(gapp: FastAPI
     assert _get_state(await _get(gclient, alice, "tck", task_id)) == "TASK_STATE_COMPLETED"
 
 
-
 # ---- answering a task that is not a group's (issue 145) ----------------------------
 
 
@@ -559,7 +557,6 @@ async def test_a_second_answer_to_the_same_question_is_refused(gapp: FastAPI, gc
     assert "the task is scheduled; only a task in input-required takes an answer" in again
 
 
-
 @pytest.mark.asyncio
 async def test_a_plain_task_in_an_earlier_context_answers_with_its_own_brief(
     gapp: FastAPI, gclient: AsyncClient
@@ -605,3 +602,45 @@ def test_brief_of_falls_back_to_the_tasks_own_message() -> None:
         history=[msg("user", "earlier"), msg("agent", "done"), msg("user", "port it")],
     )
     assert _brief_of(task) == "port it"
+
+
+async def _list(client: AsyncClient, token: str, via: str, **params: Any) -> dict[str, Any]:
+    return (
+        await client.post(
+            f"/agents/{via}/a2a",
+            json={"jsonrpc": "2.0", "id": 13, "method": "ListTasks", "params": params},
+            headers={"A2A-Version": "1.0", "Authorization": f"Bearer {token}"},
+        )
+    ).json()
+
+
+@pytest.mark.asyncio
+async def test_every_members_list_shows_a_group_task(gapp: FastAPI, gclient: AsyncClient) -> None:
+    """ListTasks finds a group task on every member's path, as GetTask does
+    (cabal issue 314): an inbox reading one member's list must not miss a
+    question another member stopped with."""
+    token = await _token(gapp)
+    _busy(gapp, "echo")  # so tck runs it
+    task_id = await _queue(gapp, gclient, token)
+    await gapp.state.scheduler.tick(now=_later())
+    await _until_state(gapp, task_id, "completed")
+    assert (await _row(gapp, task_id)).target_agent == "tck"
+    for via in ("echo", "tck"):
+        ids = [t["id"] for t in (await _list(gclient, token, via))["result"]["tasks"]]
+        assert task_id in ids, via
+    # Another caller's list stays empty; a persona outside the group never shows it.
+    bob = await _token(gapp, sub="agent:bob")
+    assert (await _list(gclient, bob, "echo"))["result"]["tasks"] == []
+    gapp.state.identity = IdentityConfig(groups={GROUP: ["tck"]})
+    assert task_id not in [t["id"] for t in (await _list(gclient, token, "echo"))["result"]["tasks"]]
+
+
+@pytest.mark.asyncio
+async def test_a_members_list_filters_group_tasks_by_state(gapp: FastAPI, gclient: AsyncClient) -> None:
+    token = await _token(gapp)
+    _busy(gapp, "echo")  # tck asks; echo only echoes
+    asking = await _asking(gapp, gclient, token, group=GROUP)
+    assert (await _row(gapp, asking)).target_agent == "tck"
+    waiting = await _list(gclient, token, "echo", status="TASK_STATE_INPUT_REQUIRED")
+    assert [t["id"] for t in waiting["result"]["tasks"]] == [asking]
+    assert waiting["result"]["totalSize"] == 1

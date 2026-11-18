@@ -13,6 +13,13 @@ Pull requests and issues are in tenishai/cabal.
 - One database migration, applied at startup: `a9d3e5f7c1b2` adds the `review_runs` and
   `review_steps` tables. It only adds; nothing existing changes.
 
+### Fixed
+
+- ListTasks lists a group task on every member's path, as GetTask and CancelTask already read
+  it (issue 314). Before, a group task showed only on the path of the member that ran it, so a
+  caller holding one member's token could read the task by id but never find it in a list: an
+  inbox missed a question another member stopped with.
+
 ### Added
 
 - Dispatch to a group (issue 423, part 1). `[groups]` in identity.toml names each group's
