@@ -594,8 +594,9 @@ def dispatch_detached(
 
 
 def answer_task(*, token: str, target: str, task_id: str, text: str) -> dict[str, Any]:
-    """SendMessage naming a paused task: for a group task that ended with
-    questions, the answer puts it back in the group's queue (cabal issue 423)."""
+    """SendMessage naming a task that ended with questions: the answer puts it
+    back in the queue, a group task for the group (issue 423), any other for
+    the agent that asked (issue 145)."""
     import uuid
 
     message = {

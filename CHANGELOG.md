@@ -30,8 +30,15 @@ Pull requests and issues are in tenishai/cabal.
   `SendMessage` naming the task) puts it back in the queue under the same id and contextId, for
   the next idle member, preferring the one that asked. That member gets one message carrying the
   original brief, the asker's hand-off and the answer; the continuation runs under the
-  answerer's claims, and the task stays its caller's. A new turn on any other paused task is
-  still refused (#145).
+  answerer's claims, and the task stays its caller's.
+- Any task that ends with questions takes an answer (issue 145). The answer path above now
+  serves every task in `input-required`, not only a group's: a task sent straight to an agent
+  goes back to that agent, with the brief (its first user message), the hand-off and the answer,
+  counting rounds in `cabal_answer_round` and recording `dispatch_answered`. Nothing is held while
+  the question waits, since the asking agent's turn has ended. The task's own caller or the
+  operator may answer. This replaces the issue's first design, a pause held at a checkpoint.
+  A task in any other unfinished state is refused with "only a task in input-required takes an
+  answer".
 - Review runs, the record for issue 399's review workflow: one run per pull-request head,
   `(repo, pr, sha)` unique, with one step per seat in order (default Temperance, then Prudence).
   Operator-only `POST /reviews`, `GET /reviews`, `GET /reviews/{id}` and

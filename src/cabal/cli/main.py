@@ -448,8 +448,9 @@ def task_cmd(
         None,
         "--answer",
         help=(
-            "Answer a group task that stopped with questions (input-required): it goes "
-            "back to the group, for the next idle member (cabal issue 423)."
+            "Answer a task that stopped with questions (input-required): it goes back in "
+            "the queue, a group task for the next idle member (issue 423), any other "
+            "task for the agent that asked (issue 145)."
         ),
     ),
 ) -> None:
