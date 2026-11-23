@@ -2,16 +2,15 @@
 # per package.
 #
 # Dependabot PRs are same-repo PRs (dependabot[bot] pushes a branch here, not a
-# fork), so test.yml treats them like a maintainer's PR and runs `unit` on the
-# self-hosted pool. A dependency bump runs install-time code before review, so
-# keep the self-hosted runner off this repository once it is public, or route
-# dependabot[bot] PRs to the hosted `fork-pr` job. techne's dependabot.yml leaves
-# out the pip ecosystem for this reason; cabal enables it because most of its
-# dependencies are floors, so `unit`'s `pip install -e ".[dev]"` already pulls the
-# newest releases on every run and a Dependabot bump adds little new exposure.
+# fork), so test.yml runs `unit` on them like any other PR, on a GitHub-hosted
+# runner. A dependency bump runs install-time code before review, which is why
+# techne's dependabot.yml leaves out the pip ecosystem; cabal enables it because
+# most of its dependencies are floors, so `unit`'s `pip install -e ".[dev]"`
+# already pulls the newest releases on every run and a Dependabot bump adds
+# little new exposure.
 # litellm is the exception: it is pinned exactly (pyproject.toml), and a bump PR
-# would run the new release on the self-hosted runner before anyone reviewed it,
-# so Dependabot ignores it and a litellm bump is a hand-written PR.
+# would run the new release in CI before anyone reviewed it, so Dependabot
+# ignores it and a litellm bump is a hand-written PR.
 version: 2
 updates:
   - package-ecosystem: "pip"
