@@ -31,10 +31,10 @@ async def sessionmaker() -> async_sessionmaker[AsyncSession]:
 @pytest.mark.asyncio
 async def test_a_session_registers_and_appears_as_active(sessionmaker) -> None:
     async with sessionmaker() as s:
-        row = await store.register_session(s, name="poe2")
+        row = await store.register_session(s, name="agent-b")
         assert row.kind == "session"
         assert row.status == "active"
-        assert (await store.get_active(s, "poe2")) is not None
+        assert (await store.get_active(s, "agent-b")) is not None
 
 
 @pytest.mark.asyncio
@@ -43,8 +43,8 @@ async def test_the_synthetic_persona_is_created_once_not_per_session(
 ) -> None:
     """Two sessions must not collide on the FK-backing persona row."""
     async with sessionmaker() as s:
-        await store.register_session(s, name="poe1")
-        await store.register_session(s, name="poe2")
+        await store.register_session(s, name="agent-a")
+        await store.register_session(s, name="agent-b")
         await s.commit()
     async with sessionmaker() as s:
         personas = (await s.execute(select(Persona))).scalars().all()
@@ -62,8 +62,8 @@ async def test_a_session_carries_no_dispatchable_surface(sessionmaker) -> None:
     not cause the outcome.
     """
     async with sessionmaker() as s:
-        row = await store.register_session(s, name="poe3")
-        assert row.endpoint == "session://poe3"
+        row = await store.register_session(s, name="agent-c")
+        assert row.endpoint == "session://agent-c"
         assert row.agent_card_json == {}
         assert row.capabilities == {}
 
@@ -81,7 +81,7 @@ async def test_capability_routing_cannot_see_a_session(sessionmaker) -> None:
     from cabal.core.broker.router import DispatchRouter
 
     async with sessionmaker() as s:
-        await store.register_session(s, name="poe3")
+        await store.register_session(s, name="agent-c")
 
     # `_bookkeeper` / `_jwks_provider` are stored and never touched by the
     # capability registry, so stand-ins keep this a unit test of the routing
@@ -96,12 +96,12 @@ async def test_capability_routing_cannot_see_a_session(sessionmaker) -> None:
     # apart -- it returns set() for both -- so the private dict is the only
     # assertion target that discriminates, and the claim is worth pinning
     # because it is what makes the guarantee independent of the empty map.
-    assert "poe3" not in router._capabilities
+    assert "agent-c" not in router._capabilities
     assert "archivist" in router._capabilities
 
     # And the outcome, which holds regardless of the mechanism.
     for required in (["search"], ["anything"], []):
-        assert router.select_by_capabilities(required) != "poe3"
+        assert router.select_by_capabilities(required) != "agent-c"
 
 
 @pytest.mark.asyncio
@@ -123,13 +123,13 @@ async def test_register_end_register_is_the_ordinary_cycle_not_an_edge(
     and nothing says why.
     """
     async with sessionmaker() as s:
-        first = await store.register_session(s, name="poe2")
+        first = await store.register_session(s, name="agent-b")
         assert first.generation == 1
-        await store.mark_retired(s, "poe2", first.generation)
+        await store.mark_retired(s, "agent-b", first.generation)
 
-        second = await store.register_session(s, name="poe2", work={"task": "day two"})
+        second = await store.register_session(s, name="agent-b", work={"task": "day two"})
         assert second.generation == 2
-        active = await store.get_active(s, "poe2")
+        active = await store.get_active(s, "agent-b")
         assert active is not None
         assert active.generation == 2
         assert active.work == {"task": "day two"}
@@ -139,9 +139,9 @@ async def test_register_end_register_is_the_ordinary_cycle_not_an_edge(
 async def test_registering_over_a_draining_row_does_not_collide(sessionmaker) -> None:
     """`draining` is also invisible to get_active, so it takes the same path."""
     async with sessionmaker() as s:
-        first = await store.register_session(s, name="poe2")
-        await store.mark_draining(s, "poe2", first.generation)
-        second = await store.register_session(s, name="poe2")
+        first = await store.register_session(s, name="agent-b")
+        await store.mark_draining(s, "agent-b", first.generation)
+        second = await store.register_session(s, name="agent-b")
         assert second.generation == 2
 
 
@@ -150,22 +150,22 @@ async def test_a_third_start_keeps_climbing(sessionmaker) -> None:
     """next_generation scans MAX over all statuses, so this holds past two."""
     async with sessionmaker() as s:
         for expected in (1, 2, 3):
-            row = await store.register_session(s, name="poe2")
+            row = await store.register_session(s, name="agent-b")
             assert row.generation == expected
-            await store.mark_retired(s, "poe2", row.generation)
+            await store.mark_retired(s, "agent-b", row.generation)
 
 
 @pytest.mark.asyncio
 async def test_heartbeat_records_what_the_session_is_doing(sessionmaker) -> None:
     async with sessionmaker() as s:
-        await store.register_session(s, name="poe2")
+        await store.register_session(s, name="agent-b")
         await store.heartbeat(
             s,
-            "poe2",
+            "agent-b",
             1,
             work={"repo": "liminal", "branch": "fix/73", "task": "hardening bill"},
         )
-        row = await store.get_active(s, "poe2")
+        row = await store.get_active(s, "agent-b")
         assert row is not None
         assert row.work == {
             "repo": "liminal",
@@ -184,9 +184,9 @@ async def test_a_heartbeat_without_work_does_not_erase_the_work_line(
     would blank the work line of every session and the operator view would be
     empty exactly when it is being kept warm."""
     async with sessionmaker() as s:
-        await store.register_session(s, name="poe2", work={"task": "reviewing #91"})
-        await store.heartbeat(s, "poe2", 1)
-        row = await store.get_active(s, "poe2")
+        await store.register_session(s, name="agent-b", work={"task": "reviewing #91"})
+        await store.heartbeat(s, "agent-b", 1)
+        row = await store.get_active(s, "agent-b")
         assert row is not None
         assert row.work == {"task": "reviewing #91"}
 
@@ -196,9 +196,9 @@ async def test_work_can_be_cleared_deliberately_with_an_empty_dict(
     sessionmaker,
 ) -> None:
     async with sessionmaker() as s:
-        await store.register_session(s, name="poe2", work={"task": "x"})
-        await store.heartbeat(s, "poe2", 1, work={})
-        row = await store.get_active(s, "poe2")
+        await store.register_session(s, name="agent-b", work={"task": "x"})
+        await store.heartbeat(s, "agent-b", 1, work={})
+        row = await store.get_active(s, "agent-b")
         assert row is not None
         assert row.work == {}
 
@@ -211,7 +211,7 @@ async def test_register_with_work_returns_the_work_on_the_first_row(
     immediately after a session starts should not see a blank line."""
     async with sessionmaker() as s:
         row = await store.register_session(
-            s, name="poe2", work={"repo": "cabal", "task": "hitting #142"}
+            s, name="agent-b", work={"repo": "cabal", "task": "hitting #142"}
         )
         assert row.work == {"repo": "cabal", "task": "hitting #142"}
 

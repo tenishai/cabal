@@ -289,7 +289,7 @@ A release candidate: the wright set runs it before `0.5.0` is tagged.
   then sees the first one's row. One process (today's liminal) was never affected.
 - **Logged exceptions no longer carry frame locals, and logged database URLs hide the
   password** (tenishai/cabal#370). Neither cabal nor liminal configures structlog, so where
-  rich is installed (the mash1 archivist image has it) `log.exception` rendered every
+  rich is installed (the archivist image has it) `log.exception` rendered every
   frame's local variables: an archivist failure logged up to 80 characters of each
   payload string and the context's credentials. The four structlog `log.exception` calls
   now log the plain traceback text instead (`cabal.core.observability.failures.log_failure`).
@@ -338,7 +338,7 @@ A release candidate: the wright set runs it before `0.5.0` is tagged.
   sign it had been replaced. `ArchivistStore.superseded_by()` is new.
 - Archivist search no longer fails on ordinary questions (tenishai/cabal#356). The query
   sanitiser quoted tokens only when the query held one of `"-^*():`, so
-  `what's the build host?`, `mash1.local` or `docker/compose` reached FTS5 as raw syntax
+  `what's the build host?`, `host-a.local` or `docker/compose` reached FTS5 as raw syntax
   and raised `sqlite3.OperationalError`. Every token is now quoted. Tokens are still
   AND-ed, but `AND`, `OR`, `NOT`, `*`, `^`, `:` and `{}` are now plain words, not
   operators. The archivist handler also turns any database error into a failed tool

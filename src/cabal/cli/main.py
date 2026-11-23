@@ -857,7 +857,7 @@ def _work_payload(
 
 @session_app.command("register")
 def session_register(
-    name: str = typer.Argument(..., help="A stable name for this session, e.g. poe2."),
+    name: str = typer.Argument(..., help="A stable name for this session, e.g. agent-b."),
     repo: str = typer.Option(None, "--repo"),
     branch: str = typer.Option(None, "--branch"),
     task: str = typer.Option(None, "--task", help="One line: what you are doing."),
@@ -1265,14 +1265,14 @@ app.add_typer(persona_app, name="persona")
 def persona_graduate(
     name: str = typer.Argument(..., help="Persona name (e.g. 'archivist')."),
     endpoint: str = typer.Option(
-        ..., "--endpoint", help="Sovereign service HTTPS URL (e.g. 'https://archivist.rd.ts.net')."
+        ..., "--endpoint", help="Sovereign service HTTPS URL (e.g. 'https://archivist.example.ts.net')."
     ),
     audience: str = typer.Option(
         ...,
         "--audience",
         help=(
             "Sovereign service stable id — callers mint this into dispatch token "
-            "`aud` (e.g. 'archivist@rd')."
+            "`aud` (e.g. 'archivist@example')."
         ),
     ),
 ) -> None:
@@ -1650,7 +1650,7 @@ def _archivist_db(db: Path | None) -> Path:
 @archivist_app.command("erase")
 def archivist_erase(
     ref: str = typer.Argument(
-        ..., help="Entry id, or an outside source ref such as techne:poe@dimartin:knowledge/4255."
+        ..., help="Entry id, or an outside source ref such as techne:agent-a@user:knowledge/4255."
     ),
     reason: str = typer.Option("", "--reason", help="Why, recorded with the erasure."),
     db: Path = typer.Option(None, "--db", help="Archivist database file. Default: $CABAL_ARCHIVIST_DB."),

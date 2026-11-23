@@ -74,7 +74,7 @@ def _entry(name: str, summary: str, cabal: str = "", role: str = "") -> Entry:
         resource_name=name,
         summary=summary,
         entry_type="fact",
-        origin_archivist="mash1",
+        origin_archivist="host-a",
         origin_cabal=cabal,
         origin_role=role,
     )
@@ -85,7 +85,7 @@ def test_origin_round_trips(tmp_path: Path) -> None:
     r = store.publish(_entry("x", "nul rule for store writes", cabal="techne-next", role="reviewer"))
     got = store.get(r.entry_id)
     assert (got.origin_archivist, got.origin_cabal, got.origin_role, got.access) == (
-        "mash1",
+        "host-a",
         "techne-next",
         "reviewer",
         "internal",
@@ -147,10 +147,10 @@ def test_publish_records_refs_and_derived_from_as_lineage(tmp_path: Path) -> Non
         resource_name="m",
         summary="merged",
         entry_type="fact",
-        refs=["techne:poe@dimartin:knowledge/1"],
+        refs=["techne:agent-a@user:knowledge/1"],
     )
     r = store.publish(e, derived_from=[src.entry_id, src.entry_id])
-    assert store.lineage(r.entry_id) == sorted([src.entry_id, "techne:poe@dimartin:knowledge/1"])
+    assert store.lineage(r.entry_id) == sorted([src.entry_id, "techne:agent-a@user:knowledge/1"])
 
 
 def test_duplicate_publish_with_a_new_source_joins_lineage(tmp_path: Path) -> None:
@@ -340,10 +340,10 @@ def test_backfill_origin_fills_only_empty_fields(tmp_path: Path) -> None:
     store = ArchivistStore(db)
     old = store.publish(
         Entry(
-            resource_name="poe-dimartin-k1",
+            resource_name="agent-a-user-k1",
             summary="old",
             entry_type="fact",
-            refs=["techne:poe@dimartin:knowledge/1"],
+            refs=["techne:agent-a@user:knowledge/1"],
         )
     ).entry_id
     other = store.publish(Entry(resource_name="host-aware", summary="hand", entry_type="fact")).entry_id
@@ -353,18 +353,18 @@ def test_backfill_origin_fills_only_empty_fields(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
 
-    dry = backfill_origin(db, archivist="mash1", cabal="dev04", ref_prefix="techne:poe@dimartin:")
+    dry = backfill_origin(db, archivist="host-a", cabal="host-b", ref_prefix="techne:agent-a@user:")
     assert (dry.archivist, dry.cabal, dry.agent, dry.lineage) == (2, 1, 1, 1)
     assert _rows(db, "SELECT count(*) FROM memory_lineage") == [(0,)]
 
-    backfill_origin(db, archivist="mash1", cabal="dev04", ref_prefix="techne:poe@dimartin:", apply=True)
+    backfill_origin(db, archivist="host-a", cabal="host-b", ref_prefix="techne:agent-a@user:", apply=True)
     rows = {r[0]: r[1:] for r in _rows(db, "SELECT id, origin_archivist, origin_cabal, origin_agent FROM memory_entries")}
-    assert rows[old] == ("mash1", "dev04", "poe@dimartin")
-    assert rows[other] == ("mash1", "", "")
-    assert rows[set_] == ("mash1", "techne-next", "")
-    assert store.lineage(old) == ["techne:poe@dimartin:knowledge/1"]
+    assert rows[old] == ("host-a", "host-b", "agent-a@user")
+    assert rows[other] == ("host-a", "", "")
+    assert rows[set_] == ("host-a", "techne-next", "")
+    assert store.lineage(old) == ["techne:agent-a@user:knowledge/1"]
 
-    again = backfill_origin(db, archivist="mash1", cabal="dev04", apply=True)
+    again = backfill_origin(db, archivist="host-a", cabal="host-b", apply=True)
     assert (again.archivist, again.agent, again.lineage) == (0, 0, 0)
 
 
@@ -383,7 +383,7 @@ def test_cli_erase_and_backfill(tmp_path: Path) -> None:
     assert done.exit_code == 0, done.output
     assert "erased 3 entries" in done.output
 
-    bf = runner.invoke(app, ["archivist", "backfill-origin", "--archivist", "mash1", "--db", str(db)])
+    bf = runner.invoke(app, ["archivist", "backfill-origin", "--archivist", "host-a", "--db", str(db)])
     assert bf.exit_code == 0, bf.output
     assert "would set: archivist on 5" in bf.output
 

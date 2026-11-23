@@ -369,8 +369,8 @@ async def test_send_message_to_a_federated_persona_mints_its_audience(tmp_path: 
                 s,
                 name="peer-archivist",
                 persona_name="peer-archivist",
-                endpoint="https://archivist.rd.ts.net",
-                federation_audience="archivist@rd",
+                endpoint="https://archivist.example.ts.net",
+                federation_audience="archivist@example",
                 agent_card_json={"name": "archivist"},
                 agent_card_kid="kid-fed",
             )
@@ -387,4 +387,4 @@ async def test_send_message_to_a_federated_persona_mints_its_audience(tmp_path: 
             pass
 
         claims = verify(seen[0], key_set=client._app.state.jwks_provider(), expected_audience=None)
-    assert claims["aud"] == "archivist@rd"
+    assert claims["aud"] == "archivist@example"

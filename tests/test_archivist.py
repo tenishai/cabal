@@ -275,15 +275,15 @@ async def test_handler_search_takes_a_natural_language_question(archivist_handle
     # cabal#356: this raised sqlite3.OperationalError out of dispatch.
     await archivist_handler.dispatch(
         "publish",
-        {"resource_name": "mash1", "summary": "The build host is mash1.local.", "entry_type": "fact"},
+        {"resource_name": "host-a", "summary": "The build host is host-a.local.", "entry_type": "fact"},
         _ctx(),
     )
     result = await archivist_handler.dispatch(
         "search", {"query": "what's the build host?"}, _ctx(),
     )
     assert result.is_error is False
-    result = await archivist_handler.dispatch("search", {"query": "mash1.local"}, _ctx())
-    assert [h["resource_name"] for h in result.content[0]["data"]["hits"]] == ["mash1"]
+    result = await archivist_handler.dispatch("search", {"query": "host-a.local"}, _ctx())
+    assert [h["resource_name"] for h in result.content[0]["data"]["hits"]] == ["host-a"]
 
 
 @pytest.mark.asyncio
@@ -306,13 +306,13 @@ async def test_handler_get_marks_a_superseded_entry(archivist_handler) -> None:
     async def publish(summary: str, **extra):
         result = await archivist_handler.dispatch(
             "publish",
-            {"resource_name": "mash1", "summary": summary, "entry_type": "fact", **extra},
+            {"resource_name": "host-a", "summary": summary, "entry_type": "fact", **extra},
             _ctx(),
         )
         return result.content[0]["data"]["entry_id"]
 
-    old = await publish("mash1 is at .15")
-    new = await publish("mash1 is at .16", supersede=True)
+    old = await publish("host-a is at .15")
+    new = await publish("host-a is at .16", supersede=True)
 
     got_old = (await archivist_handler.dispatch("get", {"entry_id": old}, _ctx())).content[0]["data"]
     got_new = (await archivist_handler.dispatch("get", {"entry_id": new}, _ctx())).content[0]["data"]

@@ -728,8 +728,8 @@ async def federated_archivist_row(sessionmaker):
             s,
             name="archivist",
             persona_name="archivist",
-            endpoint="https://archivist.rd.ts.net",
-            federation_audience="archivist@rd",
+            endpoint="https://archivist.example.ts.net",
+            federation_audience="archivist@example",
             agent_card_json={"name": "archivist"},
             agent_card_kid="kid-fed",
         )
@@ -742,8 +742,8 @@ async def test_register_federated_sets_kind(sessionmaker, federated_archivist_ro
     async with sessionmaker() as s:
         row = await bulletin_store.get_active(s, "archivist")
     assert row.kind == "federated"
-    assert row.federation_audience == "archivist@rd"
-    assert row.endpoint == "https://archivist.rd.ts.net"
+    assert row.federation_audience == "archivist@example"
+    assert row.endpoint == "https://archivist.example.ts.net"
 
 
 @pytest.mark.asyncio
@@ -776,7 +776,7 @@ async def test_federated_routes_remote_even_with_local_handler(
         )
         local = FakeArchivist()
         router.register_local(local)  # same name — guard must still go remote
-        token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist@rd")
+        token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist@example")
         resp = await router.dispatch(
             target_agent="archivist",
             target_generation=None,
@@ -786,7 +786,7 @@ async def test_federated_routes_remote_even_with_local_handler(
 
     assert resp.status.state == "completed"
     assert "remote-done" in resp.status.message.parts[0].text
-    assert captured["url"].startswith("https://archivist.rd.ts.net")  # went remote
+    assert captured["url"].startswith("https://archivist.example.ts.net")  # went remote
     assert captured["auth"] == "Bearer " + token  # home JWT forwarded
     assert len(local.captured) == 0  # local handler NOT used
 
@@ -841,7 +841,7 @@ async def test_federated_streaming_refused(
     )
     handler = FakeStreamingArchivist()
     router.register_local(handler)  # streaming-capable local handler present
-    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist@rd")
+    token = mint(signing_key=signing_key, sub="mason-primus:1", aud="archivist@example")
     with pytest.raises(DispatchError, match="federated"):
         async for _ in router.dispatch_streaming(
             target_agent="archivist",
@@ -873,7 +873,7 @@ async def test_federated_token_mint_uses_sovereign_audience(
     )
     minted = await _resolve_dispatch_token(request, operator_token, "archivist")
     claims = verify(minted, key_set=jwks_provider(), expected_audience=None)
-    assert claims["aud"] == "archivist@rd"  # sovereign id, NOT "archivist"
+    assert claims["aud"] == "archivist@example"  # sovereign id, NOT "archivist"
     assert claims["cabal_scope"] == ["dispatch"]
 
 
@@ -902,7 +902,7 @@ async def test_shared_policy_mints_sovereign_audience(
     minted = await dispatch_token(request, operator_token, "archivist")
     assert isinstance(minted, str), minted
     claims = verify(minted, key_set=jwks_provider(), expected_audience=None)
-    assert claims["aud"] == "archivist@rd"
+    assert claims["aud"] == "archivist@example"
     assert claims["cabal_scope"] == ["dispatch"]
 
 
@@ -917,7 +917,7 @@ async def test_shared_policy_passes_a_token_aimed_at_the_sovereign(
     from cabal.core.routes._dispatch_auth import DispatchRefusal, dispatch_token
 
     request = _shim_request(sessionmaker, master_key, jwks_provider)
-    aimed = mint(signing_key=signing_key, sub="agent:x", aud="archivist@rd", scope=["dispatch"])
+    aimed = mint(signing_key=signing_key, sub="agent:x", aud="archivist@example", scope=["dispatch"])
     assert await dispatch_token(request, aimed, "archivist") == aimed
 
     bare = mint(signing_key=signing_key, sub="agent:x", aud="archivist", scope=["dispatch"])
@@ -931,7 +931,7 @@ async def test_shared_policy_passes_a_token_aimed_at_the_sovereign(
     reminted = await dispatch_token(request, bare_operator, "archivist")
     assert isinstance(reminted, str) and reminted != bare_operator
     claims = verify(reminted, key_set=jwks_provider(), expected_audience=None)
-    assert claims["aud"] == "archivist@rd"
+    assert claims["aud"] == "archivist@example"
 
 
 @pytest.mark.asyncio
@@ -952,7 +952,7 @@ async def test_federated_target_without_audience_is_a_server_fault(
             s,
             name="archivist",
             persona_name="archivist",
-            endpoint="https://archivist.rd.ts.net",
+            endpoint="https://archivist.example.ts.net",
             federation_audience="",
             agent_card_json={"name": "archivist"},
             agent_card_kid="kid-fed",

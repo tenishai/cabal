@@ -71,7 +71,7 @@ class EraseResult:
 
 def erase(db_path: Path, ref: str, *, reason: str = "", apply: bool = False) -> EraseResult:
     """Find what erasing ``ref`` reaches: an entry id, or an outside source
-    reference such as ``techne:poe@dimartin:knowledge/4255``.
+    reference such as ``techne:agent-a@user:knowledge/4255``.
 
     With ``apply=False`` (the default) nothing changes. With ``apply=True`` the
     reached entries are blanked and marked erased, and the references recorded,

@@ -28,7 +28,7 @@ async def test_a_registered_session_shows_up_in_the_roster(app, client) -> None:
     tok = await _operator_token(app, client)
     r = await client.post(
         "/admin/sessions/register",
-        json={"name": "poe2", "work": {"repo": "liminal", "task": "hardening bill"}},
+        json={"name": "agent-b", "work": {"repo": "liminal", "task": "hardening bill"}},
         headers=_auth(tok),
     )
     assert r.status_code == 200
@@ -36,9 +36,9 @@ async def test_a_registered_session_shows_up_in_the_roster(app, client) -> None:
 
     listing = await client.get("/admin/agents", headers=_auth(tok))
     rows = {a["name"]: a for a in listing.json()["agents"]}
-    assert "poe2" in rows
-    assert rows["poe2"]["kind"] == "session"
-    assert rows["poe2"]["work"]["task"] == "hardening bill"
+    assert "agent-b" in rows
+    assert rows["agent-b"]["kind"] == "session"
+    assert rows["agent-b"]["work"]["task"] == "hardening bill"
     # and it sits beside the personas rather than replacing them
     assert "echo" in rows
     assert rows["echo"]["kind"] == "member"
@@ -50,11 +50,11 @@ async def test_re_registering_an_active_session_is_idempotent(app, client) -> No
     previous row survived. Without this it would 500 on a duplicate PK."""
     tok = await _operator_token(app, client)
     first = await client.post(
-        "/admin/sessions/register", json={"name": "poe2"}, headers=_auth(tok)
+        "/admin/sessions/register", json={"name": "agent-b"}, headers=_auth(tok)
     )
     second = await client.post(
         "/admin/sessions/register",
-        json={"name": "poe2", "work": {"task": "resumed"}},
+        json={"name": "agent-b", "work": {"task": "resumed"}},
         headers=_auth(tok),
     )
     assert first.status_code == 200
@@ -62,7 +62,7 @@ async def test_re_registering_an_active_session_is_idempotent(app, client) -> No
     assert second.json()["generation"] == first.json()["generation"]
 
     listing = await client.get("/admin/agents", headers=_auth(tok))
-    poes = [a for a in listing.json()["agents"] if a["name"] == "poe2"]
+    poes = [a for a in listing.json()["agents"] if a["name"] == "agent-b"]
     assert len(poes) == 1
     assert poes[0]["work"] == {"task": "resumed"}
 
@@ -79,12 +79,12 @@ async def test_register_after_end_is_the_daily_cycle_and_must_not_500(
     hook swallowed the 500, so the session just silently stopped appearing.
     """
     tok = await _operator_token(app, client)
-    await client.post("/admin/sessions/register", json={"name": "poe2"}, headers=_auth(tok))
-    await client.post("/admin/sessions/poe2/end", headers=_auth(tok))
+    await client.post("/admin/sessions/register", json={"name": "agent-b"}, headers=_auth(tok))
+    await client.post("/admin/sessions/agent-b/end", headers=_auth(tok))
 
     again = await client.post(
         "/admin/sessions/register",
-        json={"name": "poe2", "work": {"task": "day two"}},
+        json={"name": "agent-b", "work": {"task": "day two"}},
         headers=_auth(tok),
     )
     assert again.status_code == 200, again.text
@@ -93,7 +93,7 @@ async def test_register_after_end_is_the_daily_cycle_and_must_not_500(
     listing = await client.get("/admin/agents", headers=_auth(tok))
     live = [
         a for a in listing.json()["agents"]
-        if a["name"] == "poe2" and a["status"] == "active"
+        if a["name"] == "agent-b" and a["status"] == "active"
     ]
     assert len(live) == 1
     assert live[0]["work"] == {"task": "day two"}
@@ -104,28 +104,28 @@ async def test_the_retired_row_survives_the_restart(app, client) -> None:
     """Re-registering must not erase the history -- the retired generation is
     still there, which is the point of retiring rather than deleting."""
     tok = await _operator_token(app, client)
-    await client.post("/admin/sessions/register", json={"name": "poe2"}, headers=_auth(tok))
-    await client.post("/admin/sessions/poe2/end", headers=_auth(tok))
-    await client.post("/admin/sessions/register", json={"name": "poe2"}, headers=_auth(tok))
+    await client.post("/admin/sessions/register", json={"name": "agent-b"}, headers=_auth(tok))
+    await client.post("/admin/sessions/agent-b/end", headers=_auth(tok))
+    await client.post("/admin/sessions/register", json={"name": "agent-b"}, headers=_auth(tok))
 
     listing = await client.get("/admin/agents", headers=_auth(tok))
-    gens = sorted(a["generation"] for a in listing.json()["agents"] if a["name"] == "poe2")
+    gens = sorted(a["generation"] for a in listing.json()["agents"] if a["name"] == "agent-b")
     assert gens == [1, 2]
 
 
 @pytest.mark.asyncio
 async def test_heartbeat_updates_the_work_line(app, client) -> None:
     tok = await _operator_token(app, client)
-    await client.post("/admin/sessions/register", json={"name": "poe2"}, headers=_auth(tok))
+    await client.post("/admin/sessions/register", json={"name": "agent-b"}, headers=_auth(tok))
     r = await client.post(
-        "/admin/sessions/poe2/heartbeat",
+        "/admin/sessions/agent-b/heartbeat",
         json={"work": {"repo": "cabal", "branch": "feat/142", "task": "presence rows"}},
         headers=_auth(tok),
     )
     assert r.status_code == 200
 
     listing = await client.get("/admin/agents", headers=_auth(tok))
-    row = next(a for a in listing.json()["agents"] if a["name"] == "poe2")
+    row = next(a for a in listing.json()["agents"] if a["name"] == "agent-b")
     assert row["work"]["branch"] == "feat/142"
     assert row["last_heartbeat"] is not None
 
@@ -142,12 +142,12 @@ async def test_heartbeat_for_an_unknown_session_is_404(app, client) -> None:
 @pytest.mark.asyncio
 async def test_end_retires_the_session(app, client) -> None:
     tok = await _operator_token(app, client)
-    await client.post("/admin/sessions/register", json={"name": "poe2"}, headers=_auth(tok))
-    r = await client.post("/admin/sessions/poe2/end", headers=_auth(tok))
+    await client.post("/admin/sessions/register", json={"name": "agent-b"}, headers=_auth(tok))
+    r = await client.post("/admin/sessions/agent-b/end", headers=_auth(tok))
     assert r.status_code == 200
 
     listing = await client.get("/admin/agents", headers=_auth(tok))
-    row = next(a for a in listing.json()["agents"] if a["name"] == "poe2")
+    row = next(a for a in listing.json()["agents"] if a["name"] == "agent-b")
     assert row["status"] != "active"
 
 

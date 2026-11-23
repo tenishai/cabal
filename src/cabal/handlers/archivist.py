@@ -248,7 +248,7 @@ class ArchivistHandler:
                                 "Plain words; every word must match. AND, OR "
                                 "and NOT are ordinary words, and punctuation "
                                 "is never an operator: it splits a word, so "
-                                "'mash1.local' matches the phrase 'mash1 local'."
+                                "'host-a.local' matches the phrase 'host-a local'."
                             ),
                         },
                         "entry_type": {
