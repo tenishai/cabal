@@ -52,6 +52,9 @@ There are two kinds, and they live in different places.
 | Send one task to a persona | `cbl dispatch <agent> "text"` |
 | Send a long task without holding the request open | `cbl dispatch --detach <agent> "text"`, then `cbl task <id> --wait` |
 | Send work that starts later | `cbl dispatch --detach --not-before 17:00 <agent> "text"` (HH:MM is this machine's time zone, or give an ISO 8601 time); `cbl tasks --scheduled` lists what's waiting, `cbl task <id> --cancel` cancels one |
+| Send work to whichever member of a group is free | `[groups]` in identity.toml names the members in order; `cbl dispatch --detach group:<name> "text"` starts it on the first member with nothing running, and it waits as `scheduled` while all are busy |
+| Answer a task that stopped with questions | `cbl task <id> --answer "text"` (state `input-required`) puts it back in the queue; a group task goes to the next idle member, any other to the agent that asked |
+| Have a pull request reviewed, and merged when approved | `cbl review start <owner/repo> <pr> --sha <sha>`, or label the PR `ready-for-review` in a repo under `[review.repos]`; `cbl review list`, `show`, `cancel` follow it. Needs `[review] enabled = true`; `merge = true` on a repo adds the merge gate |
 | Talk to a persona | `cbl chat <agent>`, or the terminal UI `cabal` (boots its own in-process app) |
 | See who is registered | `cbl status`, which also shows live Claude Code sessions that run the presence hook |
 | Watch events as they happen | `cbl tail` |
@@ -104,6 +107,11 @@ and `max_tokens_override`, plus these, each with a reason to set it:
   opposite of `mcp.allowed_handlers`, where omitting means every handler. Once delegation
   edges are on, set it on every persona that dispatches to another persona, or that dispatch
   is refused. A primus's fan-out to its own subordinates isn't gated by edges.
+- `leg_token_budget_override` and `fanout_token_budget_override` (primus personas): the
+  tokens each worker, the reviewer included, may spend, and the ceiling for the whole
+  fan-out. Unset, a worker gets 200,000 and the fan-out one default budget plus one
+  allotment per worker. A fan-out that cannot cover every worker and one aggregate call is
+  refused before any worker starts.
 - `commit_to_memory`: write the persona's own Q&A back into its memory store. Off by
   default for every persona; turn it on only for a persona whose store nobody else reads.
 - `mcp`: liminal's tools for this persona (see "The liminal integration" below).
@@ -118,6 +126,26 @@ commented in `identity.toml.example` in the repo.
 and shown by `cbl status`. cabal enforces nothing based on it today, so treat it as a label
 other agents can read, not as a control. The controls are the guardrails (`[guardrails]`:
 doom-loop, delegation depth, budget, `delegation_edges`) and `mcp.allowed_handlers`.
+
+### Token meter, for federated agents
+
+A federated agent makes its model calls in its own process. With `[meter] enabled = true`
+and an entry under `[meter.agents.<name>]` (`key_sha256`, `upstream`), the agent's model base
+URL is `<cabal>/meter/<key>`: cabal forwards each call to the upstream unchanged (it never
+stores or swaps a credential), reads the token usage and charges input plus output tokens to
+the task the agent is running. With no `task_budget` it only measures; `task_budget` and
+`root_budget` refuse a call over the limit with a 400. Spend is in the `meter_spend` table.
+Reach for it when a federated agent's token spend should count against the task that
+started it.
+
+### Review runs and the merge gate
+
+`[review] enabled = true` turns on an engine that takes each queued review run (one per pull
+request head) through its seats in order, reading each seat's outcome itself. A watch loop
+queues a run for every open PR carrying `[review] label` in a repo listed under
+`[review.repos."owner/name"]`. A repo with `merge = true` also has approved runs merged, pinned
+to the reviewed commit, once CI is green. Its keys, and the checks made on a label, are in
+`identity.toml.example`.
 
 ### Singleton vs primus
 
@@ -197,7 +225,8 @@ One file holds `[cabal]` (operator id, bind, `bootstrap_code`, and two A2A v1.0 
 `public_url`, the base URL clients reach cabal at, without which no v1.0 agent cards are
 served; and `front_door`, the persona whose card is served at
 `/.well-known/agent-card.json`),
-`[litellm]`, `[techne]`, `[liminal]`, `[langfuse]`, `[guardrails]` and the personas. cabal
+`[litellm]`, `[techne]`, `[liminal]`, `[langfuse]`, `[guardrails]`, `[groups]`, `[meter]`,
+`[review]` and the personas. cabal
 reads `--config` if given, else `./identity.toml` when the working directory holds cabal
 state, else `$CABAL_HOME/identity.toml` (`~/.cabal`). Unknown keys are accepted silently and
 unknown sections only log `identity.unknown_section`, so a typo shows up as a feature that

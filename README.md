@@ -46,7 +46,8 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
 ## What works
 
 - **Full A2A dispatch loop** — submit a task via HTTP or CLI, get a completed
-  Task back. In-process local dispatch and HTTP remote dispatch both work.
+  Task back. In-process local dispatch and HTTP remote dispatch both work (the dispatch and
+  router tests pass as of 2026-11-23; no second live daemon was run).
 - **JWT trust boundary** — every token is verified as RS256 only, at every
   verify site, so an HS256 token with a real `kid` fails. Every `/admin` route
   checks audience and scope, and every dispatch checks the caller token's
@@ -61,7 +62,9 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
 - **liminal integration** — personas that have `[mcp]` wired in their identity.toml
   persona block get a `tool_proxy` that dispatches to liminal over JSON-RPC. The
   credential flow (`cbl secret set` → `/admin/secrets` → `ctx.credentials` in the
-  handler) is complete and tested end-to-end.
+  handler) is tested end to end with liminal and cabal in one process
+  (`tests/test_credential_flow_e2e.py`, passing 2026-11-23 against liminal 0.7.1 and techne
+  0.19.0; it skips when liminal isn't installed).
 - **LLM personas** — `LLMPersona` wraps LiteLLM acompletion with tool-use loop,
   budget guard, circuit breaker, and per-step hook callbacks.
 - **CLI** — `cbl` covers daemon, login, dispatch (also detached, with `cbl task`),
@@ -69,8 +72,24 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
   `token renew` and `token mint-service`, `secret set|unset|list`,
   `reload identity`, `persona graduate|absorb`, `primus rotate`, `session`,
   `reset-auth`, `archivist purge|erase|backfill-origin`, and `cbl guide`.
+- **Review runs and a merge gate** — `cbl review start|list|show|cancel` queue and
+  follow one review per pull-request head, taken through its seats in order (default
+  `temperance`, then `prudence`). Off unless `[review] enabled`. A watch loop queues a
+  run for each PR that carries the `ready-for-review` label in a repo listed under
+  `[review.repos."owner/name"]`, and a repo that sets `merge = true` has approved runs
+  merged, pinned to the reviewed commit, once CI is green. `identity.toml.example`
+  describes every key; the CHANGELOG lists the checks the gate makes.
+- **Group dispatch and answers** — `[groups]` in identity.toml names agents in order;
+  `cbl dispatch --detach group:<name> "<brief>"` starts the task on the first member with
+  nothing running. A task that stops in `input-required`, group or not, takes
+  `cbl task <id> --answer "<text>"`, which puts it back in the queue.
+- **Token budgets** — a primus's fan-out has a ceiling and each worker an allotment
+  (`leg_token_budget_override`, `fanout_token_budget_override`). For federated agents,
+  `[meter]` passes their model calls through `/meter/<key>/...` and charges the
+  tokens to the task they run; `task_budget` and `root_budget` refuse calls over the limit.
 - **Docker Compose dev stack** — `make up / bootstrap / demo` runs the full
-  cabal + liminal stack; `make demo` is a 6-step smoke test that passes reliably.
+  cabal + liminal stack; `make demo` is a 6-step smoke test. It needs the running stack, so the
+  release pass did not measure how often it passes.
 - **A2A v1.0 interface** — `POST /agents/{name}/a2a` (with `A2A-Version: 1.0`)
   serves SendMessage, GetTask, ListTasks and CancelTask, including
   `returnImmediately` and conversations by `contextId`. Each persona has a signed
@@ -222,7 +241,8 @@ The operator token lasts an hour (`[cabal] operator_token_ttl_seconds`). `cbl` r
 itself when it has under ten minutes left, and `cbl token renew` renews it now. One that has
 already expired needs a new bootstrap code, which means a daemon restart.
 
-Run the unit suite (no sibling deps needed):
+Run the unit suite (no sibling deps needed; measured 2026-11-23 on Python 3.12.15 with
+`pip install -e ".[dev]"` only: 1826 passed, 20 skipped in about 4.5 minutes):
 
 ```bash
 pytest -q
