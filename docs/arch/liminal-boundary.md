@@ -1,6 +1,6 @@
 ---
 card: arch-card:cabal-liminal-boundary
-updated: 2026-10-26
+updated: 2026-11-23
 anchor: src/cabal/core/tools/mcp_proxy.py sha=4623908dbaddc1f2ba1688ddad9834fa73f1d5a1
 anchor: src/cabal/core/persona_factory.py sha=466a077cf4016055624a89187423dd74bcece0ed
 anchor: src/cabal/handlers/__init__.py sha=2e5f64bd92cf389a3ccaffb7bf7c44fdeef49580
@@ -23,5 +23,5 @@ INVARIANTS:
 - Handlers lazy-import techne and return `ToolResult.failure("techne not installed…")` instead of raising. Per-call DB path from `ctx.extra["<handler>.db_path"]` rejects `..`; fallbacks from env `CABAL_ARCHITECT_DB`, `CABAL_LIBRARIAN_DB`, `CABAL_ARCHIVIST_DB`.
 - "OPERATOR-ONLY" TOOLS ARE GATED BY LIMINAL, NOT CABAL: `patterns.record` and `documents.refresh` set `requires_operator: True` in their card dicts (cabal#233, #245; pinned by tests/test_operator_only_handlers.py) and the handler bodies check nothing themselves (`DocumentsHandler._refresh` says so). Enforcement is liminal's `tools/call` gate, which is NOT verified here; the persona→liminal token carries scope ["dispatch"] only, so a persona-minted call should be refused. Do not add a scope check inside a handler; keep the flag.
 - In SOVEREIGN mode liminal ignores token-embedded scope and tool_extras and resolves a grant by (issuer, persona) (liminal server/routes.py `_authenticate`); tool_extras only steer single-cabal mode.
-CONSUMERS: agents/llm_persona.py (tool-use loop, `tool_use_max_steps`); liminal's entry-point loader (liminal src/liminal/protocol/handler.py); POST /auth/liminal-token mints 15-min gateway tokens for colleague agents (dispatch-auth.md).
+CONSUMERS: agents/llm_persona.py (tool-use loop, `tool_use_max_steps`); liminal's entry-point loader (liminal src/liminal/protocol/handler.py); POST /auth/liminal-token mints 15-min gateway tokens for colleague agents, and GET /auth/revocations gives liminal the subject cutoffs to refuse revoked tokens with (dispatch-auth.md).
 NOTE: the token provider is the `_token_provider` closure in persona_factory; `mcp_proxy.build_token_provider` was removed as dead code.

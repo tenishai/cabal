@@ -29,6 +29,10 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- `GET /auth/revocations` lists every revoked subject with its cutoff,
+  `{"revocations": {"<sub>": <not_before>}, "generated_at": <epoch>}`, so liminal can refuse
+  revoked tokens it verifies itself (tenishai/liminal issue 228). It takes the same token and
+  check as the secrets fetch, `GET /admin/secrets/{persona}/{handler}`.
 - Dispatch to a group (issue 423, part 1). `[groups]` in identity.toml names each group's
   members in order. `cbl dispatch --detach group:<name> "<brief>"` sends the task through the
   group's first member with metadata `cabal_group`; the server checks the group exists and the
