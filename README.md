@@ -47,17 +47,28 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
 
 - **Full A2A dispatch loop** — submit a task via HTTP or CLI, get a completed
   Task back. In-process local dispatch and HTTP remote dispatch both work.
-- **JWT trust boundary** — audience + scope + RS256 algorithm pin enforced on
-  every inbound call. Operator tokens cannot impersonate liminal service tokens
-  and vice versa. `allow_dev_master_key` defaults to `False`.
+- **JWT trust boundary** — every token is verified as RS256 only, at every
+  verify site, so an HS256 token with a real `kid` fails. Every `/admin` route
+  checks audience and scope, and every dispatch checks the caller token's
+  audience. Some paths check less. `/healthz`, the agent cards,
+  `/.well-known/jwks.json` and `/auth/bootstrap` (which takes a one-time code)
+  take no token. A2A v1.0 GetTask, ListTasks and CancelTask and the legacy
+  `tasks/get` check that the caller owns the task (or holds `operator` scope),
+  not the token's audience, so any validly signed, unrevoked token can call
+  them (issue #452). A token whose `aud` already matches the dispatch target is passed on as
+  is, with no scope check. Operator tokens cannot impersonate liminal service
+  tokens and vice versa. `allow_dev_master_key` defaults to `False`.
 - **liminal integration** — personas that have `[mcp]` wired in their identity.toml
   persona block get a `tool_proxy` that dispatches to liminal over JSON-RPC. The
   credential flow (`cbl secret set` → `/admin/secrets` → `ctx.credentials` in the
   handler) is complete and tested end-to-end.
 - **LLM personas** — `LLMPersona` wraps LiteLLM acompletion with tool-use loop,
   budget guard, circuit breaker, and per-step hook callbacks.
-- **CLI** — `cbl` covers daemon, login, dispatch (also detached, with `cbl task`), token mint/list, secret set,
-  persona reload, agent status, archivist purge, and `cbl guide`.
+- **CLI** — `cbl` covers daemon, login, dispatch (also detached, with `cbl task`),
+  chat, tail, `status`, `tasks`, `drain`, `review`, `conversations`,
+  `token renew` and `token mint-service`, `secret set|unset|list`,
+  `reload identity`, `persona graduate|absorb`, `primus rotate`, `session`,
+  `reset-auth`, `archivist purge|erase|backfill-origin`, and `cbl guide`.
 - **Docker Compose dev stack** — `make up / bootstrap / demo` runs the full
   cabal + liminal stack; `make demo` is a 6-step smoke test that passes reliably.
 - **A2A v1.0 interface** — `POST /agents/{name}/a2a` (with `A2A-Version: 1.0`)
@@ -73,12 +84,17 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
   open, and emptying it logs `dispatch_pairs.replaced_empty`. `GET /directory`
   lists only the agents a colleague may dispatch to, with each one's
   `agent_card_url` (null until `public_url` is set).
-- **Refusals are logged, audited and actionable** — every refused dispatch logs
-  `dispatch.refused` (never the token), and one whose token verified also writes a
-  `dispatch_refused` event row. A refusal for a missing colleague pair carries
+- **Refusals are logged, audited and actionable** — every refusal of a dispatch
+  token (bad token, revoked, wrong audience, missing scope, missing colleague pair)
+  logs `dispatch.refused` (never the token), and one whose token verified also
+  writes a `dispatch_refused` event row. Other refusals (a caller JWT the router
+  rejects, a draining daemon, a guardrail block, a refused scheduled start) do
+  not log it. A refusal for a missing colleague pair carries
   `"remedy": "colleague_invite"` and says which owner invites and which accepts.
 - **Token revocation** — `POST /admin/token/revoke` (operator) refuses every token
-  a subject was issued before the cutoff, and the cutoff survives a restart.
+  a subject was issued before the cutoff, and the cutoff survives a restart. An
+  `aud=liminal` token already exchanged is checked by the gateway, not here, and
+  lives out its 15 minutes.
 - **Bootstrap code delivery** — `cabal.bootstrap_code` (`log`, `file` or `off`)
   lets a cabal that already has its operator keep the startup code out of the log.
 
@@ -88,14 +104,16 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
 src/cabal/
   core/           FastAPI + SQLite + A2A broker + bulletin board
     auth/         JWT mint/verify, bootstrap codes, JWKS provider
-    broker/       Dispatch router + bookkeeping + circuit breaker + budget guard
-    routes/       admin, a2a, tasks, well-known, auth, healthz
+    broker/       Dispatch router, bookkeeping, heartbeat, waiting
+    routes/       admin, a2a_v1, a2a_jsonrpc, tasks, well_known, auth, healthz,
+                  directory, meter, reviews
     observability/ Trace exporter + Langfuse adapter
   cli/            cbl entrypoint
   tui/            cabal entrypoint — the Textual terminal UI
-  agents/         LLMPersona, EchoAgent, and personas/ (MasonPrimusPersona)
+  agents/         LLMPersona, EchoAgent, and personas/ (architect, archivist,
+                  librarian, mason, wright)
   archivist/      Shared-memory sync: gitmemory, gitsync, dedup, promote, store,
-                  purge (admin-only, CLI)
+                  schema, models; purge, erase, backfill (admin-only, CLI)
   guides/         Markdown guides bundled in the wheel (`cbl guide`)
   librarian/      Document indexing + adapters
   handlers/       liminal-facing MCP handlers: archivist, code, documents, patterns
@@ -103,7 +121,8 @@ src/cabal/
   config/         identity.toml loader
   migrations/     Alembic revisions (ship as package data; cabal#79)
 tests/            pytest suite
-scripts/          bootstrap.sh, demo.sh
+scripts/          bootstrap.sh, demo.sh, test-docker.sh, check-techne-sibling.sh,
+                  check_arch_cards.py, a2a_tck/
 compose/          identity.dev.toml, litellm-config.yaml, litestream.yml
 ```
 
@@ -165,7 +184,7 @@ parent/
 >    Nothing in the repo can do this for you, and the config model allows
 >    unknown keys, so a stale section is absorbed silently: `[liminal].url`
 >    falls back to `None` and every persona comes up with no tool surface.
->    Since this PR that miss at least logs `personas.mcp_skipped`.
+>    That miss now logs `personas.mcp_skipped`.
 > 4. `LIMENAL_*` environment variables are now `LIMINAL_*`. There is no
 >    back-compat shim — a stale `.env` fails loudly on a missing variable
 >    instead of silently reading a name nothing sets. Note that
@@ -279,7 +298,7 @@ image build itself only compares version strings, which cannot tell techne's
 main from the tag.
 
 > `CABAL_MASTER_KEY` encrypts the `signing_keys` and `secrets` tables. For the
-> dev stack, `make up` writes a fresh one into `.env` on first run (`Makefile:6`),
+> dev stack, `make up` writes a fresh one into `.env` on first run (`Makefile:8`),
 > and `.env` is gitignored. Keep that key: change it and the stored rows can no
 > longer be decrypted (`.env.example` explains `cbl reset-auth`). A key that was
 > committed to this repo before 2026-09-23 is rotated and dead, but it is still in
@@ -320,7 +339,7 @@ directory if it already holds `identity.toml`, `data/cabal.db` or
 live under the state root, and `CABAL_DB_URL` overrides the database path. The
 CLI token is always `$CABAL_HOME/token`.
 
-### Settings added in 0.3
+### Settings added in 0.3.x
 
 Each `[cabal]` setting below is described in `identity.toml.example`. Where an
 environment variable is listed, it wins over the file.
@@ -343,7 +362,7 @@ when `delegation_edges = true`; see `docs/outside-agents.md`.
 Environment variable (not identity.toml). Bounds the read ceiling of the
 HTTP client used for federated dispatch — default 30s, the historical
 hardcoded value. Raise it if a federated peer fronts a real model call and
-can legitimately take minutes; connect stays pinned at 10s regardless, so an
+can legitimately take minutes; connect stays at 10s (or the whole timeout, if that is shorter), so an
 unreachable peer still fails fast rather than hanging for the full read
 ceiling. Must parse as a finite number > 0.
 
@@ -462,11 +481,13 @@ agent-c                    1 session    session    active     strict   2026-09-1
 ```
 
 A session row is **presence only** — it exists to answer "what is running, and
-what is it doing". Nothing can route work to it, and the reason is not the empty
-capability map on the row: capability routing matches against an in-memory
+what is it doing". Capability routing cannot select it, and the reason is not the
+empty capability map on the row: capability routing matches against an in-memory
 registry that only `identity.toml` personas are ever added to, so a session is
-absent from it entirely. The `session://` endpoint and empty agent card are
-belt to that suspenders.
+absent from it entirely. Naming a session as an explicit dispatch target is not
+refused by kind; its `session://` endpoint has no transport, so the dispatch
+fails there. The `session://` endpoint and empty agent card are belt to that
+suspenders.
 
 Wire it up with the hook cabal ships:
 
@@ -497,9 +518,10 @@ as dead. Reaping those rows is tracked in #70.
 
 liminal refuses these two tools unless the caller's token holds `operator`
 scope alongside `dispatch`. Persona tokens carry only `dispatch` and the
-`cbl login` token carries only `operator`, so mint one with both:
-`cbl token mint-service --sub operator:<you> --persona <persona> --scope dispatch --scope operator --aud liminal --ttl-days 1`
-(after `cbl login`). In a sovereign liminal the policy grant must hold
+`cbl login` token carries only `operator`. `cbl token mint-service` answers 400
+to any request for `operator` scope or an `operator` subject (#403), and no
+other cabal route mints a token holding both, so these two tools cannot
+currently be reached with cabal-minted tokens (issue #453). In a sovereign liminal the policy grant must hold
 `operator` instead, and with `LIMINAL_AUTH_DISABLED=1` these tools are refused
 outright. This needs a liminal release that has `requires_operator`.
 
