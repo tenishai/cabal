@@ -1,7 +1,7 @@
 # The A2A compatibility kit (a2aproject/a2a-tck) against cabal's v1.0 interface (#261).
 #
-# The kit is third-party code, so it runs on GitHub-hosted runners only, never
-# on the self-hosted pool, at a pinned commit, with a read-only token.
+# The kit is third-party code, so it runs on GitHub-hosted runners only, at a
+# pinned commit, with a read-only token.
 # cabal runs with its test-only `tck` persona, which acts out the kit's
 # scenarios. A small proxy adds the bearer token the kit cannot send (#271).
 # The job fails on any requirement the kit fails that
