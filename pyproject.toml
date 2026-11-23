@@ -7,7 +7,7 @@ name = "tenish-cabal"
 version = "0.5.0rc1"
 description = "Self-hosted personal agent orchestration platform"
 readme = "README.md"
-license = "AGPL-3.0-or-later"
+license = "MIT"
 authors = [{ name = "tenish" }]
 requires-python = ">=3.12"
 classifiers = [
