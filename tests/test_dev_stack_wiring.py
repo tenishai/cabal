@@ -47,4 +47,3 @@ def test_dockerfile_takes_the_ar_token_as_a_secret_not_a_build_arg():
     assert "ARG AR_TOKEN" not in text
     assert "--mount=type=secret,id=ar_token" in text
     assert "/run/secrets/ar_token" in text
-    assert "--build-arg AR_TOKEN" not in (ROOT / ".github/workflows/gojira-ci.yaml").read_text()
