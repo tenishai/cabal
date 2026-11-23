@@ -26,6 +26,8 @@ until it restarts, so adding workers means moving this lookup to the table.
 Tokens that the gateway verifies itself (`aud=liminal`, fifteen minutes)
 are not checked here; one exchanged before a revoke lives out its TTL. The
 exchange route checks this list, so a revoked pass cannot get a new one.
+The gateway can now fetch every cutoff from `GET /auth/revocations` and
+refuse such tokens itself.
 """
 
 from __future__ import annotations
@@ -64,6 +66,11 @@ class RevocationList:
 
     def cutoff(self, sub: str) -> int | None:
         return self._not_before.get(sub)
+
+    def snapshot(self) -> dict[str, int]:
+        """Every cutoff, by subject, as a copy the caller may keep or change
+        (`GET /auth/revocations` serves it to the gateway)."""
+        return dict(self._not_before)
 
     def refuses(self, claims: Mapping[str, Any]) -> str | None:
         """The reason a verified token is refused anyway, or None.

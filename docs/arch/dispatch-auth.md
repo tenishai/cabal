@@ -1,11 +1,11 @@
 ---
 card: arch-card:cabal-dispatch-auth
-updated: 2026-11-13
+updated: 2026-11-23
 anchor: src/cabal/core/routes/tasks.py sha=515fdcfda3a9e3e227d9e0a9376cdce06877bfec
 anchor: src/cabal/core/routes/a2a_jsonrpc.py sha=b413078ca6c8aaffad54f385473151e75432105b
 anchor: src/cabal/core/auth/jwt.py sha=881c1df69514f389ef2f431cc3626f5e0aef0aa2
 anchor: src/cabal/core/dispatch_pairs.py sha=c580d7a9995a6e97fda673b030f5495cc056e366
-anchor: src/cabal/core/routes/auth.py sha=92ec8e562b10b072d165e977a7851749bd68394f
+anchor: src/cabal/core/routes/auth.py sha=65d86dea1410aab833800246bbb5ad6bf0443e84
 anchor: src/cabal/core/routes/_dispatch_auth.py sha=9314825a301d1e7cd26e6c7f3d81740afdcef51a
 ---
 # dispatch-auth — JWT realms, scopes, and the re-mint doors
@@ -29,7 +29,7 @@ INVARIANTS:
 - Re-mint hard-codes scope=["dispatch"]; the caller's operator scope does not survive into the router (open, cabal#164). A router-level guard cannot ask "is this the operator?".
 - dispatch_pairs: EMPTY TABLE = OPEN (D-018). Room syncs the whole set atomically with PUT /admin/dispatch-pairs (operator), which logs the stored count, as a `dispatch_pairs.replaced_empty` warning when it is zero (cabal#315). Operators skip the check. WHY: deploy-safe; cabal stores policy, kobo decides it. GET /directory applies the same pairs to a colleague via `dispatch_pairs.allowed_targets` (None = empty table = everyone), so it lists only targets re-mint would allow; operators see the full roster (cabal#321).
 - 401 = no/bad signature, expired, revoked; 403 = valid token, wrong audience or scope (D-017), uniformly across guards. Admin guards all go through `admin._require_scope`; /auth/liminal-token still inlines its own gate (noted in its docstring as a follow-up).
-- Revocation is subject-wide (`iat < not_before`, core/auth/revocations.py), held in process memory and written through to a table. WHY it matters: correct only for ONE uvicorn worker; adding workers means moving the lookup to the table. aud=gateway tokens are verified by liminal and live out their 15 min after a revoke.
+- Revocation is subject-wide (`iat < not_before`, core/auth/revocations.py), held in process memory and written through to a table. WHY it matters: correct only for ONE uvicorn worker; adding workers means moving the lookup to the table. aud=gateway tokens are verified by liminal, not here; GET /auth/revocations (`routes/auth.py` `list_revocations`, the secrets-fetch gate) serves every cutoff as `{revocations: {sub: not_before}, generated_at}` from the in-memory list so the gateway can refuse them itself (liminal#228). Until it does, one exchanged before a revoke lives out its 15 min.
 - Colleague tokens must 403 on every /admin route (routes/directory.py docstring; tests/test_colleague_scope.py).
 - `jwt.AGENT_SUB_PREFIX` ("agent:") is the sub shape of colleague and outside-agent tokens; the delegation-edge guardrail keys on it (`caller_edges`, cabal#189).
 CONSUMERS: cli/client.py (cbl), tui/client, liminal (verifies cabal JWTs via JWKS), kobo (mints colleague tokens, syncs pairs).

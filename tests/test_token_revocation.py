@@ -362,3 +362,90 @@ async def test_two_first_revocations_of_one_subject_at_once_both_succeed() -> No
     assert results == [1_600_000_000, 1_600_000_001]
     assert revocations.cutoff("agent:racing") == 1_600_000_001
     assert table["agent:racing"].not_before == 1_600_000_001
+
+
+# ---- GET /auth/revocations: the list the gateway polls (liminal#228) ------
+
+
+async def _signed(app: FastAPI, *, sub: str, aud: str, scope: list[str]) -> str:
+    async with open_session(app.state.sessionmaker) as session:
+        stored = await load_active_signing_key(session, master_key=app.state.master_key)
+    assert stored is not None
+    return mint(signing_key=stored, sub=sub, aud=aud, scope=scope)
+
+
+async def _gateway_token(app: FastAPI) -> str:
+    # The token liminal already holds for GET /admin/secrets/...
+    return await _signed(app, sub="service:liminal", aud="liminal", scope=["secrets-fetch"])
+
+
+@pytest.mark.asyncio
+async def test_revocations_lists_every_revoked_subject_with_its_cutoff(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    op = await _operator_token(app, client)
+    await _revoke(app, client, SUB, op=op, not_before=1_500_000_000)
+    await _revoke(app, client, "agent:other", op=op, not_before=1_600_000_000)
+    before = int(time.time())
+    r = await client.get("/auth/revocations", headers=_bearer(await _gateway_token(app)))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["revocations"] == {SUB: 1_500_000_000, "agent:other": 1_600_000_000}
+    assert isinstance(body["generated_at"], int)
+    assert body["generated_at"] >= before
+
+
+@pytest.mark.asyncio
+async def test_revocations_is_an_empty_map_when_nothing_is_revoked(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    r = await client.get("/auth/revocations", headers=_bearer(await _gateway_token(app)))
+    assert r.status_code == 200, r.text
+    assert r.json()["revocations"] == {}
+
+
+@pytest.mark.asyncio
+async def test_revocations_carries_no_field_beyond_the_two(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    await _revoke(app, client, SUB, not_before=1_500_000_000)
+    r = await client.get("/auth/revocations", headers=_bearer(await _gateway_token(app)))
+    assert set(r.json()) == {"revocations", "generated_at"}
+    assert r.json()["revocations"] == {SUB: 1_500_000_000}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("missing", 401),
+        ("operator", 200),  # the secrets-fetch gate admits operator scope
+        ("dispatch", 403),
+        ("other_audience", 403),
+        ("gateway", 200),
+    ],
+)
+async def test_revocations_gates_exactly_like_secrets_fetch(
+    app: FastAPI, client: AsyncClient, kind: str, expected: int
+) -> None:
+    """Same gate as `GET /admin/secrets/...`, so the gateway needs no new
+    credential and nothing else gets in. Each token hits both routes and
+    must get the same status."""
+    if kind == "missing":
+        headers: dict[str, str] = {}
+    elif kind == "operator":
+        headers = _bearer(await _operator_token(app, client))
+    elif kind == "dispatch":
+        headers = _bearer(
+            await _signed(app, sub="persona:archivist", aud="cabal-core", scope=["dispatch"])
+        )
+    elif kind == "other_audience":
+        headers = _bearer(
+            await _signed(app, sub="service:liminal", aud="elsewhere", scope=["secrets-fetch"])
+        )
+    else:
+        headers = _bearer(await _gateway_token(app))
+    secrets = await client.get("/admin/secrets/archivist/files", headers=headers)
+    listed = await client.get("/auth/revocations", headers=headers)
+    assert secrets.status_code == expected, secrets.text
+    assert listed.status_code == expected, listed.text

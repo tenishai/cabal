@@ -2,6 +2,7 @@
 
 POST /auth/bootstrap — consume a bootstrap code, mint a JWT.
 POST /auth/renew — swap a still-valid operator token for a fresh one (#395).
+GET /auth/revocations — every subject's revocation cutoff, for the gateway.
 
 The code is one-shot: it succeeds exactly once or returns 401 with a
 specific error code so the client can distinguish unknown/expired/used.
@@ -10,6 +11,7 @@ specific error code so the client can distinguish unknown/expired/used.
 from __future__ import annotations
 
 import os
+import time
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
@@ -20,6 +22,7 @@ from cabal.core.auth.jwt import OPERATOR_SUB_PREFIX, JWTError, extract_bearer, m
 from cabal.core.auth.keys import load_active_signing_key
 from cabal.core.auth.revocations import refusal
 from cabal.core.db import open_session
+from cabal.core.routes.admin import _require_secrets_fetch
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -266,4 +269,39 @@ async def liminal_token(
         aud="liminal",
         persona=persona,
         expires_at=expires_at,
+    )
+
+
+class RevocationsResponse(BaseModel):
+    revocations: dict[str, int]
+    generated_at: int
+
+
+@router.get("/revocations", response_model=RevocationsResponse)
+async def list_revocations(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> RevocationsResponse:
+    """Every subject with a revocation cutoff, as `{sub: not_before}`.
+
+    The gateway verifies cabal-minted tokens itself and never saw this
+    list, so a revoked subject kept gateway access until its token expired
+    (liminal#228). It polls here and refuses `iat < not_before` itself.
+
+    Auth is the secrets-fetch gate (`_require_secrets_fetch`), the token
+    the gateway already holds for `GET /admin/secrets/...`: operator or
+    `secrets-fetch` scope, audience `cabal-core` or the gateway's. Read
+    from the in-memory list, not the table, so a poll costs no query.
+    """
+    _require_secrets_fetch(request, extract_bearer(authorization))
+    revocations = getattr(request.app.state, "revocations", None)
+    if revocations is None:
+        # An empty map would tell the gateway nothing is revoked.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="revocations are not loaded",
+        )
+    return RevocationsResponse(
+        revocations=revocations.snapshot(),
+        generated_at=int(time.time()),
     )

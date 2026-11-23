@@ -1234,7 +1234,8 @@ async def revoke_tokens(
     cabal-core site, the `/auth/liminal-token` exchange included.
 
     One limit: an `aud=liminal` token exchanged BEFORE the revoke is checked
-    by the gateway, not here, and lives out its fifteen-minute TTL.
+    by the gateway, not here, and lives out its fifteen-minute TTL unless
+    the gateway refuses it from `GET /auth/revocations`.
 
     `mint-service` waits out the revoked second before minting for `sub`,
     so a pass minted after this call passes. Service tokens carry no

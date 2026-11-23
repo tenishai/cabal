@@ -94,7 +94,8 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
 - **Token revocation** — `POST /admin/token/revoke` (operator) refuses every token
   a subject was issued before the cutoff, and the cutoff survives a restart. An
   `aud=liminal` token already exchanged is checked by the gateway, not here, and
-  lives out its 15 minutes.
+  lives out its 15 minutes. The gateway can fetch every cutoff from
+  `GET /auth/revocations`, using the same token it uses to fetch secrets.
 - **Bootstrap code delivery** — `cabal.bootstrap_code` (`log`, `file` or `off`)
   lets a cabal that already has its operator keep the startup code out of the log.
 
