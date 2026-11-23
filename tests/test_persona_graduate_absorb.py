@@ -65,8 +65,8 @@ async def _seed_archivist_federated(app: FastAPI) -> None:
             s,
             name="archivist",
             persona_name="archivist",
-            endpoint="https://archivist.rd.ts.net",
-            federation_audience="archivist@rd",
+            endpoint="https://archivist.example.ts.net",
+            federation_audience="archivist@example",
             agent_card_json={},
             agent_card_kid="",
         )
@@ -85,8 +85,8 @@ async def test_graduate_registers_federated_row(app: FastAPI, client: AsyncClien
     r = await client.post(
         "/admin/persona/archivist/graduate",
         json={
-            "endpoint": "https://archivist.rd.ts.net",
-            "audience": "archivist@rd",
+            "endpoint": "https://archivist.example.ts.net",
+            "audience": "archivist@example",
         },
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -94,8 +94,8 @@ async def test_graduate_registers_federated_row(app: FastAPI, client: AsyncClien
     body = r.json()
     assert body["graduated"] is True
     assert body["agent"] == "archivist"
-    assert body["endpoint"] == "https://archivist.rd.ts.net"
-    assert body["audience"] == "archivist@rd"
+    assert body["endpoint"] == "https://archivist.example.ts.net"
+    assert body["audience"] == "archivist@example"
     assert body["previous_generation_retired"] == 1
 
     # The active bulletin row must now be federated.
@@ -103,8 +103,8 @@ async def test_graduate_registers_federated_row(app: FastAPI, client: AsyncClien
         active = await bulletin_store.get_active(s, "archivist")
     assert active is not None
     assert active.kind == "federated"
-    assert active.federation_audience == "archivist@rd"
-    assert active.endpoint == "https://archivist.rd.ts.net"
+    assert active.federation_audience == "archivist@example"
+    assert active.endpoint == "https://archivist.example.ts.net"
 
 
 @pytest.mark.asyncio
@@ -115,7 +115,7 @@ async def test_graduate_retires_existing_local_row(app: FastAPI, client: AsyncCl
 
     await client.post(
         "/admin/persona/archivist/graduate",
-        json={"endpoint": "https://archivist.rd.ts.net", "audience": "archivist@rd"},
+        json={"endpoint": "https://archivist.example.ts.net", "audience": "archivist@example"},
         headers={"Authorization": f"Bearer {token}"},
     )
 
@@ -145,7 +145,7 @@ async def test_graduate_unregisters_local_handler(app: FastAPI, client: AsyncCli
     token = await _bootstrap_token(app, client)
     await client.post(
         "/admin/persona/archivist/graduate",
-        json={"endpoint": "https://archivist.rd.ts.net", "audience": "archivist@rd"},
+        json={"endpoint": "https://archivist.example.ts.net", "audience": "archivist@example"},
         headers={"Authorization": f"Bearer {token}"},
     )
 
@@ -163,7 +163,7 @@ async def test_graduate_works_without_existing_row(app: FastAPI, client: AsyncCl
     token = await _bootstrap_token(app, client)
     r = await client.post(
         "/admin/persona/librarian/graduate",
-        json={"endpoint": "https://librarian.rd.ts.net", "audience": "librarian@rd"},
+        json={"endpoint": "https://librarian.example.ts.net", "audience": "librarian@example"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 200, r.text
@@ -183,7 +183,7 @@ async def test_graduate_without_persona_or_row(app: FastAPI, client: AsyncClient
     token = await _bootstrap_token(app, client)
     r = await client.post(
         "/admin/persona/scribe/graduate",
-        json={"endpoint": "https://scribe.rd.ts.net", "audience": "scribe@rd"},
+        json={"endpoint": "https://scribe.example.ts.net", "audience": "scribe@example"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 200, r.text
@@ -208,7 +208,7 @@ async def test_graduate_400_on_missing_fields(app: FastAPI, client: AsyncClient)
 
     r = await client.post(
         "/admin/persona/archivist/graduate",
-        json={"endpoint": "", "audience": "archivist@rd"},
+        json={"endpoint": "", "audience": "archivist@example"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 400
@@ -225,7 +225,7 @@ async def test_graduate_requires_operator_scope(app: FastAPI, client: AsyncClien
     limited = _mint(signing_key=stored, sub="guest", aud="cabal-core", scope=["dispatch"])
     r = await client.post(
         "/admin/persona/archivist/graduate",
-        json={"endpoint": "https://archivist.rd.ts.net", "audience": "archivist@rd"},
+        json={"endpoint": "https://archivist.example.ts.net", "audience": "archivist@example"},
         headers={"Authorization": f"Bearer {limited}"},
     )
     assert r.status_code in {401, 403}
@@ -321,7 +321,7 @@ async def test_graduate_then_absorb_round_trip(app: FastAPI, client: AsyncClient
     # Graduate.
     r = await client.post(
         "/admin/persona/archivist/graduate",
-        json={"endpoint": "https://archivist.rd.ts.net", "audience": "archivist@rd"},
+        json={"endpoint": "https://archivist.example.ts.net", "audience": "archivist@example"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 200, r.text
@@ -362,7 +362,7 @@ async def test_graduate_absorb_graduate_no_generation_collision(
     # First graduate → federated gen 2.
     r1 = await client.post(
         "/admin/persona/archivist/graduate",
-        json={"endpoint": "https://archivist.rd.ts.net", "audience": "archivist@rd"},
+        json={"endpoint": "https://archivist.example.ts.net", "audience": "archivist@example"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r1.status_code == 200, r1.text
@@ -378,7 +378,7 @@ async def test_graduate_absorb_graduate_no_generation_collision(
     # Second graduate → must NOT 500 on a PK collision; generation strictly up.
     r2 = await client.post(
         "/admin/persona/archivist/graduate",
-        json={"endpoint": "https://archivist.rd.ts.net", "audience": "archivist@rd"},
+        json={"endpoint": "https://archivist.example.ts.net", "audience": "archivist@example"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r2.status_code == 200, r2.text
@@ -402,7 +402,7 @@ async def test_graduate_does_not_clobber_existing_persona(
     token = await _bootstrap_token(app, client)
     r = await client.post(
         "/admin/persona/archivist/graduate",
-        json={"endpoint": "https://archivist.rd.ts.net", "audience": "archivist@rd"},
+        json={"endpoint": "https://archivist.example.ts.net", "audience": "archivist@example"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 200, r.text

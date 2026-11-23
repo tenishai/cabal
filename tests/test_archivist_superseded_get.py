@@ -11,9 +11,9 @@ from cabal.archivist import ArchivistStore, Entry
 
 def test_superseded_by_names_the_replacement(tmp_path: Path) -> None:
     store = ArchivistStore(tmp_path / "archivist.db")
-    old = store.publish(Entry(resource_name="mash1", summary="mash1 is at .15", entry_type="fact"))
+    old = store.publish(Entry(resource_name="host-a", summary="host-a is at .15", entry_type="fact"))
     new = store.publish(
-        Entry(resource_name="mash1", summary="mash1 is at .16", entry_type="fact"),
+        Entry(resource_name="host-a", summary="host-a is at .16", entry_type="fact"),
         supersede=True,
     )
 
@@ -37,8 +37,8 @@ def test_a_related_edge_is_not_a_supersede(tmp_path: Path) -> None:
     # RELATED edge new -> prior, which is also an inbound edge on the prior.
     # Only SUPERSEDES edges may name a replacement (review of PR #366).
     store = ArchivistStore(tmp_path / "archivist.db")
-    first = store.publish(Entry(resource_name="mash1", summary="mash1 runs builds", entry_type="fact"))
-    second = store.publish(Entry(resource_name="mash1", summary="mash1 has 61 GB", entry_type="fact"))
+    first = store.publish(Entry(resource_name="host-a", summary="host-a runs builds", entry_type="fact"))
+    second = store.publish(Entry(resource_name="host-a", summary="host-a has 61 GB", entry_type="fact"))
 
     assert second.outcome == "related"
     assert store.get(first.entry_id).status == "active"

@@ -17,13 +17,13 @@ from cabal.archivist import ArchivistStore, Entry
 def store(tmp_path: Path) -> ArchivistStore:
     s = ArchivistStore(tmp_path / "archivist.db")
     s.publish(Entry(
-        resource_name="mash1",
-        summary="The build host is mash1.local; run docker/compose there.",
+        resource_name="host-a",
+        summary="The build host is host-a.local; run docker/compose there.",
         entry_type="fact",
     ))
     s.publish(Entry(
-        resource_name="dev04",
-        summary="dev04 is not the build host.",
+        resource_name="host-b",
+        summary="host-b is not the build host.",
         entry_type="fact",
     ))
     return s
@@ -34,7 +34,7 @@ def store(tmp_path: Path) -> ArchivistStore:
     "query",
     [
         "what's the build host?",
-        "mash1.local",
+        "host-a.local",
         "docker/compose",
         "c++ build",
         "host, build",
@@ -50,9 +50,9 @@ def store(tmp_path: Path) -> ArchivistStore:
         "hello.",
         "foo AND",
         "AND",
-        "NOT mash1",
-        "mash1 OR",
-        "{mash1}",
+        "NOT host-a",
+        "host-a OR",
+        "{host-a}",
         "?",
     ],
 )
@@ -62,25 +62,25 @@ def test_query_never_raises(store: ArchivistStore, query: str) -> None:
 
 @pytest.mark.parametrize(
     "query",
-    ["mash1.local", "docker/compose", "MASH1", "mash1 host", "mash1 host?"],
+    ["host-a.local", "docker/compose", "HOST-A", "host-a host", "host-a host?"],
 )
 def test_punctuated_query_finds_the_entry(store: ArchivistStore, query: str) -> None:
     hits = store.search(query)
-    assert [h.resource_name for h in hits][:1] == ["mash1"]
+    assert [h.resource_name for h in hits][:1] == ["host-a"]
 
 
 def test_tokens_are_and_ed(store: ArchivistStore) -> None:
     # Both entries mention "build host"; only one also says "docker".
-    assert {h.resource_name for h in store.search("build host")} == {"mash1", "dev04"}
-    assert {h.resource_name for h in store.search("build host?")} == {"mash1", "dev04"}
-    assert [h.resource_name for h in store.search("build docker")] == ["mash1"]
+    assert {h.resource_name for h in store.search("build host")} == {"host-a", "host-b"}
+    assert {h.resource_name for h in store.search("build host?")} == {"host-a", "host-b"}
+    assert [h.resource_name for h in store.search("build docker")] == ["host-a"]
 
 
 def test_operators_are_plain_words(store: ArchivistStore) -> None:
-    # "NOT dev04" used to be an FTS5 NOT; now "not" is a word dev04's row has.
-    assert [h.resource_name for h in store.search("NOT dev04")] == ["dev04"]
-    # "mash1 OR dev04" used to match both; now "or" must appear as a word.
-    assert store.search("mash1 OR dev04") == []
+    # "NOT host-b" used to be an FTS5 NOT; now "not" is a word host-b's row has.
+    assert [h.resource_name for h in store.search("NOT host-b")] == ["host-b"]
+    # "host-a OR host-b" used to match both; now "or" must appear as a word.
+    assert store.search("host-a OR host-b") == []
 
 
 def test_embedded_double_quote(store: ArchivistStore) -> None:
@@ -101,7 +101,7 @@ def test_control_characters_and_lone_surrogates_never_raise(
 
 
 def test_a_nul_separates_words_like_a_space(store: ArchivistStore) -> None:
-    assert [h.resource_name for h in store.search("docker\x00compose")] == ["mash1"]
+    assert [h.resource_name for h in store.search("docker\x00compose")] == ["host-a"]
 
 
 def test_a_surrogate_pair_as_two_code_points_is_one_character() -> None:
@@ -130,8 +130,8 @@ def test_every_tag_must_match_and_top_k_holds(tmp_path: Path) -> None:
     s = ArchivistStore(tmp_path / "a.db")
     for i in range(5):
         s.publish(Entry(resource_name=f"both-{i}", summary=f"cache {i}", entry_type="fact",
-                        tags=["team", "mash1"]))
+                        tags=["team", "host-a"]))
     s.publish(Entry(resource_name="one", summary="cache x", entry_type="fact", tags=["team"]))
-    hits = s.search("cache", tags=["team", "mash1"], top_k=3)
+    hits = s.search("cache", tags=["team", "host-a"], top_k=3)
     assert len(hits) == 3
     assert all(h.resource_name.startswith("both-") for h in hits)

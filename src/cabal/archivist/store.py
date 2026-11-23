@@ -513,9 +513,9 @@ def _sanitize_fts(query: str) -> str:
     """Quote every whitespace-separated token as an FTS5 string.
 
     FTS5 barewords allow only letters, digits, ``_`` and non-ASCII, so
-    ``mash1.local`` or ``host?`` left bare is a syntax error (cabal#356).
-    Quoted, each token is plain text: the tokenizer splits ``mash1.local``
-    into the phrase ``mash1 local``, and ``AND``/``OR``/``NOT``, ``*``,
+    ``host-a.local`` or ``host?`` left bare is a syntax error (cabal#356).
+    Quoted, each token is plain text: the tokenizer splits ``host-a.local``
+    into the phrase ``host-a local``, and ``AND``/``OR``/``NOT``, ``*``,
     ``^``, ``:`` and ``{}`` lose their operator meaning. Tokens are still
     implicitly AND-ed, as bare words were.
 

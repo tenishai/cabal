@@ -74,7 +74,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_relations_dst
 
 -- Lineage (cabal#410): which sources an entry was derived from. A source is
 -- another entry's id or an outside reference such as
--- "techne:poe@dimartin:knowledge/4255". Erasing a source walks this table.
+-- "techne:agent-a@user:knowledge/4255". Erasing a source walks this table.
 CREATE TABLE IF NOT EXISTS memory_lineage (
     derived_id      TEXT NOT NULL,
     source_ref      TEXT NOT NULL,

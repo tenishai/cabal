@@ -425,7 +425,7 @@ supersedes it through `archivist.publish` (`supersede: true`; add
 The old row stays in the table for audit, and search stops returning it.
 
 When the text must not be stored at all (personal data, a leaked secret), purge
-it on the host that holds the database. For the mash1 container, that's
+it on the host that holds the database. For the archivist container, that's
 `docker exec -it archivist cbl archivist purge <resource_name>`:
 
 ```sh
@@ -456,9 +456,9 @@ sessions** — the Claude Code sessions actually doing work — once they regist
 NAME                    GEN KIND       ROLE       STATUS     TIER     HEARTBEAT
 -------------------------------------------------------------------------------
 echo                      1 member     builtin    active     strict   —
-poe2                      1 session    session    active     strict   2026-09-10T12:04:00+00:00
+agent-b                    1 session    session    active     strict   2026-09-10T12:04:00+00:00
                        ↳ liminal · fix/73-hardening · working the hardening bill
-poe3                      1 session    session    active     strict   2026-09-10T11:31:00+00:00  STALE
+agent-c                    1 session    session    active     strict   2026-09-10T11:31:00+00:00  STALE
 ```
 
 A session row is **presence only** — it exists to answer "what is running, and
@@ -480,7 +480,7 @@ Wire it up with the hook cabal ships:
 }
 ```
 
-Set `CABAL_SESSION_NAME=poe2` for a readable roster (it falls back to a short
+Set `CABAL_SESSION_NAME=agent-b` for a readable roster (it falls back to a short
 session id), and `CABAL_SESSION_TASK="..."` for the one-line what-I-am-doing.
 Repo and branch are read from git; a detached worktree reports `detached@<sha>`.
 

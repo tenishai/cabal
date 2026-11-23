@@ -36,7 +36,7 @@ federation_audience: str | None # sovereign service id callers must mint into `a
   endpoint, or its own container). Default for every existing row.
 - **`federated`** — a sovereign peer this cabal is a client of. `endpoint` is the
   sovereign HTTPS URL; `federation_audience` is its stable service id
-  (e.g. `archivist@rd`), used both for outbound token `aud` and local re-verify.
+  (e.g. `archivist@example`), used both for outbound token `aud` and local re-verify.
 
 `AgentRow` additions:
 

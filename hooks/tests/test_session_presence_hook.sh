@@ -28,14 +28,14 @@ export CBL_LOG="$TMP/calls.log"
 
 run() { # run <mode> [cwd]
   : > "$CBL_LOG"
-  ( cd "${2:-$TMP}" && PATH="$TMP/bin:$PATH" CABAL_SESSION_NAME=poe2 \
+  ( cd "${2:-$TMP}" && PATH="$TMP/bin:$PATH" CABAL_SESSION_NAME=agent-b \
       bash "$HOOK" "$1" </dev/null >/dev/null 2>&1 )
   echo "exit=$?"
   cat "$CBL_LOG" 2>/dev/null
 }
 
 # 1. start registers under the operator-supplied name
-out=$(run start); check "start registers" "session register poe2" "$out"
+out=$(run start); check "start registers" "session register agent-b" "$out"
 
 # 2. a non-repo directory still registers — the empty-args path is ordinary,
 #    and on bash 3.2 the naive expansion would abort here
@@ -61,26 +61,26 @@ check_not "detached is not literal HEAD" "--branch HEAD" "$out"
 
 # 4. a failing heartbeat falls back to register — covers a reaped row
 out=$( : > "$CBL_LOG"; ( cd "$GITDIR" && PATH="$TMP/bin:$PATH" CBL_FAIL=1 \
-        CABAL_SESSION_NAME=poe2 bash "$HOOK" beat </dev/null >/dev/null 2>&1 ); \
+        CABAL_SESSION_NAME=agent-b bash "$HOOK" beat </dev/null >/dev/null 2>&1 ); \
       echo "exit=$?"; cat "$CBL_LOG" )
-check "heartbeat falls back to register" "session register poe2" "$out"
+check "heartbeat falls back to register" "session register agent-b" "$out"
 check "fallback still exits 0" "exit=0" "$out"
 
 # 5. the task line only appears when the operator sets one — never guessed
 out=$( : > "$CBL_LOG"; ( cd "$GITDIR" && PATH="$TMP/bin:$PATH" \
-        CABAL_SESSION_NAME=poe2 CABAL_SESSION_TASK="hitting #142" \
+        CABAL_SESSION_NAME=agent-b CABAL_SESSION_TASK="hitting #142" \
         bash "$HOOK" beat </dev/null >/dev/null 2>&1 ); cat "$CBL_LOG" )
 check "task passed through" "--task hitting #142" "$out"
 
 # 6. FAILS OPEN when cabal is absent — the whole safety argument
 out=$( : > "$CBL_LOG"; ( cd "$GITDIR" && PATH="/usr/bin:/bin" \
-        CABAL_SESSION_NAME=poe2 bash "$HOOK" start </dev/null >/dev/null 2>&1 ); \
+        CABAL_SESSION_NAME=agent-b bash "$HOOK" start </dev/null >/dev/null 2>&1 ); \
       echo "exit=$?" )
 check "no cbl on PATH exits 0" "exit=0" "$out"
 
 # 7. FAILS OPEN when cbl itself errors
 out=$( : > "$CBL_LOG"; ( cd "$GITDIR" && PATH="$TMP/bin:$PATH" CBL_FAIL=1 \
-        CABAL_SESSION_NAME=poe2 bash "$HOOK" start </dev/null >/dev/null 2>&1 ); \
+        CABAL_SESSION_NAME=agent-b bash "$HOOK" start </dev/null >/dev/null 2>&1 ); \
       echo "exit=$?" )
 check "cbl failure exits 0" "exit=0" "$out"
 
@@ -107,7 +107,7 @@ NOISY
 chmod +x "$TMP/bin/cbl"
 export TMPDIR="$TMP"
 rm -f "$TMP/cabal-session-presence.log"
-out=$( ( cd "$GITDIR" && PATH="$TMP/bin:$PATH" TMPDIR="$TMP" CABAL_SESSION_NAME=poe2 \
+out=$( ( cd "$GITDIR" && PATH="$TMP/bin:$PATH" TMPDIR="$TMP" CABAL_SESSION_NAME=agent-b \
         bash "$HOOK" start </dev/null >/dev/null 2>&1 ); echo "exit=$?" )
 check "a failing call still exits 0"       "exit=0"                    "$out"
 check "stderr is captured, not discarded"  "no token"                  "$(cat "$TMP/cabal-session-presence.log" 2>/dev/null)"
@@ -116,14 +116,14 @@ check "stderr is captured, not discarded"  "no token"                  "$(cat "$
 cat > "$TMP/bin/cbl" <<'CHATTY'
 #!/usr/bin/env bash
 echo "$@" >> "$CBL_LOG"
-echo "registered poe2 (kind=session)"
+echo "registered agent-b (kind=session)"
 exit 0
 CHATTY
 chmod +x "$TMP/bin/cbl"
 rm -f "$TMP/cabal-session-presence.log"
-( cd "$GITDIR" && PATH="$TMP/bin:$PATH" TMPDIR="$TMP" CABAL_SESSION_NAME=poe2 \
+( cd "$GITDIR" && PATH="$TMP/bin:$PATH" TMPDIR="$TMP" CABAL_SESSION_NAME=agent-b \
     bash "$HOOK" start </dev/null >/dev/null 2>&1 )
-check_not "success chatter stays out of the log" "registered poe2" \
+check_not "success chatter stays out of the log" "registered agent-b" \
   "$(cat "$TMP/cabal-session-presence.log" 2>/dev/null)"
 
 # restore the plain stub for anything after this point
@@ -136,7 +136,7 @@ STUB2
 chmod +x "$TMP/bin/cbl"
 
 # 10. end de-registers
-out=$(run end); check "end de-registers" "session end poe2" "$out"
+out=$(run end); check "end de-registers" "session end agent-b" "$out"
 
 echo "---"; echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

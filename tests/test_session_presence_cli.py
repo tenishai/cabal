@@ -42,7 +42,7 @@ def test_status_renders_a_work_line_under_a_session(monkeypatch) -> None:
                     "last_heartbeat": None, "work": None,
                 },
                 {
-                    "name": "poe2", "generation": 1, "kind": "session", "role": "session",
+                    "name": "agent-b", "generation": 1, "kind": "session", "role": "session",
                     "status": "active", "safety_tier": "strict",
                     "last_heartbeat": "2026-09-10T12:00:00Z",
                     "work": {"repo": "liminal", "branch": "fix/73", "task": "hardening"},

@@ -23,7 +23,7 @@ set -uo pipefail
 MODE="${1:-beat}"
 
 # --- name this session ------------------------------------------------------
-# CABAL_SESSION_NAME is how an operator gets a readable roster ("poe2") instead
+# CABAL_SESSION_NAME is how an operator gets a readable roster ("agent-b") instead
 # of a wall of uuids. Falling back to the session id keeps the row correct when
 # nobody set one -- an ugly name is recoverable, a missing row is the bug.
 input=$(cat 2>/dev/null || true)
