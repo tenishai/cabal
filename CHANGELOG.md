@@ -22,6 +22,7 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Fixed
 
+- The archivist `search` tool description gave a wrong tokenizer example: it said `host-a.local` matches the phrase `host-a local`, but the hyphen splits too. It now uses `buildhost.local` and the phrase `buildhost local`. Search behaviour is unchanged.
 - ListTasks lists a group task on every member's path, as GetTask and CancelTask already read
   it (issue 314). Before, a group task showed only on the path of the member that ran it, so a
   caller holding one member's token could read the task by id but never find it in a list: an

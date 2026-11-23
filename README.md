@@ -476,9 +476,9 @@ sessions** — the Claude Code sessions actually doing work — once they regist
 NAME                    GEN KIND       ROLE       STATUS     TIER     HEARTBEAT
 -------------------------------------------------------------------------------
 echo                      1 member     builtin    active     strict   —
-agent-b                    1 session    session    active     strict   2026-09-10T12:04:00+00:00
+agent-b                   1 session    session    active     strict   2026-09-10T12:04:00+00:00
                        ↳ liminal · fix/73-hardening · working the hardening bill
-agent-c                    1 session    session    active     strict   2026-09-10T11:31:00+00:00  STALE
+agent-c                   1 session    session    active     strict   2026-09-10T11:31:00+00:00  STALE
 ```
 
 A session row is **presence only** — it exists to answer "what is running, and
