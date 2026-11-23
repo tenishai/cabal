@@ -18,7 +18,7 @@ graph TB
         EB["Event Bus (SSE)"]
         PROJ["Projects · Conversations<br/>Events · Notifications"]
     end
-    DB[("SQLite cabal.db<br/>FTS5 · WAL")]
+    DB[("SQLite cabal.db<br/>WAL")]
     LITS["Litestream sidecar<br/>→ S3 / GCS / sftp"]
 
     %% ===== A2A wire =====
@@ -114,7 +114,8 @@ through it. Future TUI / web UIs land on the same auth + dispatch endpoints.
 
 **Cabal Core.** One FastAPI singleton holding the dispatch router, bulletin board
 (signed AgentCards keyed by name), JWT IdP (issues operator + per-persona bearer
-tokens; rotates the AgentCard signing key under Fernet at rest), project/conversation/
+tokens; encrypts the AgentCard signing key under Fernet at rest; `cbl reset-auth`
+replaces it, and nothing rotates it automatically), project/conversation/
 event tables, and the SSE event bus. State lives in one SQLite file; Litestream
 streams the WAL off-host for durability.
 
@@ -151,10 +152,11 @@ faces: A2A for synthesis dispatches and MCP for cheap shallow retrieval that
 bypasses the LLM.
 
 **Per-agent substrate.** Every persona container (and the solo-mode in-process
-equivalent) ships the same three pieces: **liminal** as the MCP gateway and
-tool-scoping runtime, **techne** as agent-local memory + session checkpoints,
-and the **LiteLLM client** wrapper with a single-probe circuit breaker and
-budget reservation. Identical inside project personas and singleton personas.
+equivalent) gets the **LiteLLM client** wrapper with a single-probe circuit
+breaker and budget reservation. A persona also gets **liminal** (the MCP gateway
+and tool-scoping runtime) only when `[mcp].enabled` is set and `[liminal]` is
+configured, and **techne** (agent-local memory + session checkpoints) only when
+the `memory` extra is installed. Both are optional extras.
 
 **External.** LiteLLM proxy (one per deployment) handles model routing and
 per-virtual-key spend. Litestream pushes WAL frames to object storage.

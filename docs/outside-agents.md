@@ -42,7 +42,7 @@ back at once.
    ```
 
    It prints the token on stdout, and its subject, scope, audience and expiry on
-   stderr. `--ttl-days` defaults to 30 and is capped at 365.
+   stderr. `--ttl-days` defaults to 30 and is capped at 365 (or `[cabal] service_token_max_ttl_days`, if lower).
 3. If `[guardrails] delegation_edges = true`, also give the outsider an edge to
    each persona it may call, keyed by its full subject:
 
@@ -51,8 +51,9 @@ back at once.
    "agent:ext-<name>" = ["<persona>"]
    ```
 
-   Without that line every SendMessage it sends is refused, because its token
-   carries no persona for `may_delegate_to` to match. GetTask, ListTasks and
+   Without that line every SendMessage it sends is refused: the
+   guardrail finds no `caller_edges` entry for its subject (this applies only when
+   `delegation_edges = true`). GetTask, ListTasks and
    CancelTask do not dispatch, so edges do not apply to them. Edges are read at startup.
 4. Give the outsider, out of band, each token together with that agent's card
    URL, `{public_url}/agents/<agent>/.well-known/agent-card.json`. The card
@@ -67,8 +68,9 @@ roster stays private.
 
 GetTask, ListTasks and CancelTask check who the caller is, not the token's
 audience. With any of its tokens, on any persona's path, the outsider sees and
-can cancel only the tasks it sent to that persona; on a persona it never sent
-to, it finds none. Its tasks are not visible to any other outside agent. The
+can cancel only the tasks it sent to that persona, plus tasks it sent to a
+`[groups]` group that includes that persona; on a persona it never sent to, it
+finds none. Its tasks are not visible to any other outside agent. The
 operator sees every task on a persona, through that persona's path.
 
 ## Revoke
