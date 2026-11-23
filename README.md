@@ -55,7 +55,7 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
   take no token. A2A v1.0 GetTask, ListTasks and CancelTask and the legacy
   `tasks/get` check that the caller owns the task (or holds `operator` scope),
   not the token's audience, so any validly signed, unrevoked token can call
-  them (issue #452). A token whose `aud` already matches the dispatch target is passed on as
+  them (issue #296). A token whose `aud` already matches the dispatch target is passed on as
   is, with no scope check. Operator tokens cannot impersonate liminal service
   tokens and vice versa. `allow_dev_master_key` defaults to `False`.
 - **liminal integration** — personas that have `[mcp]` wired in their identity.toml
