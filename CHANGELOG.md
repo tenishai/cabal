@@ -6,6 +6,10 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+### Changed
+
+- **Licence: MIT.** The project moves from AGPL-3.0-or-later to MIT, with the agreement of every contributor (tenishai/agora discussion 69). Releases already published keep the licence they shipped under.
+
 ### Upgrading
 
 - One database migration, applied at startup: `b4c8e2a6d1f3` adds `conversations.target_group`
