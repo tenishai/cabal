@@ -405,6 +405,19 @@ async def test_revocations_is_an_empty_map_when_nothing_is_revoked(
 
 
 @pytest.mark.asyncio
+async def test_revocations_fails_closed_when_the_list_is_not_loaded(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """An empty map would tell the gateway nothing is revoked, so an unloaded
+    list answers 500, not `{}`."""
+    headers = _bearer(await _gateway_token(app))
+    del app.state.revocations
+    r = await client.get("/auth/revocations", headers=headers)
+    assert r.status_code == 500, r.text
+    assert "revocations" not in r.json()
+
+
+@pytest.mark.asyncio
 async def test_revocations_carries_no_field_beyond_the_two(
     app: FastAPI, client: AsyncClient
 ) -> None:

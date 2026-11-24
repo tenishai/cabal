@@ -64,12 +64,6 @@ def _is_self_hosted(runs_on) -> bool:
     return True
 
 
-# Events only someone with write access can fire. A workflow triggered by
-# nothing else cannot be started from a fork. Deliberately narrow:
-# `pull_request` (forks), `pull_request_target`, `workflow_run`, `issue_comment`
-# and the rest are not here.
-TRUSTED_TRIGGERS = frozenset({"push", "workflow_dispatch"})
-
 # The expression Gojira's generated deploy workflow used. No workflow here may
 # carry it any more: the generated file is gone, and an unresolvable runs-on
 # fails closed like any other.
