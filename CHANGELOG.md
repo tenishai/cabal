@@ -19,10 +19,37 @@ Pull requests and issues are in tenishai/cabal.
   (issue 423). It only adds.
 - One database migration, applied at startup: `a9d3e5f7c1b2` adds the `review_runs` and
   `review_steps` tables. It only adds; nothing existing changes.
+- One database migration, applied at startup: `c6e1f4a8b2d9` adds the `meter_spend` table for the
+  token meter. It only adds.
+- **The licence is MIT**, not AGPL-3.0-or-later. Releases already published keep theirs.
+- The review engine, the watch loop, the merge gate, groups and the token meter are all off until
+  `[review] enabled`, `[groups]` and `[meter] enabled` are set in identity.toml; nothing changes
+  for an identity.toml that doesn't name them. Each is documented in `identity.toml.example`.
+- A primus's fan-out now has a token ceiling and each worker an allotment. Unset, they are the most
+  the old code could spend (200,000 per worker; one default budget plus one allotment per worker),
+  so a primus's fan-out gets the same budget it had before.
+- **Every LLM persona's task budget now counts each call's full token use** (input and output).
+  Before, a call cost at most its 50,000-token reservation and anything past that was free. A
+  persona whose calls run past 50,000 tokens now gets fewer calls from the same budget: at
+  100,000 tokens a call, the 200,000 default allows two calls where it used to allow four, and
+  the next one fails with `budget exhausted`. A primus whose plan call uses more than 150,000
+  tokens now refuses the fan-out. The 200,000 default has no identity.toml setting (the token
+  meter's `task_budget` is a separate budget), so expect shorter runs from personas that make
+  large calls.
+- `cbl task <id> --wait` now looks up the persona inside its retry, and `--timeout` ends on the
+  deadline instead of a poll after it (a poll already in flight can overrun it by up to 30 s). No flag changed.
+- `GET /auth/revocations` is new; a liminal that fetches it needs the same token it uses for
+  `GET /admin/secrets/{persona}/{handler}`.
 
 ### Fixed
 
 - The archivist `search` tool description gave a wrong tokenizer example: it said `host-a.local` matches the phrase `host-a local`, but the hyphen splits too. It now uses `buildhost.local` and the phrase `buildhost local`. Search behaviour is unchanged.
+- `cbl task <id> --wait` retries a persona lookup that fails because the daemon is down, as it
+  already did for later polls; a 401 or 403 from the lookup (a service or colleague token cannot
+  read the operator's conversation view) now says to pass `--target <persona>`; the last poll
+  lands on the `--timeout` deadline, and a poll already in flight can still overrun it by up to
+  the client's 30 s ceiling (issue 393).
+- A spent metered root's refusal quotes `root_budget`, the budget the task drew on, not `task_budget`.
 - ListTasks lists a group task on every member's path, as GetTask and CancelTask already read
   it (issue 314). Before, a group task showed only on the path of the member that ran it, so a
   caller holding one member's token could read the task by id but never find it in a list: an
@@ -30,6 +57,25 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Added
 
+- Token budgets for a primus's fan-out (issue 394, part 1). The root task's budget is the ceiling
+  for the whole fan-out; each worker, the reviewer included, gets an allotment carved out of it when
+  it starts and returns what it didn't spend. The primus refuses a fan-out before any worker starts
+  when the root can't cover every worker plus one aggregate call. New persona settings
+  `leg_token_budget_override` and `fanout_token_budget_override`; an allotment below 50,000 (what
+  each model call reserves up front) is refused when the config loads. Spend is logged as
+  `primus.leg_spend` and `primus.fanout_spend`.
+- The token meter for federated agents (issue 394, part 2), off unless `[meter] enabled`. An
+  agent listed under `[meter.agents.<name>]` (`key_sha256`, `upstream`) sets its model base URL to
+  `<cabal>/meter/<key>`; cabal forwards each call to the upstream, reads the usage from the
+  response and charges input plus output tokens to the task the agent is running. Cache tokens are
+  recorded and never charged. `task_budget` and `root_budget` refuse a call over the limit with a
+  400. An agent running two tasks at once has its calls counted as `ambiguous`, one running none as
+  `unattributed`; neither is refused. Rows are in `meter_spend`. cabal never reads, stores or
+  swaps the caller's credential.
+- The merge gate refuses to merge when the base branch has changed a file the PR changes since
+  its merge-base (a renamed file's old path counts, and so does a compare GitHub capped at 300
+  files), ending the run `unmerged` (agents issue 167). A base change to a file the PR only depends
+  on passes.
 - `GET /auth/revocations` lists every revoked subject with its cutoff,
   `{"revocations": {"<sub>": <not_before>}, "generated_at": <epoch>}`, so liminal can refuse
   revoked tokens it verifies itself (tenishai/liminal issue 228). It takes the same token and
@@ -108,7 +154,8 @@ A release candidate: the wright set runs it before `0.5.0` is tagged.
 - One database migration, applied at startup like the others: `f3b6c1d2e4a5` adds
   `conversations.not_before` and `conversations.schedule_json` for scheduled tasks. An archivist
   database gains its origin columns and two new tables (`memory_lineage`, `memory_erasures`) when it is
-  opened; the change only adds, and an older server still works against the upgraded file.
+  opened; the change only adds, and an older server still works against the upgraded file (checked 2026-11-23: v0.4.0's store
+  published to, searched and read an upgraded file).
 - An archivist shared across cabals: set `$CABAL_ARCHIVIST_NAME` on its server (unset, new entries
   record `origin_archivist` as `''`), then run `cbl archivist backfill-origin --archivist <name> --apply` once to
   fill in entries written before the upgrade (a dry run without `--apply`). See the issue #410 entry.

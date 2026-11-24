@@ -272,7 +272,7 @@ def dispatch(
         ...,
         help=(
             "Target agent name (e.g. 'echo'), or group:<name> for the next idle member "
-            "of a group in the daemon's [groups] (needs --detach)."
+            "of a group named in the daemon's identity.toml (needs --detach)."
         ),
     ),
     message: str = typer.Argument(..., help="Initial user message."),
