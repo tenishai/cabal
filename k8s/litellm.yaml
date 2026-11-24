@@ -20,7 +20,10 @@ spec:
     spec:
       containers:
         - name: litellm
-          image: ghcr.io/berriai/litellm:main-stable
+          # Pinned by digest (issue #383): v1.104.2, the same version as the Python
+          # pin in pyproject.toml, built 2026-10-08, before the 2026-10-21 compromise.
+          # A bump is a reviewed change to this line.
+          image: ghcr.io/berriai/litellm:v1.104.2@sha256:3d88bd757134a00e8c00237b85a021ab1f6d54abb9c1df750f411dbe7256a500
           imagePullPolicy: IfNotPresent
           args:
             - "--config"
