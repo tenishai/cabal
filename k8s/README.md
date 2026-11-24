@@ -10,9 +10,10 @@ the LiteLLM proxy, and a Litestream sidecar in a single namespace.
 - The Cabal Core image published to a registry your cluster can pull from
   (`ghcr.io/tenishai/cabal:latest` by default — change in `cabal-core.yaml`
   if you publish elsewhere).
-- The pre-public PyPI gate (see top-level `STATUS.md` checklist) is still
-  open. Until techne is on PyPI, your image build needs `additional_contexts:
-  techne=../techne` set on the build (see `docker-compose.yml`).
+- An image build either takes a `techne` build context (a sibling checkout,
+  `additional_contexts: techne=../techne`, see `docker-compose.yml`) or, with no
+  such context, fetches a version- and sha256-pinned techne wheel from the
+  package index (see the `Dockerfile`).
 
 ## First-time setup
 

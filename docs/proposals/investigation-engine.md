@@ -4,13 +4,13 @@
 **Author**: Claude (Opus 4.7) + Richard, paired session 2026-06-13/14.
 **Tracking issues**: [cabal#11](https://github.com/tenishai/cabal/issues/11) (AbortGraph), [cabal#12](https://github.com/tenishai/cabal/issues/12) (PR-A: A2A streaming types).
 **Inspiration**: `incidentfox/incidentfox` (2026-06-13), `HolmesGPT/holmesgpt` (2026-06-14), `k8sgpt-ai/k8sgpt` (2026-06-14), `tensorzero/tensorzero` (2026-06-14). All architectural patterns logged in `architectural-patterns.md`.
-**Prerequisite**: `techne/docs/proposals/outbox-sinks.md` — the durable, schema-validated outbox-sink substrate the new PR-E consumes. PR-E here is now a cabal-only consumer; the substrate work lives upstream in techne.
+**Prerequisite**: techne's outbox-sinks proposal (in the techne repo, not this one) — the durable, schema-validated outbox-sink substrate the new PR-E consumes. PR-E here is now a cabal-only consumer; the substrate work lives upstream in techne.
 
 **Revisions**:
 - 2026-06-15 (afternoon) — **Delivery substrate extracted to techne.** Earlier same-day revision built `deposit_finding` directly on the Archivist handler. After surveying `techne/sync/outbox.py`, the right home for the durable queue + sink registry + schema validation is techne (it's general substrate — future sinks like Slack-courier, email-out, tui-notifier register the same way). PR-E in this proposal is now the *consumer*: Archivist registers as a sink at startup, sub-agents enqueue via `techne.outbox`, the sink handler does A2A delivery to the Archivist agent, which runs receiver-side distill and publishes through the existing dedup pipeline. See `outbox-sinks.md` for the substrate design.
 - 2026-06-15 (morning) — **Mailbox collapsed into the existing Archivist entry pipeline.** No separate `kind:mailbox-message` table. Sub-agents call a single dumb-producer tool with raw content; the Archivist runs a receiver-side distill (cheap model) and publishes through its existing dedup pipeline. "Mailbox" becomes a tag slice over the corpus, not a second-class storage layer. Findings *are* collective knowledge the moment they land. Detail in §Mailbox-as-tag-slice on Archivist.
 - 2026-06-14 (final) — **major shrink after surveying actual cabal code.** Most of "the engine" (LLM loop, tool dispatch, memory integration, checkpoint, MCP integration, streaming SSE, persona registry, primus rotation, hot reload) already exists across 44 commits / 258 tests / 37 phases. This proposal now scopes only what's genuinely net-new: A2A spec streaming methods, multi-instance personas, sub-agent role library extension, and mailbox semantics over the Archivist.
-- 2026-06-14 — Earlier drafts treated "the investigation engine" as a from-scratch build. See [[feedback-survey-before-propose]].
+- 2026-06-14 — Earlier drafts treated "the investigation engine" as a from-scratch build.
 
 > **Companion proposal**: [`cabal-tui.md`](./cabal-tui.md) covers the multi-pane TUI that consumes the streaming + multi-instance work this proposal enables.
 
@@ -383,12 +383,6 @@ When does the engine get AbortGraph for transitive cancellation? Today `tasks/ca
 - HolmesGPT — https://github.com/HolmesGPT/holmesgpt
 
 ### Companion proposals
-- `techne/docs/proposals/outbox-sinks.md` — PR-E prerequisite. Substrate for typed, schema-validated, durable sink delivery in techne.
+- A techne outbox-sinks proposal (in the techne repo, not this one) — PR-E prerequisite. Substrate for typed, schema-validated, durable sink delivery in techne.
 - `cabal/docs/proposals/cabal-tui.md` — UI consumer of PR-E's mailbox tag-slice tools.
 
-### Memory
-- [[project-rookery-metaphor]] — substrate sentinels, actor stacks, sub-agent scouts
-- [[feedback-partnership-stance]] — actor-tier personas get character-names
-- [[project-platform-state-2026-06-12]] — current substrate state
-- [[feedback-survey-before-propose]] — why this proposal shrank
-- [[feedback-mvp-cut-pattern]] — ship the read/write core, defer in module docstring

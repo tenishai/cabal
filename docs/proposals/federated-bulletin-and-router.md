@@ -136,8 +136,8 @@ router; everything else composes.
 
 > Net: the calling agent's **home-cabal JWT** (iss = this cabal, aud = sovereign id,
 > persona/sub = the agent) is what reaches the sovereign liminal — exactly the input
-> `MultiIssuerJWKSVerifier` + `PolicyStore` expect (see
-> `liminal/docs/proposals/multi-issuer-trust-registry.md`).
+> `MultiIssuerJWKSVerifier` + `PolicyStore` expect (from
+> liminal's multi-issuer trust-registry proposal, which is not in this repo).
 
 ---
 

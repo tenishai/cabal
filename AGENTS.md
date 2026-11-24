@@ -58,7 +58,7 @@ guardrail cannot ask "is this the operator?" the way the rest of the codebase do
   jackdaw→wright are done in indexes and current prose, but a test docstring that recorded
   `rook-implementer` at the time keeps it. `STATUS.md`'s build-arc table states the rule. A
   mechanical rename sweep across the repo breaks this deliberately-preserved distinction.
-- **Migrations ship as package data** (`README.md:44`, cabal#79). Adding an Alembic
+- **Migrations ship as package data** (`pyproject.toml` `[tool.setuptools.package-data]`, cabal#79). Adding an Alembic
   revision under `src/cabal/migrations/versions/` is also a packaging change — check the
   package-data glob still picks it up.
 - **`identity.toml` is gitignored**; `identity.toml.example` is the template.

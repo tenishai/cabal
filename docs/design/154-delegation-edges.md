@@ -154,8 +154,8 @@ closed.
 
 Known weakness, recorded rather than hidden: the system's own definition of an
 operator is `"operator" in cabal_scope` (`_require_operator_claims`), which is
-the signal this *should* use. `routes/tasks.py` re-mints the dispatch token
-with `scope=["dispatch"]`, so operator scope does not survive to the router and
+the signal this *should* use. `routes/_dispatch_auth.py` re-mints the dispatch token
+with `scope=["dispatch"]` (moved from `routes/tasks.py` in #234), so operator scope does not survive to the router and
 the sub prefix is all that reaches the guard.
 
 ## Callers that are not personas (cabal#189)

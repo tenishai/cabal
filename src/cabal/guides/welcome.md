@@ -246,7 +246,7 @@ clone step.
 - Development: clone cabal, techne and liminal side by side, then
   `pip install -e ".[dev]" -e ../techne -e ../liminal`.
 - Docker: `make up` as above, or the production `docker-compose.yml` (see the README; it
-  needs four values in `.env` first).
+  needs three values in `.env` and an `identity.toml` first).
 
 Then set `CABAL_MASTER_KEY` and `CABAL_OPERATOR_ID` (or `[cabal] operator_id`) and run
 `cbl daemon up`. Keep the master key: it encrypts the signing keys and secrets, and a

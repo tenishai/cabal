@@ -73,7 +73,8 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
   `reset-auth`, `archivist purge|erase|backfill-origin`, and `cbl guide`.
 - **Review runs and a merge gate** — `cbl review start|list|show|cancel` queue and
   follow one review per pull-request head, taken through its seats in order (default
-  `temperance`, then `prudence`). Off unless `[review] enabled`. A watch loop queues a
+  `temperance`, which checks the assertions a change adds, then `prudence`, which
+  reviews correctness). Off unless `[review] enabled`. A watch loop queues a
   run for each PR that carries the `ready-for-review` label in a repo listed under
   `[review.repos."owner/name"]`, and a repo that sets `merge = true` has approved runs
   merged, pinned to the reviewed commit, once CI is green. `identity.toml.example`
@@ -403,7 +404,7 @@ same variable and allows `2 * CABAL_DISPATCH_TIMEOUT_S` for the two routes
 that trigger a federated dispatch (`cbl dispatch` / `cbl chat`), since the client
 additionally waits on auth, bookkeeping and the response trip. Most other
 `cbl` calls keep the short 30s ceiling on purpose: a hung daemon should not
-make `cbl agents list` sit for minutes. The session-presence calls
+make `cbl status` sit for minutes. The session-presence calls
 (`register_session`, `heartbeat_session`, `end_session`) are tighter still at
 5s: they run from a Stop hook on every turn, so a firewall that DROPs rather
 than refuses would stall the turn itself. An unparseable value fails the CLI
