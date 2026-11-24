@@ -85,7 +85,7 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
 - **Token budgets** — a primus's fan-out has a ceiling and each worker an allotment
   (`leg_token_budget_override`, `fanout_token_budget_override`). For federated agents,
   `[meter]` passes their model calls through `/meter/<key>/...` and charges the
-  tokens to the task they run; `task_budget` and `root_budget` refuse calls over the limit.
+  tokens to the task they run; `task_budget` and `root_budget` refuse calls once the task has spent its budget.
 - **Docker Compose dev stack** — `make up / bootstrap / demo` runs the full
   cabal + liminal stack; `make demo` is a 6-step smoke test. It needs the running stack, so the
   release pass did not measure how often it passes.

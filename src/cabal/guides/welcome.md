@@ -134,7 +134,7 @@ and an entry under `[meter.agents.<name>]` (`key_sha256`, `upstream`), the agent
 URL is `<cabal>/meter/<key>`: cabal forwards each call to the upstream unchanged (it never
 stores or swaps a credential), reads the token usage and charges input plus output tokens to
 the task the agent is running. With no `task_budget` it only measures; `task_budget` and
-`root_budget` refuse a call over the limit with a 400. Spend is in the `meter_spend` table.
+`root_budget` refuse calls with a 400 once the task has spent its budget. Spend is in the `meter_spend` table.
 Reach for it when a federated agent's token spend should count against the task that
 started it.
 

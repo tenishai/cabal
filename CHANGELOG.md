@@ -27,10 +27,17 @@ Pull requests and issues are in tenishai/cabal.
   for an identity.toml that doesn't name them. Each is documented in `identity.toml.example`.
 - A primus's fan-out now has a token ceiling and each worker an allotment. Unset, they are the most
   the old code could spend (200,000 per worker; one default budget plus one allotment per worker),
-  so an existing persona runs as before. A call that used more than it reserved is now charged
-  the overage; before, anything past the reservation was free.
+  so a primus's fan-out gets the same budget it had before.
+- **Every LLM persona's task budget now counts each call's full token use** (input and output).
+  Before, a call cost at most its 50,000-token reservation and anything past that was free. A
+  persona whose calls run past 50,000 tokens now gets fewer calls from the same budget: at
+  100,000 tokens a call, the 200,000 default allows two calls where it used to allow four, and
+  the next one fails with `budget exhausted`. A primus whose plan call uses more than 150,000
+  tokens now refuses the fan-out. The 200,000 default has no identity.toml setting (the token
+  meter's `task_budget` is a separate budget), so expect shorter runs from personas that make
+  large calls.
 - `cbl task <id> --wait` now looks up the persona inside its retry, and `--timeout` ends on the
-  deadline instead of a poll after it. No flag changed.
+  deadline instead of a poll after it (a poll already in flight can overrun it by up to 30 s). No flag changed.
 - `GET /auth/revocations` is new; a liminal that fetches it needs the same token it uses for
   `GET /admin/secrets/{persona}/{handler}`.
 
