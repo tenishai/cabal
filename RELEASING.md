@@ -55,6 +55,9 @@ Run the full suite before you open the PR. The PR needs the `ci` and `dco` check
 review, and a squash merge. `pyproject.toml` is code, so Prudence reviews it through the
 code-owner rule, and the Fates review a release PR as they do any other (#415 took a round of
 review fixes).
+Prudence is the project's AI code reviewer, the code owner for everything but docs. The Fates
+are its review pipeline: Temperance checks the assertions a change adds, then Prudence
+reviews correctness and approves or asks for changes.
 
 ## Tag the merge commit
 

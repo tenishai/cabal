@@ -73,7 +73,8 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
   `reset-auth`, `archivist purge|erase|backfill-origin`, and `cbl guide`.
 - **Review runs and a merge gate** — `cbl review start|list|show|cancel` queue and
   follow one review per pull-request head, taken through its seats in order (default
-  `temperance`, then `prudence`). Off unless `[review] enabled`. A watch loop queues a
+  `temperance`, which checks the assertions a change adds, then `prudence`, which
+  reviews correctness). Off unless `[review] enabled`. A watch loop queues a
   run for each PR that carries the `ready-for-review` label in a repo listed under
   `[review.repos."owner/name"]`, and a repo that sets `merge = true` has approved runs
   merged, pinned to the reviewed commit, once CI is green. `identity.toml.example`
