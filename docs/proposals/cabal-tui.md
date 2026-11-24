@@ -1,10 +1,9 @@
 # Proposal: Cabal TUI — multi-pane Textual UI over existing event bus + SSE infrastructure
 
-**Status**: Draft — design captured, no code in flight yet.
+**Status**: Superseded in part by the shipped `cabal` TUI (`src/cabal/tui/`, `cabal` entry point, state under `$CABAL_HOME`, default `~/.cabal`). The code is authoritative. Not built as written here: `~/.cbl/` state, the `cabal connect <url>` command and the pidfile and auto-bootstrap flow. Kept below as the design record.
 **Author**: Claude (Opus 4.7) + Richard, paired session 2026-06-14.
 **Tracking issues**: TBD.
 **Related proposals**: [`investigation-engine.md`](./investigation-engine.md) (multi-instance personas + A2A streaming + mailbox — the back-end this TUI consumes).
-**Sibling memory**: [[feedback-cabal-standalone-terminal]] (cabal is its own thing, with its own primary UX); [[feedback-survey-before-propose]] (this proposal shrank after surveying actual cabal code).
 **Revisions**:
 - 2026-06-14 (final) — **Reframed after surveying cabal code.** The previously-proposed "Operator Channel" was substantially reinventing infrastructure that already ships: `EventBus`, `/admin/events/stream`, `/admin/conversations`, `cbl tail`, the persona SSE endpoints. The TUI's back-end is mostly already built; the net-new work is Textual UI + small extensions to existing primitives.
 
@@ -274,7 +273,7 @@ Today `cbl daemon up` + `cbl login --code <CODE>` is the bootstrap sequence. For
 
 ### Settled (no longer open)
 
-- **Naming**: binary is `cabal` (with `cbl` as an alias). Resource directory is `~/.cbl/`. Rationale: `~/.cabal/` clashes with Haskell's build tool — see [[feedback-cabal-standalone-terminal]].
+- **Naming**: binary is `cabal` (with `cbl` as an alias). Resource directory is `~/.cbl/`. Rationale: `~/.cabal/` clashes with Haskell's build tool.
 - **Framework**: Textual (Python) for V1. Migrate to Bubble Tea (Go) later if product-shape demands compiled-binary distribution.
 - **Aggregation protocol**: no new protocol. Reuses the existing `EventBus` + per-persona SSE + `/admin/events/stream`.
 - **Auth**: per-operator JWTs (already shipping via `cbl login`).
@@ -306,9 +305,3 @@ Today `cbl daemon up` + `cbl login --code <CODE>` is the bootstrap sequence. For
 ### Frameworks
 - [Textual](https://textual.textualize.io/) — Python TUI framework (MIT)
 - [Textual v4 Streaming Markdown](https://simonwillison.net/2025/Jul/22/textual-v4/)
-
-### Memory
-- [[feedback-cabal-standalone-terminal]] — cabal as its own thing; the TUI is the primary UX, but the broker channel is the API any UI can use
-- [[project-rookery-metaphor]] — the canopy view of the colony is exactly what this TUI delivers
-- [[feedback-messaging-modular]] — transport-agnostic patterns first (Operator Channel is one; Slack/Telegram bots are later A2A consumers)
-- [[feedback-partnership-stance]] — operator-as-peer-participant in the meta-channel

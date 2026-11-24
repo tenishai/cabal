@@ -1,7 +1,7 @@
 # Proposal: Claude Code as viewer, cabal as dispatch surface, pluggable persona executors
 
 > ## ⚠️ SUPERSEDED, same day, by
-> ## `operator-fleet-design.md`, in the agents repo (not public; summary below)
+> ## a successor design that is not in this repo (summary below)
 >
 > Two errors this draft makes, both corrected there:
 >
@@ -21,9 +21,8 @@
 **Author**: session notes (Richard DiMartino + AI)
 
 Reference notation: `gh:cabal#N` / `gh:techne#N` = GitHub issue in that repo.
-`kn:N` = entry in the personal techne knowledge store. Bare `techne#N` is
-deliberately avoided — it denotes three different namespaces depending on where
-it is written (see `kn:929`).
+Bare `techne#N` is deliberately avoided — it denotes three different namespaces
+depending on where it is written.
 
 ---
 

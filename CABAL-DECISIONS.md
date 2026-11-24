@@ -97,6 +97,10 @@ Linked feedback memory: `feedback-decision-authority`.
     - Dockerfile drops the `COPY --from=techne` step (pip handles it via PyPI),
     - `docker-compose.yml` drops `additional_contexts.techne`,
     - This decision marked SUPERSEDED.
+- **Amended**: superseded as in D-008. techne stayed an optional extra, and the
+  `COPY --from=techne` stage and `additional_contexts` stayed as the sibling-checkout
+  development path. Without that context the image installs a pinned wheel from the
+  package index.
 - **Lands in**: `Dockerfile` (COPY + pip install), `docker-compose.yml` build block.
 
 ### D-013: container CMD via cbl, not uvicorn directly
@@ -105,7 +109,8 @@ Linked feedback memory: `feedback-decision-authority`.
   or `cbl daemon up`?
 - **Choice**: `cbl daemon up`
 - **Reasoning**: `cbl daemon up` already wraps uvicorn + the right defaults
-  (host 0.0.0.0, port from --port, --config). Going through it means the
+  (host 127.0.0.1, port from --port, --config; the image's CMD passes
+  `--host 0.0.0.0`). Going through it means the
   container behaves identically to the local dev daemon — same logs, same
   startup sequence, same `--agent` semantics for scale mode. If we ever
   change daemon-bring-up behavior, the container picks it up for free.
@@ -228,8 +233,12 @@ Linked feedback memory: `feedback-decision-authority`.
     - README quickstart drops the sibling-clone instruction,
     - This decision marked SUPERSEDED with a pointer to the new PyPI-anchored
       decision and the day it landed.
-  See `STATUS.md` § "Pre-public-release checklist" — that's the running
-  reminder.
+- **Amended (superseded plan)**: the prerequisite above was changed, not carried
+  out. techne is an optional extra in `pyproject.toml` (`memory` and `full`,
+  `tenish-techne>=0.18.2`), never a hard dependency. Without a `techne` build
+  context the Dockerfile installs a version- and sha256-pinned techne wheel from the
+  package index. The sibling checkout and `additional_contexts` remain as the
+  development path only. The `pyproject.toml` and Dockerfile are authoritative.
 - **Lands in**: `README.md` quickstart, `Dockerfile` build stage, `docker-compose.yml`
   `additional_contexts`, this log.
 

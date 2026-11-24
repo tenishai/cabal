@@ -7,7 +7,7 @@ for the build log see [STATUS.md](../STATUS.md) and [CABAL-DECISIONS.md](../CABA
 graph TB
     %% ===== Clients =====
     CLI["cbl CLI<br/>login · dispatch · chat · tail"]
-    UI["TUI / future web UI"]
+    UI["TUI (cabal) / future web UI"]
 
     %% ===== Cabal Core =====
     subgraph Core["Cabal Core — FastAPI singleton"]
@@ -16,7 +16,7 @@ graph TB
         BROK["Dispatch Router<br/>(local-call ↔ HTTP)"]
         BB[("Bulletin Board<br/>signed AgentCards")]
         EB["Event Bus (SSE)"]
-        PROJ["Projects · Conversations<br/>Events · Notifications"]
+        PROJ["Conversations · Events"]
     end
     DB[("SQLite cabal.db<br/>WAL")]
     LITS["Litestream sidecar<br/>→ S3 / GCS / sftp"]
@@ -35,8 +35,8 @@ graph TB
     subgraph Single["Singleton Personas (front data stores)"]
         direction TB
         ARCH["Architect — patterns"]
-        ARCHV["Archivist (v2) — federated memory"]
-        LIB["Librarian (v2) — docs"]
+        ARCHV["Archivist — team memory (own SQLite)"]
+        LIB["Librarian — docs"]
     end
 
     %% ===== Per-agent substrate =====
@@ -110,7 +110,8 @@ graph TB
 ## Layers
 
 **Clients.** `cbl` is the operator-facing CLI; everything in the diagram is reachable
-through it. Future TUI / web UIs land on the same auth + dispatch endpoints.
+through it. The TUI (`cabal`) ships and talks to the core through an in-process client
+(`tui/client/inprocess.py`), not the HTTP endpoints. A web UI is still future.
 
 **Cabal Core.** One FastAPI singleton holding the dispatch router, bulletin board
 (signed AgentCards keyed by name), JWT IdP (issues operator + per-persona bearer
@@ -147,7 +148,7 @@ the dispatch path calls it (#226).
 
 **Personas.** Project personas (mason, wright) own the work. Primus agents own
 plan/dispatch/aggregate; subordinates fan out under them. Singleton personas
-(Architect; Archivist + Librarian in v2) front shared data stores and expose two
+(Architect, Archivist, Librarian) front shared data stores and expose two
 faces: A2A for synthesis dispatches and MCP for cheap shallow retrieval that
 bypasses the LLM.
 
@@ -171,8 +172,7 @@ per-virtual-key spend. Litestream pushes WAL frames to object storage.
 
 ## What is *not* in this diagram
 
-- Notification adapters (Slack, iMessage, …) hang off `Notifications` table and the
-  event bus; they're transport-shaped, not architectural.
+- Notification adapters (Slack, iMessage, …): none ship.
 - Hot-reload (`POST /admin/reload/identity`) — operational surface, not data flow.
 - Streaming SSE (`message/stream`) — same broker path with token-by-token framing
   on top.

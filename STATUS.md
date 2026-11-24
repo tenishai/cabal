@@ -144,6 +144,14 @@ cbl primus rotate mason                     # ratchet mason to generation 2
 
 ## Pre-public-release checklist (must clear before this repo goes public)
 
+> **Historical and superseded.** This is the 2026-06 plan, not a live gate, and
+> none of its boxes were checked off as written. What shipped instead: techne is an
+> optional extra in `pyproject.toml` (`memory` and `full`), not a hard dependency.
+> The Dockerfile installs a version- and sha256-pinned techne wheel from the package
+> index when no `techne` build context is given, and the sibling checkout remains
+> the development path. See `CABAL-DECISIONS.md` D-008 and D-012 (amended) and
+> `RELEASING.md`.
+
 The current build assumes a sibling `../techne` checkout. That is fine for solo
 local + LAN deployment but is a blocker for going public. Before flipping the
 repo public:

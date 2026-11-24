@@ -403,7 +403,7 @@ same variable and allows `2 * CABAL_DISPATCH_TIMEOUT_S` for the two routes
 that trigger a federated dispatch (`cbl dispatch` / `cbl chat`), since the client
 additionally waits on auth, bookkeeping and the response trip. Most other
 `cbl` calls keep the short 30s ceiling on purpose: a hung daemon should not
-make `cbl agents list` sit for minutes. The session-presence calls
+make `cbl status` sit for minutes. The session-presence calls
 (`register_session`, `heartbeat_session`, `end_session`) are tighter still at
 5s: they run from a Stop hook on every turn, so a firewall that DROPs rather
 than refuses would stall the turn itself. An unparseable value fails the CLI

@@ -21,7 +21,7 @@ ruff check src tests
 
 Then: branch, commit with `git commit -s` (see [Developer Certificate of
 Origin](#developer-certificate-of-origin)), open a PR. Keep the suite green: CI
-runs ruff and the unit suite on Python 3.12 and 3.13 for every push and pull request.
+runs ruff and the unit suite on Python 3.12 and 3.13 for every push to main and every pull request against main.
 
 Everyone taking part in this project is expected to follow the
 [Code of Conduct](CODE_OF_CONDUCT.md). Report security problems privately, as

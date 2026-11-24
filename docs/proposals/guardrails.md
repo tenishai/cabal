@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft (foundation, pre-implementation) |
+| **Status** | Shipped and drifted: the foundation (#39) and its guardrails are in `src/cabal/core/guardrails.py`, which is authoritative. `VerdictType` also has `TERMINATE` (#152), which this text omits. |
 | **Authors** | Richard DiMartino + AI |
 | **Date** | 2026-07-04 |
 | **Issues** | #39 (foundation), #52, #43, #42 |
@@ -51,8 +51,8 @@ class Guardrail(Protocol):
     async def check(self, target: Any, ctx: GuardrailContext) -> Verdict: ...
 
 async def run_guardrails(guardrails, target, ctx) -> Verdict:
-    """Run in order; first BLOCK short-circuits; REWRITE threads the rewritten
-    value into the next guardrail's target; else PASS."""
+    """Run in order; first BLOCK (or TERMINATE, added later) short-circuits;
+    REWRITE threads the rewritten value into the next guardrail's target; else PASS."""
 ```
 
 Guardrails are **independently unit-testable**, **stackable per persona**, and
