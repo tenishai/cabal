@@ -34,6 +34,7 @@ A few things worth knowing before you spend effort:
   to know it tests what you think.
 - **`mypy src`** is configured in `pyproject.toml` and has no CI job; run it on
   the files you touch.
+- **Releasing** is by hand; [RELEASING.md](RELEASING.md) has the steps.
 - **AGENTS.md** is the context file for AI coding agents, and `CLAUDE.md` is a
   one-line bridge to it. A rule an agent must follow belongs there, not only here.
   It also lists the repo's traps (for example, where the dispatch-token policy
