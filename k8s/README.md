@@ -13,7 +13,8 @@ the LiteLLM proxy, and a Litestream sidecar in a single namespace.
 - An image build either takes a `techne` build context (a sibling checkout,
   `additional_contexts: techne=../techne`, see `docker-compose.yml`) or, with no
   such context, fetches a version- and sha256-pinned techne wheel from the
-  package index (see the `Dockerfile`).
+  index named by `--build-arg EXTRA_INDEX_URL=…`. With neither, the build stops
+  with an error (see the `Dockerfile`).
 
 ## First-time setup
 
