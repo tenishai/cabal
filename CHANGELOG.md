@@ -9,6 +9,7 @@ Pull requests and issues are in tenishai/cabal.
 ### Changed
 
 - **`code.refresh` is operator-only**, like `documents.refresh` (issue 246). Its card entry sets `requires_operator`, so liminal refuses the re-index to a persona token; until issue 453 lands no cabal-minted token can reach it.
+- **The image pins techne 0.20.0 and liminal 0.11.0** (were 0.18.2 and 0.5.0). `TECHNE_VERSION`, `LIMINAL_VERSION` and both `*_WHEEL_SHA256` args in the Dockerfile move together, to the hashes in each release's SHA256SUMS asset; CI's integration and docker jobs, and `scripts/check-techne-sibling.sh`, read the techne tag from there. A sibling-checkout build (`make build`, `make up`) now needs `../techne` at `v0.20.0`.
 
 ## [0.5.0] — 2026-11-24
 
