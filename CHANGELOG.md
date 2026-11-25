@@ -13,6 +13,9 @@ Pull requests and issues are in tenishai/cabal.
 ### Fixed
 
 - **A database password in the URL's query string is masked in log lines** (issue 374). `_hide_password` hid only the URL's password component, so `postgresql://db/c?password=pw` was logged as written; a `password` query key (any case) is now shown as `***` too.
+### Security
+
+- **A2A v1.0 task reads are bound to the token's audience** (issue 296). GetTask, ListTasks, CancelTask and an answer to a task (SendMessage with a `taskId`) used to accept any validly signed, unrevoked token on any persona's path. They now need a token aimed at the persona in the path, or an operator or colleague token aimed at `cabal-core`; any other token gets 403. (A new SendMessage still takes operator or colleague scope with any audience; issue 472.) An outside agent's per-persona token now reaches one persona for every method. Operators and colleague passes are unchanged. The legacy `tasks/get` is not changed.
 
 ## [0.5.0] — 2026-11-24
 
