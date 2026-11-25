@@ -313,6 +313,12 @@ the dev stack does not:
 `docker compose -f docker-compose.yml config` exits non-zero until 2, 3 and 4
 are set — run it first to check rather than discovering it during `up`.
 
+Requests reach the proxy only for `anthropic/` and `openai/` model names. A
+Gemini or Vertex name (`gemini-...`, `gemini/`, `vertex_ai/`) makes the litellm
+SDK call Google directly and ignore `[litellm] api_base`, and the image has no
+`google` package, so Gemini or Vertex needs extra setup (issues #257, #335).
+To reach a Gemini model through the proxy, name it `openai/<proxy model_name>`.
+
 Because this stack is not built through `make`, nothing runs the techne check
 for you: run `bash scripts/check-techne-sibling.sh` before the first `up`. The
 image build itself only compares version strings, which cannot tell techne's

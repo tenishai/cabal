@@ -59,3 +59,52 @@ cabal orchestrates agents and issues the tokens they use. In scope:
 those upstream, and tell us if we ship an affected version), and problems that
 require an attacker to already control the machine or the operator account
 cabal runs under.
+
+## Known limits
+
+These are gaps we know about and have not closed. Each names its issue, what it
+takes to use it, and what limits it today. Reports that go further than what
+is written here are in scope.
+
+**Write access to the database is operator-equivalent** (issue #346). cabal
+keeps one SQLite file. It holds the signing keys and stored secrets, encrypted
+under `CABAL_MASTER_KEY` (which is not in the file), and also, in plain form,
+the task checkpoints, scheduled tasks' caller claims, the dispatch-pairs table
+and the revocation list. A checkpoint's messages and tool calls are replayed
+with no integrity check when the operator resumes a task (`POST
+/admin/tasks/{id}/resume`), so whoever can write the file can make a persona
+run a tool call of their choosing with that persona's credentials. A scheduled
+task starts under the claims stored with it, so the same writer can start a
+task with forged claims. Protect the file, its directory and its backups
+(Litestream replicas included) as you protect `CABAL_MASTER_KEY`.
+
+**Tool policy is not inherited on delegation** (issue #155). A persona runs
+with its own `mcp.allowed_handlers`, whoever asked. An agent with a narrow
+grant that may dispatch to a persona with a wider one reaches the wider
+grant's tools by asking. It needs a dispatch route to that persona: a token
+aimed at it, or a colleague pass with a pair to it (an empty pairs table
+allows every pair). What limits it is the delegation-edge guardrail, which
+refuses a delegation that has no operator-declared edge, but only when
+`[guardrails] delegation_edges = true`; it is off by default. Size a persona's grant as the
+union of everything it may delegate to.
+
+**The re-minted dispatch token drops the caller's scope** (issue #164). Every
+door re-mints with `scope=["dispatch"]`, so operator scope does not reach the
+router, and the delegation-edge guardrail exempts the operator by the
+`operator:` prefix of `sub` instead of by scope. A token with an `operator:`
+sub is exempt from edges without holding operator scope. Minting one takes
+operator power already: `/auth/bootstrap` and `/auth/renew` mint it,
+`mint-service` refuses an `operator:` sub (#403), and otherwise it takes the
+signing key. With edges off, nothing depends on it.
+
+**A dispatched token names the caller, not the agent acting for it** (issue
+#184). The re-mint keeps the caller's `sub` and carries no `act` claim. When
+the operator dispatches to an agent, that agent's token says
+`operator:<id>`; if the agent passes it to a service of its own, that service
+cannot tell the operator's request from the agent's work on it. A service that
+grants extra access on an `operator:` sub must not accept a token an agent
+forwarded. Inside cabal a forwarded token reaches only the agent it was minted
+for: its scope is `dispatch` and its audience that agent, so cabal will not
+re-mint it for another target. An agent that calls a colleague with its own
+colleague pass is named as itself (`agent:<name>`). A token with no `sub` is
+refused, not re-minted as the operator.
