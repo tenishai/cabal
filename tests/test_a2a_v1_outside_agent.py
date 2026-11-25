@@ -87,14 +87,12 @@ async def test_a_per_persona_token_sends_only_to_its_persona(
     r = await _call(client, token, "SendMessage", _SEND, agent="librarian")
     assert r.status_code == 403
     assert "requires operator or colleague scope" in r.text
-    # Reading tasks checks the caller, not the token's audience: on another
-    # persona's path the outsider finds none of its echo tasks, and no 403.
+    # Reading tasks checks the token's audience too (#296): on another
+    # persona's path every task method is refused, as SendMessage is.
     sent = (await _call(client, token, "SendMessage", _SEND)).json()["result"]["task"]
-    other = await _call(client, token, "GetTask", {"id": sent["id"]}, agent="librarian")
-    assert other.status_code == 200
-    assert other.json()["error"]["code"] == -32001
-    listed = (await _call(client, token, "ListTasks", {}, agent="librarian")).json()["result"]
-    assert listed["tasks"] == []
+    for method, params in (("GetTask", {"id": sent["id"]}), ("ListTasks", {}), ("CancelTask", {"id": sent["id"]})):
+        other = await _call(client, token, method, params, agent="librarian")
+        assert other.status_code == 403, (method, other.text)
     # The roster stays private: /directory wants a cabal-core token.
     d = await client.get("/directory", headers={"Authorization": f"Bearer {token}"})
     assert d.status_code in (401, 403)
@@ -122,3 +120,107 @@ async def test_revoking_the_outsider_stops_every_token_it_holds(
     # The token for the other persona stops too: revocation is per subject.
     r2 = await _call(client, second, "GetTask", {"id": "any"}, agent="librarian")
     assert r2.status_code == 401
+
+
+_TASK_METHODS = ("GetTask", "ListTasks", "CancelTask")
+
+
+def _params(method: str, task_id: str) -> dict[str, Any]:
+    return {} if method == "ListTasks" else {"id": task_id}
+
+
+async def _paused_echo_task(app: FastAPI, task_id: str) -> None:
+    """An `input-required` task the outsider sent to echo, so CancelTask and
+    an answer have something unfinished to act on."""
+    from cabal.core.a2a.types import Message, Task, TaskStatus, TextPart
+    from cabal.core.bulletin import store as bulletin_store
+    from cabal.core.models import Conversation
+
+    async with app.state.sessionmaker() as s:
+        echo = await bulletin_store.get_active(s, "echo")
+        assert echo is not None
+        paused = Task(
+            id=task_id,
+            contextId="ctx-296",
+            status=TaskStatus(
+                state="input-required",
+                message=Message(role="agent", parts=[TextPart(text="which one?")]),
+            ),
+            history=[Message(role="user", parts=[TextPart(text="do it")])],
+        )
+        s.add(
+            Conversation(
+                task_id=task_id,
+                target_agent="echo",
+                target_generation=echo.generation,
+                caller_agent=OUTSIDER,
+                state="input-required",
+                result_json=paused.model_dump(by_alias=True, exclude_none=True),
+            )
+        )
+        await s.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", _TASK_METHODS)
+async def test_a_token_for_the_paths_persona_reads_its_tasks(
+    app: FastAPI, client: AsyncClient, method: str
+) -> None:
+    token = await _outside_token(client, await _operator_token(app, client), "echo")
+    await _paused_echo_task(app, "t-296-own")
+    r = await _call(client, token, method, _params(method, "t-296-own"))
+    assert r.status_code == 200, r.text
+    assert "result" in r.json(), r.json()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", (*_TASK_METHODS, "answer"))
+async def test_a_token_for_another_persona_is_refused_on_this_path(
+    app: FastAPI, client: AsyncClient, method: str
+) -> None:
+    # #296: before, any valid token passed on any persona's path, and only
+    # the `sub` filter stood between it and the tasks.
+    token = await _outside_token(client, await _operator_token(app, client), "librarian")
+    await _paused_echo_task(app, "t-296-other")
+    if method == "answer":
+        message = {"messageId": "m-a", "taskId": "t-296-other", "role": "ROLE_USER", "parts": [{"text": "yes"}]}
+        r = await _call(client, token, "SendMessage", {"message": message})
+    else:
+        r = await _call(client, token, method, _params(method, "t-296-other"))
+    assert r.status_code == 403, r.text
+    assert "cannot read tasks on 'echo'" in r.text
+    async with open_session(app.state.sessionmaker) as session:
+        from cabal.core.models import Conversation
+
+        row = (await session.execute(select(Conversation).where(Conversation.task_id == "t-296-other"))).scalar_one()
+    assert row.state == "input-required"  # nothing was canceled or answered
+
+
+@pytest.mark.asyncio
+async def test_a_dispatch_token_for_cabal_core_is_refused(app: FastAPI, client: AsyncClient) -> None:
+    # `cabal-core` is the operator's and colleagues' audience; a plain
+    # dispatch-scope token aimed there names no persona.
+    r = await client.post(
+        "/admin/token/mint-service",
+        json={"sub": OUTSIDER, "scope": ["dispatch"], "aud": "cabal-core", "ttl_days": 1},
+        headers={"Authorization": f"Bearer {await _operator_token(app, client)}"},
+    )
+    token = r.json()["access_token"]
+    await _paused_echo_task(app, "t-296-core")
+    for method in _TASK_METHODS:
+        got = await _call(client, token, method, _params(method, "t-296-core"))
+        assert got.status_code == 403, (method, got.text)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", _TASK_METHODS)
+async def test_the_operator_still_reads_every_persona(
+    app: FastAPI, client: AsyncClient, method: str
+) -> None:
+    operator = await _operator_token(app, client)
+    await _paused_echo_task(app, "t-296-op")
+    r = await _call(client, operator, method, _params(method, "t-296-op"))
+    assert r.status_code == 200, r.text
+    assert "result" in r.json(), r.json()
+    if method == "ListTasks":
+        assert "t-296-op" in [t["id"] for t in r.json()["result"]["tasks"]]

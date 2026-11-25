@@ -97,7 +97,12 @@ from cabal.core.broker.router import (
 from cabal.core.bulletin import store as bulletin_store
 from cabal.core.db import open_session
 from cabal.core.models import Conversation, Event
-from cabal.core.routes._dispatch_auth import DispatchRefusal, dispatch_token, verify_caller
+from cabal.core.routes._dispatch_auth import (
+    DispatchRefusal,
+    dispatch_token,
+    task_reader,
+    verify_caller,
+)
 from cabal.core.scheduler import cancel_scheduled, group_members, parse_not_before
 
 log = structlog.get_logger(__name__)
@@ -602,7 +607,7 @@ async def _continue_task(
     stopped in `input-required` (issue 145). Any other unfinished state is
     refused: a new turn on a task that is still running or queued has nothing
     to answer."""
-    claims = verify_caller(request, raw_token)
+    claims = await task_reader(request, raw_token, agent_name)
     if isinstance(claims, DispatchRefusal):
         return _refuse(claims, request_id)
     row = await _load_row(request, str(req.message.task_id))
@@ -747,7 +752,7 @@ async def _get_task(
     if _tenant_mismatch(req.tenant, agent_name):
         return _params_error(request_id, f"tenant {req.tenant!r} does not match the path")
 
-    claims = verify_caller(request, raw_token)
+    claims = await task_reader(request, raw_token, agent_name)
     if isinstance(claims, DispatchRefusal):
         return _refuse(claims, request_id)
     row = await _load_row(request, req.id)
@@ -810,7 +815,7 @@ async def _list_tasks(
         if cursor is None:
             return _params_error(request_id, "invalid pageToken")
 
-    claims = verify_caller(request, raw_token)
+    claims = await task_reader(request, raw_token, agent_name)
     if isinstance(claims, DispatchRefusal):
         return _refuse(claims, request_id)
     is_operator, sub = _owner_filter(claims)
@@ -944,7 +949,7 @@ async def _cancel_task(
     if _tenant_mismatch(req.tenant, agent_name):
         return _params_error(request_id, f"tenant {req.tenant!r} does not match the path")
 
-    claims = verify_caller(request, raw_token)
+    claims = await task_reader(request, raw_token, agent_name)
     if isinstance(claims, DispatchRefusal):
         return _refuse(claims, request_id)
     row = await _load_row(request, req.id)

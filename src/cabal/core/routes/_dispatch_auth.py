@@ -78,6 +78,45 @@ def verify_caller(request: Request, raw_token: str) -> dict[str, Any] | Dispatch
     return claims
 
 
+#: Scopes whose `cabal-core` token may read tasks on any persona's path (#296).
+_CORE_READ_SCOPES = frozenset({"operator", "colleague"})
+
+
+async def task_reader(request: Request, raw_token: str, target: str) -> dict[str, Any] | DispatchRefusal:
+    """The caller's claims if it may read, answer or cancel tasks on
+    `target`'s path, or why not (#296).
+
+    A token aimed at the target's dispatch audience (an outside agent's
+    per-persona token, `docs/outside-agents.md`), or an operator or colleague
+    token aimed at `cabal-core`. This is stricter than a new SendMessage, whose
+    `_mint_for` takes operator or colleague scope with any `aud`. A per-persona token therefore reaches one persona for every
+    method. Which tasks the caller then sees is still decided by `sub` (the
+    route's `_visible` and `_owner_filter`). Colleague tokens need no
+    dispatch pair to read, as before."""
+    claims = verify_caller(request, raw_token)
+    if isinstance(claims, DispatchRefusal):
+        return claims
+    aud = claims.get("aud")
+    if aud == "cabal-core" and _CORE_READ_SCOPES & set(claims.get("cabal_scope") or []):
+        return claims
+    async with open_session(request.app.state.sessionmaker) as session:
+        audience = await dispatch_audience(session, target)
+    if audience is not None and aud == audience:
+        return claims
+    log.warning(
+        "tasks.read_refused",
+        caller=_bounded(claims.get("sub") or None),
+        target=_bounded(target),
+        aud=_bounded(str(aud)),
+    )
+    return DispatchRefusal(
+        "forbidden",
+        f"token aud={aud!r} cannot read tasks on {target!r} (needs aud {audience or target!r}, "
+        "or operator or colleague scope with aud 'cabal-core')",
+        check="audience",
+    )
+
+
 async def dispatch_audience(session: Any, target: str) -> str | None:
     """The `aud` a dispatch token for `target` must carry.
 

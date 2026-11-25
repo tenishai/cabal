@@ -53,10 +53,13 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
   checks audience and scope, and every dispatch checks the caller token's
   audience. Some paths check less. `/healthz`, the agent cards,
   `/.well-known/jwks.json` and `/auth/bootstrap` (which takes a one-time code)
-  take no token. A2A v1.0 GetTask, ListTasks and CancelTask and the legacy
-  `tasks/get` check that the caller owns the task (or holds `operator` scope),
-  not the token's audience, so any validly signed, unrevoked token can call
-  them (issue #296). A token whose `aud` already matches the dispatch target is passed on as
+  take no token. A2A v1.0 GetTask, ListTasks, CancelTask and an answer to a
+  task need a token aimed at the persona in the path, or an operator or
+  colleague token aimed at `cabal-core` (a new SendMessage is looser, issue
+  #472), then show only the
+  caller's own tasks unless it holds `operator` scope (issue #296). The legacy
+  `tasks/get` still checks only that the caller owns the task, not the token's
+  audience. A token whose `aud` already matches the dispatch target is passed on as
   is, with no scope check. Operator tokens cannot impersonate liminal service
   tokens and vice versa. `allow_dev_master_key` defaults to `False`.
 - **liminal integration** — personas that have `[mcp]` wired in their identity.toml
@@ -214,7 +217,7 @@ parent/
 ```bash
 mkdir parent && cd parent
 git clone https://github.com/tenishai/cabal.git
-git clone --branch v0.18.2 https://github.com/tenishai/techne.git   # the tag the Dockerfile pins
+git clone --branch v0.20.0 https://github.com/tenishai/techne.git   # the tag the Dockerfile pins
 git clone https://github.com/tenishai/liminal.git
 cd cabal
 
@@ -270,7 +273,7 @@ and liminal images from sibling checkouts of `techne` and `liminal` (BuildKit na
 build contexts, which need buildx), so clone both next to this repo as in the
 layout above before running it. `make build` and `make up` first check that
 `../techne` is at the tag the Dockerfile pins (`TECHNE_VERSION`, currently
-`v0.18.2`) and stop if it isn't; set `TECHNE_ANY=1` to build against whatever
+`v0.20.0`) and stop if it isn't; set `TECHNE_ANY=1` to build against whatever
 `../techne` has checked out, for example when changing techne and cabal
 together. The generated `.env` and the tracked
 `compose/identity.dev.toml` cover the rest, so there is nothing else to prepare.
