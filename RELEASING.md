@@ -21,7 +21,7 @@ version:
 
 ```
 echo 'tenish-cabal[<every extra in pyproject.toml>]==X.Y.Z' > release.in   # plus the downstream set's other pins
-uv pip compile --index https://pypi.tenish.ai/simple release.in
+uv pip compile --index tenish=https://pypi.tenish.ai/simple release.in
 ```
 
 It must resolve with no conflict. Then install the
