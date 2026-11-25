@@ -164,7 +164,7 @@ importable (`pip install tenish-cabal[memory]`):
   `patterns.record` is operator-only (see below).
 - **`code`**: has no env var. The only path is a persona `code.db_path` in
   `tool_extras`, and the handler has no repo list, so `code.refresh` has
-  nothing to index and rejects any named repo as unknown. The codex is a db per repo, which one path cannot address;
+  nothing to index and rejects any named repo as unknown. `code.refresh` is operator-only (see below). The codex is a db per repo, which one path cannot address;
   the design is still open in #129.
 
 With liminal 0.6.0 or later, `/healthz` shows each of these handlers as
@@ -535,13 +535,13 @@ de-registration cannot be relied on — a crashed session never runs its Stop
 hook — so staleness, not `cbl session end`, is what makes a dead session read
 as dead. Reaping those rows is tracked in #70.
 
-## Operator-only tools (`documents.refresh`, `patterns.record`)
+## Operator-only tools (`documents.refresh`, `code.refresh`, `patterns.record`)
 
-liminal refuses these two tools unless the caller's token holds `operator`
+liminal refuses these three tools unless the caller's token holds `operator`
 scope alongside `dispatch`. Persona tokens carry only `dispatch` and the
 `cbl login` token carries only `operator`. `cbl token mint-service` answers 400
 to any request for `operator` scope or an `operator` subject (#403), and no
-other cabal route mints a token holding both, so these two tools cannot
+other cabal route mints a token holding both, so these tools cannot
 currently be reached with cabal-minted tokens (issue #453). In a sovereign liminal the policy grant must hold
 `operator` instead, and with `LIMINAL_AUTH_DISABLED=1` these tools are refused
 outright. This needs a liminal release that has `requires_operator`.

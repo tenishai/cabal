@@ -6,6 +6,10 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+### Changed
+
+- **`code.refresh` is operator-only**, like `documents.refresh` (issue 246). Its card entry sets `requires_operator`, so liminal refuses the re-index to a persona token; until issue 453 lands no cabal-minted token can reach it.
+
 ## [0.5.0] — 2026-11-24
 
 0.5.0 carries everything in 0.5.0rc1 (the next section) and the changes below. Upgrading from
