@@ -67,10 +67,11 @@ WORKDIR /build
 COPY --from=techne / /build/techne
 COPY --from=liminal / /build/liminal
 ARG EXTRA_INDEX_URL=""
-# techne v0.18.2 (tag at 96a030d), the py3-none-any wheel. From 0.18.2 the
-# distribution is tenish-techne; the import package is still techne.
-ARG TECHNE_VERSION=0.18.2
-ARG TECHNE_WHEEL_SHA256=43e96409b99a7d9e4bf5f075226b87464db5830e9bdb8323ab4f7f3675c29e51
+# techne v0.20.0 (tag at 773f7e4), the py3-none-any wheel; the hash is the one
+# in that release's SHA256SUMS asset. From 0.18.2 the distribution is
+# tenish-techne; the import package is still techne.
+ARG TECHNE_VERSION=0.20.0
+ARG TECHNE_WHEEL_SHA256=1e9371c5fa89351da16a3e703cf0178a79eb250dc87fd732b05c2d4badb24b7b
 # A sibling checkout must report TECHNE_VERSION too. That catches a checkout of
 # another release; it cannot catch techne's main between releases, which reports
 # the last released version. scripts/check-techne-sibling.sh compares commits
@@ -83,14 +84,14 @@ ARG TECHNE_ANY_VERSION=""
 # reason as techne; its own dependencies are public names and come from
 # PyPI. A sibling checkout (--build-context liminal=…) still wins.
 ARG WITH_MCP=""
-# liminal v0.5.0 (tag at ad6872b). The wheel builds reproducibly from the tag
+# liminal v0.11.0 (tag at 49bf892). The wheel builds reproducibly from the tag
 # with SOURCE_DATE_EPOCH set to the tag commit's time; this is that build's hash,
-# and the wheel attached to the GitHub release has it. Upload that asset to your
+# and the wheel attached to the GitHub release has it (its SHA256SUMS asset). Upload that asset to your
 # index rather than rebuilding: a build without SOURCE_DATE_EPOCH has the same
 # contents but a different hash. An index that already holds another build can
 # pass its hash with --build-arg LIMINAL_WHEEL_SHA256=<sha256>.
-ARG LIMINAL_VERSION=0.5.0
-ARG LIMINAL_WHEEL_SHA256=91b3d9de484d9b0caa96b8e8b1164be08a26a2ad9c72c5545150e4ee802996d4
+ARG LIMINAL_VERSION=0.11.0
+ARG LIMINAL_WHEEL_SHA256=fead5418e0d7e1e4c8ea86e7059b768b23f1c5ab0006723bbdfefb83dba532ab
 
 # Layer-cache: copy pyproject.toml first, install all deps (and a stub package
 # so the build system is satisfied), then copy the real source last so a
