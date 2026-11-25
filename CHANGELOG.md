@@ -6,6 +6,10 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+### Security
+
+- **A2A v1.0 task reads are bound to the token's audience** (issue 296). GetTask, ListTasks, CancelTask and an answer to a task (SendMessage with a `taskId`) used to accept any validly signed, unrevoked token on any persona's path. They now take the audiences SendMessage takes: the persona in the path, or an operator or colleague token aimed at `cabal-core`; any other token gets 403. An outside agent's per-persona token now reaches one persona for every method. Operators and colleague passes are unchanged. The legacy `tasks/get` is not changed.
+
 ## [0.5.0] — 2026-11-24
 
 0.5.0 carries everything in 0.5.0rc1 (the next section) and the changes below. Upgrading from

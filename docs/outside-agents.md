@@ -26,8 +26,8 @@ back at once.
    `agent:<name>`, the same form outsiders get, and task visibility and
    revocation are keyed on the subject. An outsider named like a room agent
    would see, and could cancel, the tasks that agent sent with its colleague
-   pass to any persona: reading tasks checks the subject, not the token's
-   audience (see "What the outsider can do"). Revoking the outsider
+   pass to each persona it holds a token for: task visibility is keyed on the
+   subject (see "What the outsider can do"). Revoking the outsider
    would also revoke that agent's colleague pass. Use the `ext-` prefix, as
    below, to keep the two apart.
 
@@ -66,11 +66,11 @@ On each persona it holds a token for, it can call SendMessage. SendMessage to
 any other persona is refused (403), and `/directory` is refused too, so the
 roster stays private.
 
-GetTask, ListTasks and CancelTask check who the caller is, not the token's
-audience. With any of its tokens, on any persona's path, the outsider sees and
-can cancel only the tasks it sent to that persona, plus tasks it sent to a
-`[groups]` group that includes that persona; on a persona it never sent to, it
-finds none. Its tasks are not visible to any other outside agent. The
+GetTask, ListTasks, CancelTask and an answer to a task (SendMessage with a
+`taskId`) take a token only on the path of the persona it was minted for, as
+SendMessage does (issue #296); a token for another persona gets 403. On that
+path the outsider sees and can cancel only the tasks it sent to that persona,
+plus tasks it sent to a `[groups]` group that includes that persona. Its tasks are not visible to any other outside agent. The
 operator sees every task on a persona, through that persona's path.
 
 ## Revoke
