@@ -86,10 +86,10 @@ async def task_reader(request: Request, raw_token: str, target: str) -> dict[str
     """The caller's claims if it may read, answer or cancel tasks on
     `target`'s path, or why not (#296).
 
-    The same audiences SendMessage takes: a token aimed at the target's
-    dispatch audience (an outside agent's per-persona token,
-    `docs/outside-agents.md`), or an operator or colleague token aimed at
-    `cabal-core`. A per-persona token therefore reaches one persona for every
+    A token aimed at the target's dispatch audience (an outside agent's
+    per-persona token, `docs/outside-agents.md`), or an operator or colleague
+    token aimed at `cabal-core`. This is stricter than a new SendMessage, whose
+    `_mint_for` takes operator or colleague scope with any `aud`. A per-persona token therefore reaches one persona for every
     method. Which tasks the caller then sees is still decided by `sub` (the
     route's `_visible` and `_owner_filter`). Colleague tokens need no
     dispatch pair to read, as before."""

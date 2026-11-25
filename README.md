@@ -54,8 +54,9 @@ Details in [Handler status in the shipped stacks](#handler-status-in-the-shipped
   audience. Some paths check less. `/healthz`, the agent cards,
   `/.well-known/jwks.json` and `/auth/bootstrap` (which takes a one-time code)
   take no token. A2A v1.0 GetTask, ListTasks, CancelTask and an answer to a
-  task take the same audiences SendMessage does (the persona in the path, or an
-  operator or colleague token aimed at `cabal-core`), then show only the
+  task need a token aimed at the persona in the path, or an operator or
+  colleague token aimed at `cabal-core` (a new SendMessage is looser, issue
+  #472), then show only the
   caller's own tasks unless it holds `operator` scope (issue #296). The legacy
   `tasks/get` still checks only that the caller owns the task, not the token's
   audience. A token whose `aud` already matches the dispatch target is passed on as
