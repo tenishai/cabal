@@ -85,8 +85,8 @@ grant's tools by asking. It needs a dispatch route to that persona: a token
 aimed at it, or a colleague pass with a pair to it (an empty pairs table
 allows every pair). What limits it is the delegation-edge guardrail, which
 refuses a delegation that has no operator-declared edge, but only when
-`[guardrails] delegation_edges = true`; it is off by default. Size a persona's grant as the
-union of everything it may delegate to.
+`[guardrails] delegation_edges = true`; it is off by default. Size a
+persona's grant as the union of everything it may delegate to.
 
 **The re-minted dispatch token drops the caller's scope** (issue #164). Every
 door re-mints with `scope=["dispatch"]`, so operator scope does not reach the

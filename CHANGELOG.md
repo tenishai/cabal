@@ -8,7 +8,7 @@ Pull requests and issues are in tenishai/cabal.
 
 ### Changed
 
-- **Docs:** SECURITY.md has a "Known limits" section: write access to the database is operator-equivalent, since checkpoints are replayed with no integrity check (issue 346); tool policy is not inherited on delegation (issue 155); the dispatch re-mint drops the caller's scope (issue 164) and names the caller, not the acting agent (issue 184). The README and `identity.toml.example` say that a Gemini or Vertex model name skips the LiteLLM proxy and that the image has no `google` package (issues 257, 335).
+- **Docs:** SECURITY.md has a "Known limits" section: write access to the database is operator-equivalent, since checkpoints are replayed with no integrity check (issue 346); tool policy is not inherited on delegation (issue 155); the dispatch re-mint drops the caller's scope (issue 164) and names the caller, not the acting agent (issue 184). The README and `identity.toml.example` say that a Vertex model name (`vertex_ai/...` or a bare `gemini-...`) skips the LiteLLM proxy and fails without the `google` package, which the image lacks, and that a `gemini/` name reaches the proxy in a format it does not serve as chat (issues 257, 335).
 
 ## [0.5.0] — 2026-11-24
 

@@ -31,9 +31,11 @@ data_dir = "data"
 # api_base points at a running LiteLLM proxy. api_key_env names the env
 # var Cabal reads to inject the master key as Bearer.
 # Name models as the proxy serves them under an `anthropic/` or `openai/`
-# prefix. A Gemini or Vertex name (`gemini-...`, `gemini/`, `vertex_ai/`)
-# makes the litellm SDK call Google itself and skip api_base, and the image has
-# no `google` package, so Gemini or Vertex needs extra setup (issues 257, 335).
+# prefix. A Vertex name (`vertex_ai/...`, or a bare `gemini-...`, which litellm
+# maps to Vertex) makes the SDK call Google itself and skip api_base, and the
+# image has no `google` package, so it fails. A `gemini/` name is sent to
+# api_base in Google's own request format, which the proxy does not serve as
+# chat (issues 257, 335).
 
 [litellm]
 api_base = "http://litellm:4000"
