@@ -91,6 +91,16 @@ def test_hide_password():
     assert _hide_password("sqlite:///data/cabal.db") == "sqlite:///data/cabal.db"
 
 
+def test_hide_password_in_the_query_string():
+    """libpq takes `?password=` too (#374); it used to pass through."""
+    from cabal.core.app import _hide_password
+
+    assert _hide_password("postgresql://db/c?password=pw") == "postgresql://db/c?password=***"
+    hidden = _hide_password("postgresql+psycopg://u:pw@db/c?sslmode=require&PASSWORD=pw2")
+    assert "pw" not in hidden.replace("psycopg", "")
+    assert "sslmode=require" in hidden and "PASSWORD=***" in hidden and "u:***@" in hidden
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("error", "event"),

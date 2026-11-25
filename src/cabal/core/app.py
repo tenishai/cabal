@@ -175,11 +175,17 @@ def _ensure_sqlite_parent_dir(db_url: str) -> None:
 
 
 def _hide_password(db_url: str) -> str:
-    """`db_url` with any password replaced by ***, for log lines (cabal#370)."""
+    """`db_url` with any password replaced by ***, for log lines (cabal#370):
+    the URL's password component and a `password` query key, which libpq also
+    accepts (#374)."""
     try:
         from sqlalchemy.engine import make_url
 
-        return make_url(db_url).render_as_string(hide_password=True)
+        url = make_url(db_url)
+        if any(k.lower() == "password" for k in url.query):
+            url = url.set(query={k: ("***" if k.lower() == "password" else v) for k, v in url.query.items()})
+        # render_as_string percent-encodes the query's "***".
+        return url.render_as_string(hide_password=True).replace("=%2A%2A%2A", "=***")
     except Exception:  # noqa: BLE001 — never let redaction fail the log line
         return "<unparseable db url>"
 

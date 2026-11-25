@@ -6,6 +6,10 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A database password in the URL's query string is masked in log lines** (issue 374). `_hide_password` hid only the URL's password component, so `postgresql://db/c?password=pw` was logged as written; a `password` query key (any case) is now shown as `***` too.
+
 ## [0.5.0] — 2026-11-24
 
 0.5.0 carries everything in 0.5.0rc1 (the next section) and the changes below. Upgrading from
