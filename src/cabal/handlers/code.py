@@ -45,7 +45,11 @@ CARD = {
         {"name": "search", "description": "Search the code corpus by query."},
         {"name": "who_wrote", "description": "git blame for a file (or one line)."},
         {"name": "list_repos", "description": "What code repos are indexed."},
-        {"name": "refresh", "description": "Re-index one or all repos."},
+        {
+            "name": "refresh",
+            "description": "Re-index one or all repos (operator-only).",
+            "requires_operator": True,
+        },
     ],
     "activation": "always",
     "relevance_signals": [
@@ -246,6 +250,7 @@ class CodeHandler:
         return ToolResult.json({"repos": repos})
 
     async def _refresh(self, db_path: Path, payload: dict[str, Any]) -> ToolResult:
+        # Operator scope is enforced by liminal's gate on the card's requires_operator flag (#246).
         repo_name = payload.get("repo") or None
         if repo_name is not None:
             if not any(r.name == repo_name for r in self.default_config.repos):

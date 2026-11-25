@@ -1,8 +1,9 @@
-"""documents.refresh and patterns.record are operator-only (cabal#233).
+"""documents.refresh, code.refresh and patterns.record are operator-only
+(cabal#233, #246).
 
 The handlers do not check scope themselves; liminal refuses the call when a
 tool's card entry sets ``requires_operator``. These tests fail if the flag is
-dropped from either card, or if liminal's card validation stops carrying it.
+dropped from any of these cards, or if liminal's card validation stops carrying it.
 """
 
 from __future__ import annotations
@@ -13,10 +14,12 @@ pytest.importorskip("liminal.protocol")
 
 from liminal.protocol.card import validate_card  # noqa: E402
 
+from cabal.handlers.code import CodeHandler  # noqa: E402
 from cabal.handlers.documents import DocumentsHandler  # noqa: E402
 from cabal.handlers.patterns import PatternsHandler  # noqa: E402
 
 OPERATOR_ONLY = {
+    "code": (CodeHandler, {"refresh"}),
     "documents": (DocumentsHandler, {"refresh"}),
     "patterns": (PatternsHandler, {"record"}),
 }
