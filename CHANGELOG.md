@@ -6,21 +6,32 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-24
+
+0.5.0 carries everything in 0.5.0rc1 (the next section) and the changes below. Upgrading from
+0.4.0, read this Upgrading section and rc1's.
+
 ### Changed
 
-- **CI:** the Gojira-generated `.github/workflows/gojira-ci.yaml` is removed. It deployed to the old dogfood install's cluster, which no longer exists, and it was the last workflow allowed a runner variable. `tests/test_ci_workflow.py` drops that exception. Adds `.github/CODEOWNERS`.
+- **CI:** the Gojira-generated `.github/workflows/gojira-ci.yaml` is removed. It deployed to the old dogfood install's cluster, which no longer exists, and it was the last workflow allowed a runner variable. `tests/test_ci_workflow.py` drops that exception. Adds `.github/CODEOWNERS`; since #459 and #461, Prudence (the project's AI code reviewer) owns everything except docs Markdown, so code changes need her review.
 - **CI runs on GitHub-hosted runners.** `unit` and `integration` moved off the self-hosted runner, fork PRs run the unit suite (the `fork-pr` job is gone), and a `ci` summary job fails unless `unit` succeeded, so a skipped job cannot pass. A branch ruleset requires `ci` and `dco`.
-- **Docs:** README and docs corrected against the code (JWT enforcement, CLI list, operator-tools note, `dispatch.refused` scope, connect timeout, layout, persona substrate, signing-key rotation).
+- **Security: the LiteLLM Proxy image is pinned by digest** (issue 383, #465). `docker-compose.yml` and `k8s/litellm.yaml` pulled the floating `ghcr.io/berriai/litellm:main-stable`; they now pull `v1.104.2@sha256:3d88bd75…`, the same version as the Python pin, built before the 2026-10-21 compromise. A bump is a reviewed change to that line.
+- **The working tree no longer names the maintainers' machines** (#449): test fixtures, the session-presence hook script (now `hooks/cabal-session-presence.sh`) and one `cbl` message.
+- **Docs:** README and docs corrected against the code (JWT enforcement, CLI list, operator-tools note, `dispatch.refused` scope, connect timeout, layout, persona substrate, signing-key rotation). A docs audit and a pre-release pass checked the README, the bundled guides and the agent-facing docs against the code (#458, #463); RELEASING.md records how a release is cut (#462); the k8s README names `--build-arg EXTRA_INDEX_URL` for the techne wheel (#464).
 - **Licence: MIT.** The project moves from AGPL-3.0-or-later to MIT, with the agreement of every contributor (tenishai/agora discussion 69). Releases already published keep the licence they shipped under.
 
 ### Upgrading
 
-- One database migration, applied at startup: `b4c8e2a6d1f3` adds `conversations.target_group`
-  (issue 423). It only adds.
-- One database migration, applied at startup: `a9d3e5f7c1b2` adds the `review_runs` and
-  `review_steps` tables. It only adds; nothing existing changes.
-- One database migration, applied at startup: `c6e1f4a8b2d9` adds the `meter_spend` table for the
-  token meter. It only adds.
+- **Database migrations apply at startup, and every one only adds.** From 0.5.0rc1, three, in
+  order: `a9d3e5f7c1b2` adds the `review_runs` and `review_steps` tables, `b4c8e2a6d1f3` adds
+  `conversations.target_group` (issue 423), and `c6e1f4a8b2d9` adds the `meter_spend` table for
+  the token meter. From 0.4.0, four: rc1's `f3b6c1d2e4a5` (scheduled tasks) first, then those
+  three. Opening an upgraded database with an older server was checked only for the archivist
+  file (see rc1); for cabal's own database it was not checked.
+- **Sibling versions.** `requirements-sources.txt`, the non-dev install, now pins techne v0.20.0
+  and liminal v0.11.0 (it pinned v0.19.0 and v0.7.1). The Dockerfile's wheel pins stay where they
+  were (techne 0.18.2, liminal 0.5.0, each by sha256). Revocation checking against
+  `GET /auth/revocations` needs liminal 0.11.0 or later.
 - **The licence is MIT**, not AGPL-3.0-or-later. Releases already published keep theirs.
 - The review engine, the watch loop, the merge gate, groups and the token meter are all off until
   `[review] enabled`, `[groups]` and `[meter] enabled` are set in identity.toml; nothing changes
@@ -77,8 +88,8 @@ Pull requests and issues are in tenishai/cabal.
   files), ending the run `unmerged` (agents issue 167). A base change to a file the PR only depends
   on passes.
 - `GET /auth/revocations` lists every revoked subject with its cutoff,
-  `{"revocations": {"<sub>": <not_before>}, "generated_at": <epoch>}`, so liminal can refuse
-  revoked tokens it verifies itself (tenishai/liminal issue 228). It takes the same token and
+  `{"revocations": {"<sub>": <not_before>}, "generated_at": <epoch>}`, so liminal 0.11.0 and later
+  can refuse revoked tokens it verifies itself (tenishai/liminal issue 228). It takes the same token and
   check as the secrets fetch, `GET /admin/secrets/{persona}/{handler}`.
 - Dispatch to a group (issue 423, part 1). `[groups]` in identity.toml names each group's
   members in order. `cbl dispatch --detach group:<name> "<brief>"` sends the task through the
@@ -694,9 +705,11 @@ A release candidate: the wright set runs it before `0.5.0` is tagged.
   tenishai/cabal#129). `archivist`, `documents`, `patterns` and `code` need corpus paths
   that no compose or k8s file sets; the README now names the env vars and the gap.
 - **Operator state defaults to `~/.cabal`, not the checkout** (tenishai/cabal#212, issue
-  tenishai/cabal#211). Resolution order: an explicit `--config`; then `./identity.toml`
-  if it exists (existing installs keep working in place); then
-  `<CABAL_HOME or ~/.cabal>/identity.toml`. The CLI token follows `CABAL_HOME` too
+  tenishai/cabal#211). Resolution order: an explicit `--config`; then
+  `<state root>/identity.toml`, where the working directory is the state root if it holds
+  any of `identity.toml`, `data/cabal.db` or `data/.master_key` (existing installs keep working
+  in place), and `<CABAL_HOME or ~/.cabal>` otherwise (corrected in 0.5.0, issue 334; this
+  entry first said only `./identity.toml` kept the working directory). The CLI token follows `CABAL_HOME` too
   (tenishai/cabal#228, issue tenishai/cabal#216).
 - **The image can build without a sibling techne checkout** (tenishai/cabal#239). Pass
   `--build-context techne=...` as before, or `--build-arg EXTRA_INDEX_URL` (and
