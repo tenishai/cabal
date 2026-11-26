@@ -4,9 +4,10 @@ name: test
 # operate may be reachable from it. tests/test_ci_workflow.py pins that.
 # unit runs on every push to main and every pull request, fork PRs included —
 # no private deps, no secret required.
-# integration and docker run with unit on every push, PR and dispatch. They clone
-# the public techne and liminal siblings without a token, so fork PRs need no
-# secret either. Both were dispatch-only while the siblings were private (issue 236).
+# integration and docker run with unit on every push, PR and dispatch.
+# integration clones the public techne and liminal siblings and docker clones
+# techne, all without a token, so fork PRs need no secret either. Both were
+# dispatch-only while the siblings were private (issue 236).
 # `ci` and `dco` are the two checks a branch ruleset requires.
 on:
   push:
@@ -214,8 +215,9 @@ jobs:
         run: docker build --pull --build-arg APT_REFRESH="$(date +%F)" --build-context techne=../techne -t cabal:ci .
 
   # ---- ci: the one check a branch ruleset requires, with dco ----------------
-  # Required by name, so it must always report. `if: always()` runs it when unit
-  # fails or is cancelled, and the step fails on anything but success: a skipped
+  # Required by name, so it must always report. `if: always()` runs it when unit,
+  # integration or docker fails or is cancelled, and the step fails on anything
+  # but success from any of them: a skipped
   # job counts as passing in GitHub's UI, and must not here.
   ci:
     runs-on: ubuntu-latest
