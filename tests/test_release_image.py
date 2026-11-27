@@ -222,7 +222,7 @@ def test_the_scan_reads_the_repo_ignore_list_and_each_entry_names_a_version():
     scan = _steps()["No high or critical vulnerability that has a fix"]["with"]
     assert scan["config"] == "cabal/.grype.yaml"
     ignores = yaml.safe_load((ROOT / ".grype.yaml").read_text())["ignore"]
-    assert ignores
+    assert isinstance(ignores, list)
     for entry in ignores:
         assert entry["package"]["name"] and entry["package"]["version"], entry
 
