@@ -161,7 +161,8 @@ jobs:
           severity-cutoff: high
           only-fixed: true
           output-format: table
-          # What the scan does not block on, each with its reason (the scan still lists it).
+          # What the scan does not block on, each with its reason. Ignored matches are dropped from
+          # the table, so .grype.yaml is where they are recorded.
           config: cabal/.grype.yaml
 
       - name: SBOM

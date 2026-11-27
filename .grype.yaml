@@ -1,4 +1,5 @@
-# What the release scan (release.yml) does not block on, and why. The scan still lists each one.
+# What the release scan (release.yml) does not block on, and why. grype drops an ignored match
+# from its table, so this file is the only record: keep the reason with each entry.
 # Every entry names the exact version, so a change to that package brings the finding back
 # for review instead of staying silenced.
 ignore:
