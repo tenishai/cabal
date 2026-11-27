@@ -75,7 +75,10 @@ def test_arm64_is_built_and_run_on_a_native_runner_and_never_pushed():
     # meant to differ, so a key added to one side only (a `target`, a `file`) fails too.
     release = _steps()["Build the image for this machine"]["with"]
     differ = {"platforms", "push", "load", "tags"}
-    strip = lambda w: {k: v for k, v in w.items() if k not in differ}
+
+    def strip(w: dict) -> dict:
+        return {k: v for k, v in w.items() if k not in differ}
+
     assert strip(build) == strip(release)
     # The techne directory those builds read is checked out the same way in both jobs.
     techne = "Checkout techne at the tag the Dockerfile pins"
