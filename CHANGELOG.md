@@ -6,6 +6,29 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-11-27
+
+The first release with a published image: `ghcr.io/tenishai/cabal:v0.5.1`, for amd64 and
+arm64, built and scanned by `release.yml`. It also carries the go-public fixes merged since
+0.5.0.
+
+### Upgrading
+
+- **No database migrations.**
+- **A2A v1.0 task reads now check the token's audience** (issue 296). GetTask, ListTasks,
+  CancelTask, and SendMessage with a `taskId`, need a token aimed at the persona in the path,
+  or an operator or colleague token aimed at `cabal-core`. A caller that used one persona's
+  token on another persona's path now gets 403. Operator and colleague passes are unchanged,
+  and so is the legacy `tasks/get`.
+- **`code.refresh` is operator-only** (issue 246). A persona token that called it gets a
+  refusal from liminal.
+- **The image pins techne 0.20.0 and liminal 0.11.0** (0.5.0's pinned techne 0.18.2 and
+  liminal 0.5.0). A sibling-checkout build (`make build`, `make up`) needs `../techne` at
+  `v0.20.0`.
+- **`k8s/` names the published image** `ghcr.io/tenishai/cabal:v0.5.1` in place of the
+  never-published `:latest`. 0.5.0 and earlier have no published image; to deploy one of them
+  from `k8s/`, build the image and set the `image:` line.
+
 ### Changed
 
 - **The release scan skips one filelock advisory, by version** (`.grype.yaml`). GHSA-v4x8-3wr5-3wq8 (high) is in filelock's SQLite `ReadWriteLock`, which nothing in the image uses, and needs a second local user; the image runs as one. filelock is held at 3.32.7 by the pinned litellm 1.104.2 (`<4.0`; the fix is 4.2.1). The entry names that version, so any filelock change brings the finding back, and it goes when the litellm pin moves. Found by the first dry run of `release.yml`.

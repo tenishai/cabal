@@ -82,7 +82,7 @@ version.
 
 The tag starts `release.yml`. It runs the whole of `test.yml` on the tagged commit, checks
 the tag against `pyproject.toml`, builds the image (techne from its pinned tag), checks the
-image reports the version and has no fixable high or critical vulnerability, and publishes it
+image reports the version and has no fixable high or critical vulnerability (apart from what `.grype.yaml` lists), and publishes it
 to `ghcr.io/tenishai/cabal` under `vX.Y.Z` and the short sha, for amd64 and arm64, with an
 SBOM and provenance. It then creates the GitHub release from the CHANGELOG section if none
 exists, attaches the image SBOM and its checksum, and writes the image digest into the text.
@@ -98,6 +98,10 @@ runs `test.yml`, builds the image, checks the version inside it, scans it, makes
 runs the existence check against `v<version>` with the release's token, and publishes
 nothing. The scan depends on that day's vulnerability feed, so do this the same
 day as the tag; a failure found on the tag means a new version, since a tag is never moved.
+A scan failure has two answers: move the package to a fixed version, or, when the vulnerable
+code can't be reached in the image, add an entry to `.grype.yaml` that names the advisory, the
+package and its exact version, with the reason and when to remove it (grype drops an ignored
+match from its table, so that file is the only record).
 
 The first time the workflow publishes, the package is private: an org owner sets
 `ghcr.io/tenishai/cabal` to public in the package settings, or `k8s/` cannot pull it.
