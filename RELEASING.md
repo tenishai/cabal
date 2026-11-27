@@ -1,9 +1,10 @@
 # Releasing cabal
 
-A cabal release is a version bump in a pull request, a tag on the merge commit, a GitHub
-release carrying the wheel, and the wheel on the tenish package index. All of it is done by
-hand: there is no release workflow, and nothing in CI reacts to a tag. This file records what
-0.4.0 and 0.5.0rc1 actually did.
+A cabal release is a version bump in a pull request, a tag on the merge commit, the image
+on ghcr, a GitHub release carrying the wheel, and the wheel on the tenish package index. The
+tag starts `.github/workflows/release.yml`, which builds and publishes the image and creates
+the GitHub release; the wheel is still done by hand. This file records what 0.4.0 and
+0.5.0rc1 actually did, plus the image workflow added after 0.5.0.
 
 Release order across the suite: techne first, then liminal, then cabal. cabal's `mcp`,
 `memory` and `full` extras depend on liminal and techne, so both must be released (and
@@ -41,6 +42,8 @@ carries:
   0.4.0 PR moved them (techne v0.18.2 to v0.19.0, liminal v0.5.0 to v0.7.1) and said so in
   Upgrading. The Dockerfile pins liminal and techne wheels by version and sha256
   (`LIMINAL_VERSION`, `LIMINAL_WHEEL_SHA256`); 0.4.0 left them as they were and said that too.
+- `k8s/cabal-core.yaml`: the `image:` tag moves to `vX.Y.Z`. `tests/test_release_image.py`
+  fails until it equals the new `version`.
 - Docs that name the version: the `STATE:` line in `ARCHITECTURE.md`, and any other file that
   names the previous one (grep for it).
 - Architecture-card anchors. `ARCHITECTURE.md` and `docs/arch/liminal-boundary.md` anchor
@@ -77,11 +80,22 @@ version.
 
 ## Publish
 
-After the tag, by hand:
+The tag starts `release.yml`. It runs the whole of `test.yml` on the tagged commit, checks
+the tag against `pyproject.toml`, builds the image (techne from its pinned tag), checks the
+image reports the version and has no fixable high or critical vulnerability, and publishes it
+to `ghcr.io/tenishai/cabal` under `vX.Y.Z` and the short sha, for amd64 and arm64, with an
+SBOM and provenance. It then creates the GitHub release from the CHANGELOG section if none
+exists, attaches the image SBOM and its checksum, and writes the image digest into the text.
+A failed run is re-run from the tag with `gh workflow run release.yml --ref vX.Y.Z`.
 
-1. **The GitHub release**, named `cabal X.Y.Z`, with the CHANGELOG section as its body
-   (including `### Upgrading`). Mark a candidate as a pre-release. The wheel and a
-   `SHA256SUMS` file are attached (v0.4.0 and v0.5.0rc1 have both).
+The first time the workflow publishes, the package is private: an org owner sets
+`ghcr.io/tenishai/cabal` to public in the package settings, or `k8s/` cannot pull it.
+
+Then, by hand:
+
+1. **The GitHub release.** Rename it `cabal X.Y.Z`, mark a candidate as a pre-release, and
+   attach the wheel and its `SHA256SUMS` (v0.4.0 and v0.5.0rc1 have both). Keep the image
+   line the workflow wrote.
 2. **The wheel on `https://pypi.tenish.ai/simple`.** A maintainer builds the wheel from the tag twice, with
    `SOURCE_DATE_EPOCH` set to the tag commit's time and checks that the hashes match; publishes it with the
    index's publish script (maintainers only); checks the sha256 in the
@@ -101,4 +115,5 @@ anyone to install it.
 
 ## Not yet
 
-No tag-triggered release workflow, scan gate or SBOM exists here, unlike kobo's.
+The wheel is built and published by hand, and the image carries no liminal (an identity
+that sets `[liminal] url` needs a build with `--build-context liminal=…` or `WITH_MCP=1`).

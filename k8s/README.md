@@ -7,9 +7,12 @@ the LiteLLM proxy, and a Litestream sidecar in a single namespace.
 
 - A Kubernetes cluster (k3s, kind, AKS, GKE, EKS, k0s — anything 1.27+).
 - A storage class that supports `ReadWriteOnce` PersistentVolumeClaims.
-- The Cabal Core image published to a registry your cluster can pull from
-  (`ghcr.io/tenishai/cabal:latest` by default — change in `cabal-core.yaml`
-  if you publish elsewhere).
+- The Cabal Core image. `cabal-core.yaml` names the public
+  `ghcr.io/tenishai/cabal:vX.Y.Z` of the release you checked out; a release's
+  `release.yml` run publishes it. Releases before the first one built that way
+  (0.5.0 and earlier) have no published image: build it yourself from the
+  `Dockerfile`, push it to a registry your cluster can pull from, and set the
+  `image:` line in `cabal-core.yaml` to it.
 - An image build either takes a `techne` build context (a sibling checkout,
   `additional_contexts: techne=../techne`, see `docker-compose.yml`) or, with no
   such context, fetches a version- and sha256-pinned techne wheel from the
@@ -63,8 +66,10 @@ pod never sees a changed `identity.toml`:
   unchanged. No rollout is triggered.
 - `cabal-core.yaml` mounts `identity.toml` with `subPath`, and Kubernetes does
   not propagate ConfigMap updates into a `subPath` mount.
-- The image is `:latest` with `imagePullPolicy: IfNotPresent`, so a recreated
-  pod can start a cached older image.
+- The image is pinned to a release tag with `imagePullPolicy: IfNotPresent`.
+  A tag is never moved, so that is safe for a published image; an image you
+  build and push yourself under one tag again is not pulled again, so give each
+  build a new tag.
 
 So after every apply, restart both Deployments and wait for them:
 

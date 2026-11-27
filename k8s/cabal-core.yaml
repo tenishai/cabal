@@ -29,7 +29,7 @@ spec:
       containers:
         # ---- Cabal Core daemon ----
         - name: cabal-core
-          image: ghcr.io/tenishai/cabal:latest   # built from this repo's Dockerfile
+          image: ghcr.io/tenishai/cabal:v0.5.0   # the release this checkout is; tests/test_release_image.py keeps it equal to pyproject.toml
           imagePullPolicy: IfNotPresent
           args:
             - "cbl"
