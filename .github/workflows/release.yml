@@ -22,7 +22,8 @@
 # new digest, and nodes with `imagePullPolicy: IfNotPresent` would run different images
 # under one tag. It finishes the GitHub release with the published digest instead.
 #
-# A dry run, from a branch, does steps 1 and 3 and publishes nothing:
+# A dry run, from a branch, does steps 1 and 3 and makes the SBOM and checksums, and
+# publishes nothing:
 #   gh workflow run release.yml --ref main
 name: release
 on:
