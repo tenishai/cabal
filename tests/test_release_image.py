@@ -37,7 +37,8 @@ def test_release_runs_on_version_tags_after_the_whole_ci():
     doc = yaml.safe_load(RELEASE.read_text())
     assert _on(doc)["push"] == {"tags": ["v*"]}
     assert doc["jobs"]["checks"]["uses"] == "./.github/workflows/test.yml"
-    assert doc["jobs"]["release"]["needs"] == "checks"
+    assert doc["jobs"]["release"]["needs"] == ["checks", "arm64"]
+    assert doc["jobs"]["arm64"]["needs"] == "checks"
     assert "workflow_call" in _on(yaml.safe_load(TEST.read_text())), (
         "release.yml calls test.yml, which must accept workflow_call"
     )
@@ -55,6 +56,20 @@ def test_release_builds_with_the_techne_the_dockerfile_pins():
     assert published["push"] is True
     assert "latest" not in published["tags"]
 
+
+
+def test_arm64_is_built_and_run_on_a_native_runner_and_never_pushed():
+    job = yaml.safe_load(RELEASE.read_text())["jobs"]["arm64"]
+    assert job["runs-on"] == "ubuntu-24.04-arm"
+    assert "if" not in job, "the arm64 job must run on dry runs too (issue #485)"
+    assert job["permissions"] == {"contents": "read"}
+    steps = {s.get("name", s.get("uses")): s for s in job["steps"]}
+    assert not any("setup-qemu-action" in str(s.get("uses", "")) for s in job["steps"])
+    build = steps["Build the arm64 image (never pushed)"]["with"]
+    assert build["platforms"] == "linux/arm64"
+    assert build["push"] is False and build["load"] is True
+    assert build["build-contexts"] == "techne=techne"
+    assert "cache-to" not in build
 
 
 def _steps() -> dict:
@@ -184,3 +199,40 @@ def test_the_scan_reads_the_repo_ignore_list_and_each_entry_names_a_version():
     assert ignores
     for entry in ignores:
         assert entry["package"]["name"] and entry["package"]["version"], entry
+
+
+ARM_CHECK = "The arm64 image runs natively and reports the version"
+FAKE_ARM_DOCKER = """#!/bin/bash
+# `docker run --rm IMAGE CMD...`: answer uname, the version probe and cbl from $FAKE_*.
+echo "$*" >> calls
+case "$*" in
+  *"uname -m") echo "$FAKE_ARCH";;
+  *cabal.__version__*) echo "$FAKE_VERSION";;
+  *"cbl --help") exit "$FAKE_CBL_RC";;
+esac
+"""
+
+
+@pytest.mark.parametrize(
+    ("arch", "version", "cbl_rc", "passes"),
+    [
+        ("aarch64", "1.2.3", 0, True),
+        ("x86_64", "1.2.3", 0, False),  # emulated or wrong-arch image: not proof of arm64
+        ("aarch64", "1.2.2", 0, False),  # the image is not this checkout's version
+        ("aarch64", "1.2.3", 2, False),  # the CLI does not start
+    ],
+)
+def test_the_arm64_check_needs_aarch64_the_version_and_a_working_cli(
+    tmp_path, arch, version, cbl_rc, passes
+):
+    job = yaml.safe_load(RELEASE.read_text())["jobs"]["arm64"]
+    script = next(s for s in job["steps"] if s.get("name") == ARM_CHECK)["run"]
+    (tmp_path / "bin").mkdir()
+    fake = tmp_path / "bin" / "docker"
+    fake.write_text(FAKE_ARM_DOCKER)
+    fake.chmod(0o755)
+    env = {"VERSION": "1.2.3", "FAKE_ARCH": arch, "FAKE_VERSION": version, "FAKE_CBL_RC": str(cbl_rc)}
+    code, _ = _run(script, env, tmp_path)
+    assert (code == 0) is passes
+    if passes:
+        assert all("candidate:arm64" in line for line in (tmp_path / "calls").read_text().splitlines())
