@@ -6,6 +6,10 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+### Changed
+
+- **`release.yml` builds and runs the arm64 image on a native arm64 runner, dry runs included** (issue #485). A new `arm64` job on `ubuntu-24.04-arm` builds the image for linux/arm64 without pushing and runs it: it must report `aarch64`, the checkout's version, and a working `cbl --help`. The `release` job needs it, so nothing is published until arm64 is proved, and a dry run from a branch now proves arm64 before a tag. Before this, arm64 was first built on the tag, under QEMU, where a failure could only be fixed by a new version. The multi-arch publish still builds both platforms under QEMU. The runner is free only while the repository is public.
+
 ## [0.5.1] — 2026-11-27
 
 The first release with a published image: `ghcr.io/tenishai/cabal:v0.5.1`, for amd64 and

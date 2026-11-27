@@ -80,7 +80,10 @@ version.
 
 ## Publish
 
-The tag starts `release.yml`. It runs the whole of `test.yml` on the tagged commit, checks
+The tag starts `release.yml`. It runs the whole of `test.yml` on the tagged commit and,
+on a GitHub arm64 runner (`ubuntu-24.04-arm`), builds the arm64 image and runs it: it must
+report `aarch64`, the version, and a working `cbl --help`. Nothing is pushed until both pass.
+That runner is free only while the repository is public. Then it checks
 the tag against `pyproject.toml`, builds the image (techne from its pinned tag), checks the
 image reports the version and has no fixable high or critical vulnerability (apart from what `.grype.yaml` lists), and publishes it
 to `ghcr.io/tenishai/cabal` under `vX.Y.Z` and the short sha, for amd64 and arm64, with an
@@ -94,7 +97,7 @@ GitHub release with its digest. The existence check fails the run on any answer 
 "found" or "not found", so a registry error can't pass for a missing tag.
 
 Before the tag, dry-run the workflow from main: `gh workflow run release.yml --ref main`. It
-runs `test.yml`, builds the image, checks the version inside it, scans it, makes the SBOM, and
+runs `test.yml` and the arm64 job, builds the image, checks the version inside it, scans it, makes the SBOM, and
 runs the existence check against `v<version>` with the release's token, and publishes
 nothing. The scan depends on that day's vulnerability feed, so do this the same
 day as the tag; a failure found on the tag means a new version, since a tag is never moved.
