@@ -18,6 +18,16 @@
 #
 # To build a tag again, run this workflow from that tag (the tag must contain this file):
 #   gh workflow run release.yml --ref vX.Y.Z
+# If that tag's image is already on ghcr, the run does not build or push it again: a
+# rebuild gets a new digest, and nodes with `imagePullPolicy: IfNotPresent` would run
+# different images under one tag. It checks, scans (reporting, not failing) and makes the
+# SBOM of the published image instead, and finishes the GitHub release with its digest.
+# The existence check fails the run on any answer but "found" or "not found", so a
+# registry error can't pass for a missing tag.
+#
+# A dry run, from a branch, does steps 1 and 3, makes the SBOM and checksums, and runs the
+# existence check against the version's tag, and publishes nothing:
+#   gh workflow run release.yml --ref main
 name: release
 on:
   push:
@@ -47,14 +57,23 @@ jobs:
         with:
           path: cabal
 
-      - name: The tag names the version the project declares
+      - name: The tag names the version the project declares (a branch is a dry run)
         id: version
         working-directory: cabal
         run: |
-          tag="$GITHUB_REF_NAME"
-          case "$tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::$tag is not a vX.Y.Z tag; run this workflow from a release tag"; exit 1;; esac
           declared="$(sed -nE 's/^version = "([^"]+)"/\1/p' pyproject.toml | head -1)"
-          [ "${tag#v}" = "$declared" ] || { echo "::error::tag $tag but pyproject.toml declares $declared"; exit 1; }
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag="$GITHUB_REF_NAME"
+            case "$tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::$tag is not a vX.Y.Z tag; run this workflow from a release tag"; exit 1;; esac
+            [ "${tag#v}" = "$declared" ] || { echo "::error::tag $tag but pyproject.toml declares $declared"; exit 1; }
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "check_tag=$tag" >> "$GITHUB_OUTPUT"
+          else
+            tag="dry-run"
+            echo "::notice::dry run from $GITHUB_REF_NAME: build, check and scan only; nothing is published"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "check_tag=v$declared" >> "$GITHUB_OUTPUT"
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$declared" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
@@ -77,7 +96,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # On a tag, `reuse` means the image is already out: check it, never push it again.
+      # On a dry run the check runs too (against the version's tag), so the first real
+      # answer from ghcr is seen before a tag; it never sets `reuse` there.
+      - name: Is this tag's image already published
+        id: published
+        shell: bash
+        env:
+          REF: ${{ env.IMAGE }}:${{ steps.version.outputs.check_tag }}
+          PUBLISH: ${{ steps.version.outputs.publish }}
+        run: |
+          set -euo pipefail
+          if out="$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest.Digest}}' 2>inspect.err)"; then
+            digest="$(printf '%s' "$out" | tr -d '"[:space:]')"
+            case "$digest" in
+              sha256:[0-9a-f]*) ;;
+              *) echo "::error::$REF: inspect succeeded but printed no digest: $out"; exit 1;;
+            esac
+            echo "::notice::$REF is already published ($digest)"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            [ "$PUBLISH" = true ] && reuse=true || reuse=false
+          elif grep -qi ': not found' inspect.err; then
+            echo "$REF is not published yet"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            reuse=false
+          else
+            echo "::error::could not tell whether $REF is published:"; cat inspect.err; exit 1
+          fi
+          echo "reuse=$reuse" >> "$GITHUB_OUTPUT"
+          if [ "$reuse" = true ]; then subject="${REF%:*}@$digest"; else subject=candidate:release; fi
+          echo "subject=$subject" >> "$GITHUB_OUTPUT"
+
       - name: Build the image for this machine
+        if: steps.published.outputs.reuse != 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: cabal
@@ -92,17 +144,20 @@ jobs:
       - name: The image starts and reports the tagged version
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          SUBJECT: ${{ steps.published.outputs.subject }}
         run: |
-          got="$(docker run --rm candidate:release python -c 'import cabal; print(cabal.__version__)')"
+          got="$(docker run --rm "$SUBJECT" python -c 'import cabal; print(cabal.__version__)')"
           echo "image reports $got"
           [ "$got" = "$VERSION" ] || { echo "::error::image reports $got, tag says $VERSION"; exit 1; }
-          docker run --rm candidate:release cbl --help > /dev/null
+          docker run --rm "$SUBJECT" cbl --help > /dev/null
 
+      # A published image is scanned and reported, never failed: nothing would be pushed,
+      # and a CVE found since the tag must not stop its release from being finished.
       - name: No high or critical vulnerability that has a fix
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
         with:
-          image: candidate:release
-          fail-build: true
+          image: ${{ steps.published.outputs.subject }}
+          fail-build: ${{ steps.published.outputs.reuse != 'true' }}
           severity-cutoff: high
           only-fixed: true
           output-format: table
@@ -110,7 +165,7 @@ jobs:
       - name: SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c  # v0.24.3
         with:
-          image: candidate:release
+          image: ${{ steps.published.outputs.subject }}
           format: spdx-json
           output-file: dist/${{ github.event.repository.name }}-${{ steps.version.outputs.version }}.spdx.json
           upload-artifact: false
@@ -122,6 +177,7 @@ jobs:
 
       - name: Build and publish, both architectures
         id: build
+        if: steps.version.outputs.publish == 'true' && steps.published.outputs.reuse != 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: cabal
@@ -140,13 +196,14 @@ jobs:
             ${{ env.IMAGE }}:${{ steps.version.outputs.sha }}
 
       - name: The GitHub release
+        if: steps.version.outputs.publish == 'true'
         working-directory: cabal
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
           SHA: ${{ steps.version.outputs.sha }}
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.published.outputs.reuse == 'true' && steps.published.outputs.digest || steps.build.outputs.digest }}
         run: |
           line="Image: \`${IMAGE}@${DIGEST}\` (tags \`${TAG}\`, \`${SHA}\`; linux/amd64, linux/arm64)"
           echo "$line" >> "$GITHUB_STEP_SUMMARY"

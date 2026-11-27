@@ -67,7 +67,8 @@ pod never sees a changed `identity.toml`:
 - `cabal-core.yaml` mounts `identity.toml` with `subPath`, and Kubernetes does
   not propagate ConfigMap updates into a `subPath` mount.
 - The image is pinned to a release tag with `imagePullPolicy: IfNotPresent`.
-  A tag is never moved, so that is safe for a published image; an image you
+  `release.yml` publishes a tag's image once and never pushes that tag again,
+  so that is safe for a published image; an image you
   build and push yourself under one tag again is not pulled again, so give each
   build a new tag.
 

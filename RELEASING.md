@@ -86,7 +86,18 @@ image reports the version and has no fixable high or critical vulnerability, and
 to `ghcr.io/tenishai/cabal` under `vX.Y.Z` and the short sha, for amd64 and arm64, with an
 SBOM and provenance. It then creates the GitHub release from the CHANGELOG section if none
 exists, attaches the image SBOM and its checksum, and writes the image digest into the text.
-A failed run is re-run from the tag with `gh workflow run release.yml --ref vX.Y.Z`.
+A failed run is re-run from the tag with `gh workflow run release.yml --ref vX.Y.Z`. If
+the image for that tag is already on ghcr, the re-run does not build or push it again (a
+rebuild would get a new digest under the same tag). It checks the published image, scans it
+(reporting, not failing, since nothing would be pushed), makes its SBOM, and finishes the
+GitHub release with its digest. The existence check fails the run on any answer from ghcr but
+"found" or "not found", so a registry error can't pass for a missing tag.
+
+Before the tag, dry-run the workflow from main: `gh workflow run release.yml --ref main`. It
+runs `test.yml`, builds the image, checks the version inside it, scans it, makes the SBOM, and
+runs the existence check against `v<version>` with the release's token, and publishes
+nothing. The scan depends on that day's vulnerability feed, so do this the same
+day as the tag; a failure found on the tag means a new version, since a tag is never moved.
 
 The first time the workflow publishes, the package is private: an org owner sets
 `ghcr.io/tenishai/cabal` to public in the package settings, or `k8s/` cannot pull it.
