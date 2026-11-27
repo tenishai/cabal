@@ -71,10 +71,28 @@ def test_arm64_is_built_and_run_on_a_native_runner_and_never_pushed():
     assert build["build-contexts"] == "techne=techne"
     assert "cache-to" not in build
     # The arm64 image is built from the same inputs as the release's own build, so a pass
-    # here says something about the image that gets published.
+    # here says something about the image that gets published. Whole dicts, minus the keys
+    # meant to differ, so a key added to one side only (a `target`, a `file`) fails too.
     release = _steps()["Build the image for this machine"]["with"]
-    for key in ("context", "build-contexts", "build-args", "pull", "cache-from"):
-        assert build.get(key) == release.get(key), key
+    differ = {"platforms", "push", "load", "tags"}
+    strip = lambda w: {k: v for k, v in w.items() if k not in differ}
+    assert strip(build) == strip(release)
+    # The techne directory those builds read is checked out the same way in both jobs.
+    techne = "Checkout techne at the tag the Dockerfile pins"
+    assert steps[techne]["with"] == _steps()[techne]["with"]
+
+
+def test_both_jobs_read_the_same_version_and_techne_tag(checkout):
+    """The `version` outputs feed the techne checkout and the image check, so the arm64
+    job's own version step must agree with the release job's on the same checkout."""
+    job = yaml.safe_load(RELEASE.read_text())["jobs"]["arm64"]
+    arm = next(s for s in job["steps"] if s.get("id") == "version")
+    _, arm_out = _run(arm["run"], {}, checkout)
+    _, rel_out = _run(_steps()[VERSION_STEP]["run"],
+                      {"GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "main"}, checkout)
+    assert arm_out["techne"] == rel_out["techne"] == "v0.20.0"
+    assert arm_out["version"] == rel_out["version"] == "1.2.3"
+    assert arm_out["day"] == rel_out["day"]
 
 
 def _steps() -> dict:
