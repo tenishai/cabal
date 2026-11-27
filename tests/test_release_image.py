@@ -156,11 +156,13 @@ def test_the_existence_check_reuses_only_a_published_tag(
 
 def test_a_reused_image_is_never_rebuilt_or_pushed_and_its_digest_is_released():
     steps = _steps()
-    assert "steps.published.outputs.reuse != 'true'" in steps["Build the image for this machine"]["if"]
-    publish_if = steps["Build and publish, both architectures"]["if"]
-    assert "steps.version.outputs.publish == 'true'" in publish_if
-    assert "steps.published.outputs.reuse != 'true'" in publish_if
-    assert "steps.version.outputs.publish == 'true'" in steps["The GitHub release"]["if"]
+    # Equality, not substrings: `a && b` and `a || b` share both terms, and `||` would push
+    # from a branch.
+    assert steps["Build the image for this machine"]["if"] == "steps.published.outputs.reuse != 'true'"
+    assert steps["Build and publish, both architectures"]["if"] == (
+        "steps.version.outputs.publish == 'true' && steps.published.outputs.reuse != 'true'"
+    )
+    assert steps["The GitHub release"]["if"] == "steps.version.outputs.publish == 'true'"
     for name in ("No high or critical vulnerability that has a fix", "SBOM"):
         assert steps[name]["with"]["image"] == "${{ steps.published.outputs.subject }}", name
     assert steps["The image starts and reports the tagged version"]["env"]["SUBJECT"] == (
@@ -173,3 +175,12 @@ def test_a_reused_image_is_never_rebuilt_or_pushed_and_its_digest_is_released():
         "${{ steps.published.outputs.reuse == 'true' && steps.published.outputs.digest"
         " || steps.build.outputs.digest }}"
     )
+
+
+def test_the_scan_reads_the_repo_ignore_list_and_each_entry_names_a_version():
+    scan = _steps()["No high or critical vulnerability that has a fix"]["with"]
+    assert scan["config"] == "cabal/.grype.yaml"
+    ignores = yaml.safe_load((ROOT / ".grype.yaml").read_text())["ignore"]
+    assert ignores
+    for entry in ignores:
+        assert entry["package"]["name"] and entry["package"]["version"], entry

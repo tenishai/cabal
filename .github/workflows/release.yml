@@ -161,6 +161,8 @@ jobs:
           severity-cutoff: high
           only-fixed: true
           output-format: table
+          # What the scan does not block on, each with its reason (the scan still lists it).
+          config: cabal/.grype.yaml
 
       - name: SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c  # v0.24.3

@@ -1,0 +1,17 @@
+# What the release scan (release.yml) does not block on, and why. The scan still lists each one.
+# Every entry names the exact version, so a change to that package brings the finding back
+# for review instead of staying silenced.
+ignore:
+  # filelock's SQLite-backed ReadWriteLock reopens its lock database by name, so another
+  # local user who can write in that database's directory can make the lock user overwrite
+  # or unlink files (GHSA-v4x8-3wr5-3wq8, high; fixed in 4.2.1). Nothing in the image uses
+  # ReadWriteLock or AsyncReadWriteLock: the only imports are FileLock, SoftFileLock,
+  # BaseFileLock and Timeout (checked 2026-11-27 against the image's dependency set). The
+  # image also runs as one user. 3.32.7 is held below 4 by litellm 1.104.2
+  # (`filelock>=3.16.1,<4.0`), which docker-compose.yml and k8s/litellm.yaml pin on purpose
+  # (issue 383). Remove this entry when the litellm pin moves to a version that allows
+  # filelock 4.2.1.
+  - vulnerability: GHSA-v4x8-3wr5-3wq8
+    package:
+      name: filelock
+      version: 3.32.7
