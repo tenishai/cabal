@@ -70,6 +70,11 @@ def test_arm64_is_built_and_run_on_a_native_runner_and_never_pushed():
     assert build["push"] is False and build["load"] is True
     assert build["build-contexts"] == "techne=techne"
     assert "cache-to" not in build
+    # The arm64 image is built from the same inputs as the release's own build, so a pass
+    # here says something about the image that gets published.
+    release = _steps()["Build the image for this machine"]["with"]
+    for key in ("context", "build-contexts", "build-args", "pull", "cache-from"):
+        assert build.get(key) == release.get(key), key
 
 
 def _steps() -> dict:
