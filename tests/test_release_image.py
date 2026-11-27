@@ -52,3 +52,24 @@ def test_release_builds_with_the_techne_the_dockerfile_pins():
     published = builds[1]["with"]
     assert published["push"] is True
     assert "latest" not in published["tags"]
+
+
+def _steps() -> dict:
+    steps = yaml.safe_load(RELEASE.read_text())["jobs"]["release"]["steps"]
+    return {s.get("name", s.get("uses")): s for s in steps}
+
+
+def test_a_branch_run_is_a_dry_run_that_publishes_nothing():
+    steps = _steps()
+    version = steps["The tag names the version the project declares (a branch is a dry run)"]
+    assert '"$GITHUB_REF_TYPE" = tag' in version["run"]
+    assert 'echo "publish=false"' in version["run"]
+    for name in ("Build and publish, both architectures", "The GitHub release"):
+        assert "steps.version.outputs.publish == 'true'" in steps[name]["if"], name
+
+
+def test_a_rerun_does_not_push_a_published_tag_again():
+    steps = _steps()
+    assert "steps.published.outputs.exists != 'true'" in steps["Build and publish, both architectures"]["if"]
+    assert "imagetools inspect" in steps["Is this tag's image already published"]["run"]
+    assert "steps.published.outputs.digest" in steps["The GitHub release"]["env"]["DIGEST"]

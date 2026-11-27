@@ -18,6 +18,12 @@
 #
 # To build a tag again, run this workflow from that tag (the tag must contain this file):
 #   gh workflow run release.yml --ref vX.Y.Z
+# If that tag's image is already on ghcr, the run does not push it again: a rebuild gets a
+# new digest, and nodes with `imagePullPolicy: IfNotPresent` would run different images
+# under one tag. It finishes the GitHub release with the published digest instead.
+#
+# A dry run, from a branch, does steps 1 and 3 and publishes nothing:
+#   gh workflow run release.yml --ref main
 name: release
 on:
   push:
@@ -47,14 +53,21 @@ jobs:
         with:
           path: cabal
 
-      - name: The tag names the version the project declares
+      - name: The tag names the version the project declares (a branch is a dry run)
         id: version
         working-directory: cabal
         run: |
-          tag="$GITHUB_REF_NAME"
-          case "$tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::$tag is not a vX.Y.Z tag; run this workflow from a release tag"; exit 1;; esac
           declared="$(sed -nE 's/^version = "([^"]+)"/\1/p' pyproject.toml | head -1)"
-          [ "${tag#v}" = "$declared" ] || { echo "::error::tag $tag but pyproject.toml declares $declared"; exit 1; }
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag="$GITHUB_REF_NAME"
+            case "$tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::$tag is not a vX.Y.Z tag; run this workflow from a release tag"; exit 1;; esac
+            [ "${tag#v}" = "$declared" ] || { echo "::error::tag $tag but pyproject.toml declares $declared"; exit 1; }
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            tag="dry-run"
+            echo "::notice::dry run from $GITHUB_REF_NAME: build, check and scan only; nothing is published"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$declared" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
@@ -76,6 +89,20 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Is this tag's image already published
+        id: published
+        if: steps.version.outputs.publish == 'true'
+        env:
+          REF: ${{ env.IMAGE }}:${{ steps.version.outputs.tag }}
+        run: |
+          if digest="$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"')" && [ -n "$digest" ]; then
+            echo "::notice::$REF is already published ($digest); this run will not push it again"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build the image for this machine
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
@@ -122,6 +149,7 @@ jobs:
 
       - name: Build and publish, both architectures
         id: build
+        if: steps.version.outputs.publish == 'true' && steps.published.outputs.exists != 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: cabal
@@ -140,13 +168,14 @@ jobs:
             ${{ env.IMAGE }}:${{ steps.version.outputs.sha }}
 
       - name: The GitHub release
+        if: steps.version.outputs.publish == 'true'
         working-directory: cabal
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
           SHA: ${{ steps.version.outputs.sha }}
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.build.outputs.digest || steps.published.outputs.digest }}
         run: |
           line="Image: \`${IMAGE}@${DIGEST}\` (tags \`${TAG}\`, \`${SHA}\`; linux/amd64, linux/arm64)"
           echo "$line" >> "$GITHUB_STEP_SUMMARY"
