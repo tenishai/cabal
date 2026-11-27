@@ -39,8 +39,11 @@ dependencies = [
     # Pinned exactly after litellm 1.107.0 shipped a credential stealer on PyPI
     # (2026-10-21; 1.82.7/1.82.8 in March): an open lower bound lets any rebuild
     # take whatever is newest that hour. The LiteLLM Proxy image in
-    # docker-compose.yml and k8s/litellm.yaml is pinned by digest to the same version.
-    "litellm==1.104.2",
+    # docker-compose.yml and k8s/litellm.yaml is pinned by digest to the same version
+    # (tests/test_litellm_pin.py). 1.106.12 (issue #481) was published after the
+    # incident through LiteLLM's new release workflow: the wheel carries a PyPI
+    # attestation from BerriAI/project-releaser, the image a keyless cosign signature.
+    "litellm==1.106.12",
     # techne + liminal are optional extras (see [project.optional-dependencies]
     # below: `mcp`, `memory`, `full`). Neither is on a public index; the concrete
     # git sources are pinned in `requirements-sources.txt` for clean-machine

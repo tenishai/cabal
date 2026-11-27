@@ -123,6 +123,21 @@ Then, by hand:
 Whether cabal 0.5.0rc1 is on the index is not recorded in this repo; check before you tell
 anyone to install it.
 
+## Moving the LiteLLM pin
+
+litellm is pinned exactly in `pyproject.toml`, and the LiteLLM Proxy image by digest in
+`docker-compose.yml` and `k8s/litellm.yaml`, all at one version (`tests/test_litellm_pin.py`).
+LiteLLM shipped a credential stealer in 1.107.0 (2026-10-21), so a move is a supply-chain
+review, in its own PR:
+
+- Use a release from LiteLLM's post-incident workflow that has been out for a few days. Check
+  that its wheel has a PyPI attestation from `BerriAI/project-releaser`:
+  `curl -s https://pypi.org/integrity/litellm/<v>/litellm-<v>-cp310-abi3-manylinux_2_28_x86_64.whl/provenance`
+- Verify the image's keyless signature before taking its digest:
+  `cosign verify --certificate-identity https://github.com/BerriAI/project-releaser/.github/workflows/release.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com ghcr.io/berriai/litellm:v<v>`
+- Take the digest with `docker buildx imagetools inspect ghcr.io/berriai/litellm:v<v>`, and
+  move all three lines together.
+
 ## After
 
 - `[Unreleased]` is already fresh from the PR.
