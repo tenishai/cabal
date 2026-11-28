@@ -44,14 +44,15 @@ def test_release_runs_on_version_tags_after_the_whole_ci():
     )
 
 
-def test_release_builds_with_the_techne_the_dockerfile_pins():
+def test_release_builds_with_the_techne_and_liminal_the_dockerfile_pins():
     text = RELEASE.read_text()
     assert "s/^ARG TECHNE_VERSION=//p' Dockerfile" in text
+    assert "s/^ARG LIMINAL_VERSION=//p' Dockerfile" in text
     steps = yaml.safe_load(text)["jobs"]["release"]["steps"]
     builds = [s for s in steps if str(s.get("uses", "")).startswith("docker/build-push-action@")]
     assert len(builds) == 2
     for s in builds:
-        assert s["with"]["build-contexts"] == "techne=techne"
+        assert s["with"]["build-contexts"] == "techne=techne\nliminal=liminal\n"
     published = builds[1]["with"]
     assert published["push"] is True
     assert "latest" not in published["tags"]
@@ -68,7 +69,7 @@ def test_arm64_is_built_and_run_on_a_native_runner_and_never_pushed():
     build = steps["Build the arm64 image (never pushed)"]["with"]
     assert build["platforms"] == "linux/arm64"
     assert build["push"] is False and build["load"] is True
-    assert build["build-contexts"] == "techne=techne"
+    assert build["build-contexts"] == "techne=techne\nliminal=liminal\n"
     assert "cache-to" not in build
     # The arm64 image is built from the same inputs as the release's own build, so a pass
     # here says something about the image that gets published. Whole dicts, minus the keys
@@ -81,8 +82,11 @@ def test_arm64_is_built_and_run_on_a_native_runner_and_never_pushed():
 
     assert strip(build) == strip(release)
     # The techne directory those builds read is checked out the same way in both jobs.
-    techne = "Checkout techne at the tag the Dockerfile pins"
-    assert steps[techne]["with"] == _steps()[techne]["with"]
+    for sibling in ("techne", "liminal"):
+        name = f"Checkout {sibling} at the tag the Dockerfile pins"
+        assert steps[name]["with"] == _steps()[name]["with"], sibling
+        assert steps[name]["with"]["path"] == sibling
+        assert steps[name]["with"]["repository"] == f"tenishai/{sibling}"
 
 
 def test_both_jobs_read_the_same_version_and_techne_tag(checkout):
@@ -94,6 +98,7 @@ def test_both_jobs_read_the_same_version_and_techne_tag(checkout):
     _, rel_out = _run(_steps()[VERSION_STEP]["run"],
                       {"GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "main"}, checkout)
     assert arm_out["techne"] == rel_out["techne"] == "v0.20.0"
+    assert arm_out["liminal"] == rel_out["liminal"] == "v0.11.0"
     assert arm_out["version"] == rel_out["version"] == "1.2.3"
     assert arm_out["day"] == rel_out["day"]
 
@@ -127,7 +132,7 @@ def checkout(tmp_path):
     repo = tmp_path / "cabal"
     repo.mkdir()
     (repo / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "1.2.3"\n')
-    (repo / "Dockerfile").write_text("ARG TECHNE_VERSION=0.20.0\n")
+    (repo / "Dockerfile").write_text("ARG TECHNE_VERSION=0.20.0\nARG LIMINAL_VERSION=0.11.0\n")
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(repo)]
     subprocess.run([*git, "init", "-q"], check=True)
     subprocess.run([*git, "add", "."], check=True)
@@ -234,22 +239,25 @@ echo "$*" >> calls
 case "$*" in
   *"uname -m") echo "$FAKE_ARCH";;
   *cabal.__version__*) echo "$FAKE_VERSION";;
+  *liminal.__version__*) echo "$FAKE_LIMINAL";;
   *"cbl --help") exit "$FAKE_CBL_RC";;
 esac
 """
 
 
 @pytest.mark.parametrize(
-    ("arch", "version", "cbl_rc", "passes"),
+    ("arch", "version", "cbl_rc", "liminal", "passes"),
     [
-        ("aarch64", "1.2.3", 0, True),
-        ("x86_64", "1.2.3", 0, False),  # emulated or wrong-arch image: not proof of arm64
-        ("aarch64", "1.2.2", 0, False),  # the image is not this checkout's version
-        ("aarch64", "1.2.3", 2, False),  # the CLI does not start
+        ("aarch64", "1.2.3", 0, "0.11.0", True),
+        ("x86_64", "1.2.3", 0, "0.11.0", False),  # emulated or wrong-arch image: not proof of arm64
+        ("aarch64", "1.2.2", 0, "0.11.0", False),  # the image is not this checkout's version
+        ("aarch64", "1.2.3", 2, "0.11.0", False),  # the CLI does not start
+        ("aarch64", "1.2.3", 0, "0.10.0", False),  # not the liminal the Dockerfile pins
+        ("aarch64", "1.2.3", 0, "", False),  # no liminal in the image
     ],
 )
-def test_the_arm64_check_needs_aarch64_the_version_and_a_working_cli(
-    tmp_path, arch, version, cbl_rc, passes
+def test_the_arm64_check_needs_aarch64_the_version_a_working_cli_and_liminal(
+    tmp_path, arch, version, cbl_rc, liminal, passes
 ):
     job = yaml.safe_load(RELEASE.read_text())["jobs"]["arm64"]
     script = next(s for s in job["steps"] if s.get("name") == ARM_CHECK)["run"]
@@ -257,7 +265,8 @@ def test_the_arm64_check_needs_aarch64_the_version_and_a_working_cli(
     fake = tmp_path / "bin" / "docker"
     fake.write_text(FAKE_ARM_DOCKER)
     fake.chmod(0o755)
-    env = {"VERSION": "1.2.3", "FAKE_ARCH": arch, "FAKE_VERSION": version, "FAKE_CBL_RC": str(cbl_rc)}
+    env = {"VERSION": "1.2.3", "LIMINAL": "v0.11.0", "FAKE_ARCH": arch, "FAKE_VERSION": version,
+           "FAKE_CBL_RC": str(cbl_rc), "FAKE_LIMINAL": liminal}
     code, _ = _run(script, env, tmp_path)
     assert (code == 0) is passes
     if passes:

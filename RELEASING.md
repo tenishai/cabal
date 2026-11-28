@@ -133,5 +133,6 @@ anyone to install it.
 
 ## Not yet
 
-The wheel is built and published by hand, and the image carries no liminal (an identity
-that sets `[liminal] url` needs a build with `--build-context liminal=…` or `WITH_MCP=1`).
+The wheel is built and published by hand. The image carries liminal at the tag the
+Dockerfile's `LIMINAL_VERSION` names, checked out from tenishai/liminal like techne, so a
+liminal release that cabal should ship needs a `LIMINAL_VERSION` bump here before the tag.
