@@ -6,6 +6,15 @@ Pull requests and issues are in tenishai/cabal.
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-11-28
+
+### Upgrading
+
+- **No database migrations.**
+- **The published image carries liminal 0.12.0.** An identity that sets `[liminal] url` now starts on `ghcr.io/tenishai/cabal:v0.5.2`; on 0.5.1's image it failed with "the liminal package is not installed". An identity with no `[liminal]` block is unaffected: cabal never imports liminal for it.
+- **liminal 0.12.0 changes its tools' behaviour** for agents reaching them through cabal: `web` and `notify` ignore environment proxy and CA settings, and `files.write` refuses more developer-tool config paths. See liminal's 0.12.0 Upgrading notes.
+- **`k8s/` names `ghcr.io/tenishai/cabal:v0.5.2`.**
+
 ### Changed
 
 - **liminal moves to 0.12.0** in the image and `requirements-sources.txt`: `LIMINAL_VERSION=0.12.0`, with `LIMINAL_WHEEL_SHA256` the reproducible build of the v0.12.0 tag (`537dee06...`, the wheel on the index and on the GitHub release). liminal 0.11.0 pinned techne 0.18.2; 0.12.0 pins techne 0.20.0, the version this image carries. See liminal's 0.12.0 Upgrading notes: `web` and `notify` ignore environment proxy and CA settings, and `files.write` refuses more dev-tool config paths.
