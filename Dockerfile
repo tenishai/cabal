@@ -42,6 +42,8 @@ FROM scratch AS techne
 # block, and a startup error naming the missing package for one that has it.
 # Without a sibling checkout, --build-arg WITH_MCP=1 (with EXTRA_INDEX_URL)
 # fetches the pinned liminal wheel from the index instead.
+# The release image (release.yml) is built with a checkout of liminal at the
+# LIMINAL_VERSION tag below, so the published image carries liminal.
 FROM scratch AS liminal
 
 # ----- Build stage ----------------------------------------------------------
